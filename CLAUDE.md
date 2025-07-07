@@ -585,6 +585,48 @@ async def handle_cleaning_error(job: CleaningJob, error: Exception):
 - [Testing Guide](./docs/TESTING.md): Comprehensive testing strategy
 - [Troubleshooting](./docs/TROUBLESHOOTING.md): Common issues and solutions
 
+## 🚀 GitHub Repository
+
+**Repository**: https://github.com/scotty-git/sidelinescott
+
+### Repository Structure
+```
+sidelinescott/
+├── frontend/          # React 19 + TypeScript frontend
+├── backend/           # FastAPI + Python backend
+├── docs/              # Comprehensive documentation
+├── examplescripts/    # Ready-to-use transcript examples
+├── CLAUDE.md          # This development guide
+└── README.md          # Project overview
+```
+
+### Quick Clone & Setup
+```bash
+# Clone the repository
+git clone https://github.com/scotty-git/sidelinescott.git
+cd sidelinescott
+
+# Frontend setup
+cd frontend && npm install && npm run dev
+
+# Backend setup (new terminal)
+cd backend && python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt && uvicorn app.main:app --reload
+```
+
+### Contributing
+- **Main Branch**: `main` (production-ready code)
+- **Development**: Create feature branches from `main`
+- **Issues**: Use GitHub Issues for bug reports and feature requests
+- **Pull Requests**: All changes should go through PR review
+
+### Repository Features
+- ✅ **Complete Codebase**: Production-ready CleanerContext system
+- ✅ **Comprehensive Tests**: 52 unit tests + 28 E2E tests with Playwright
+- ✅ **Full Documentation**: Complete guides for setup, development, and deployment
+- ✅ **Example Content**: Ready-to-use transcript examples for testing
+- ✅ **Development Tools**: VS Code settings, linting, formatting configurations
+
 ---
 
-This guide ensures Claude works autonomously while building the cleanercontext.md vision with exceptional quality, performance, and user experience. Follow the 4-week roadmap in DEVELOPMENT_ROADMAP.md for implementation details.
+This guide ensures Claude works autonomously while building the cleanercontext.md vision with exceptional quality, performance, and user experience. The complete project is now available on GitHub for collaboration and deployment.
