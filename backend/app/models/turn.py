@@ -23,6 +23,11 @@ class Turn(Base):
     context_detected = Column(String)
     ai_model_used = Column(String)
     
+    # Gemini query details for inspection
+    timing_breakdown = Column(JSON, default=dict)  # Detailed timing breakdown
+    gemini_prompt = Column(Text)  # Full prompt sent to Gemini
+    gemini_response = Column(Text)  # Raw response from Gemini
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

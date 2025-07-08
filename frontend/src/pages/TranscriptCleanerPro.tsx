@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react'
 import { apiClient } from '../lib/api'
+import { GeminiQueryInspector } from '../components/GeminiQueryInspector'
 
 interface ParsedTurn {
   speaker: string
@@ -115,6 +116,8 @@ export function TranscriptCleanerPro() {
     const saved = localStorage.getItem('transcript-cleaner-panel-width')
     return saved ? parseInt(saved) : 6
   })
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const [inspectedTurnId, setInspectedTurnId] = useState<string | null>(null)
   
   // Save panel width to localStorage
   React.useEffect(() => {
@@ -996,11 +999,45 @@ export function TranscriptCleanerPro() {
                                 </span>
                               )}
                             </div>
-                            {settings.showTimings && (
-                              <span style={{ fontSize: '14px', color: theme.textMuted, fontFamily: 'monospace' }}>
-                                {turn.metadata.processing_time_ms.toFixed(1)}ms
-                              </span>
-                            )}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                              {settings.showTimings && (
+                                <span style={{ fontSize: '14px', color: theme.textMuted, fontFamily: 'monospace' }}>
+                                  {turn.metadata.processing_time_ms.toFixed(1)}ms
+                                </span>
+                              )}
+                              {turn.speaker === 'User' && turn.metadata.ai_model_used && (
+                                <button
+                                  onClick={() => {
+                                    setInspectedTurnId(turn.turn_id)
+                                    setInspectorOpen(true)
+                                  }}
+                                  style={{
+                                    padding: '4px 8px',
+                                    fontSize: '12px',
+                                    backgroundColor: theme.bgSecondary,
+                                    border: `1px solid ${theme.border}`,
+                                    borderRadius: '4px',
+                                    color: theme.text,
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    transition: 'all 0.15s ease'
+                                  }}
+                                  title="Inspect Gemini Query"
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.backgroundColor = theme.bgTertiary
+                                    e.currentTarget.style.borderColor = theme.textMuted
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.backgroundColor = theme.bgSecondary
+                                    e.currentTarget.style.borderColor = theme.border
+                                  }}
+                                >
+                                  🔍 Inspect
+                                </button>
+                              )}
+                            </div>
                           </div>
                           
                           {settings.showDiffs && diff && (
@@ -1093,12 +1130,36 @@ export function TranscriptCleanerPro() {
                                 marginTop: '8px',
                                 fontFamily: 'monospace',
                                 display: 'flex',
-                                justifyContent: 'space-between'
+                                justifyContent: 'space-between',
+                                alignItems: 'center'
                               }}>
                                 <span>{turn.cleaned_text.length} chars</span>
-                                <span style={{ color: turn.metadata.cleaning_applied ? '#10b981' : theme.textMuted }}>
-                                  {turn.metadata.processing_time_ms.toFixed(1)}ms
-                                </span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <span style={{ color: turn.metadata.cleaning_applied ? '#10b981' : theme.textMuted }}>
+                                    {turn.metadata.processing_time_ms.toFixed(1)}ms
+                                  </span>
+                                  {turn.speaker === 'User' && turn.metadata.ai_model_used && (
+                                    <button
+                                      onClick={() => {
+                                        setInspectedTurnId(turn.turn_id)
+                                        setInspectorOpen(true)
+                                      }}
+                                      style={{
+                                        padding: '2px 6px',
+                                        fontSize: '11px',
+                                        backgroundColor: theme.bgSecondary,
+                                        border: `1px solid ${theme.border}`,
+                                        borderRadius: '3px',
+                                        color: theme.text,
+                                        cursor: 'pointer',
+                                        transition: 'all 0.15s ease'
+                                      }}
+                                      title="Inspect Gemini Query"
+                                    >
+                                      🔍
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -1610,6 +1671,19 @@ export function TranscriptCleanerPro() {
           </div>
         </div>
       </div>
+      
+      {/* Gemini Query Inspector Modal */}
+      {inspectorOpen && inspectedTurnId && conversationId && (
+        <GeminiQueryInspector
+          conversationId={conversationId}
+          turnId={inspectedTurnId}
+          isOpen={inspectorOpen}
+          onClose={() => {
+            setInspectorOpen(false)
+            setInspectedTurnId(null)
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -357,10 +357,21 @@ class ConversationManager:
         process_start = time.time()
         print(f"[ConversationManager] 👤 Processing user turn with CleanerContext intelligence")
         
+        # Initialize timing breakdown
+        timing_breakdown = {
+            "context_retrieval_ms": 0,
+            "prompt_preparation_ms": 0,
+            "gemini_api_ms": 0,
+            "database_save_ms": 0,
+            "prompt_logging_ms": 0,
+            "total_ms": 0
+        }
+        
         # Get cleaned conversation context (the KEY innovation)
         context_start = time.time()
         cleaned_context = conversation_state.get_cleaned_sliding_window()
         context_time = (time.time() - context_start) * 1000
+        timing_breakdown["context_retrieval_ms"] = round(context_time, 2)
         self.performance_metrics['context_retrieval_times'].append(context_time)
         
         print(f"[ConversationManager] Retrieved cleaned context in {context_time:.2f}ms")
@@ -376,6 +387,8 @@ class ConversationManager:
             print(f"[ConversationManager] Using provided cleaning level: {cleaning_decision}")
         
         # Get active prompt template for processing (or use default)
+        prompt_start = time.time()
+        rendered_prompt_text = None
         try:
             active_template = await self.prompt_service.get_or_create_default_template(db)
             print(f"[ConversationManager] Using prompt template: {active_template.name}")
@@ -399,23 +412,32 @@ class ConversationManager:
             if rendered_prompt:
                 print(f"[ConversationManager] Rendered prompt with {len(variables)} variables")
                 print(f"[ConversationManager] Estimated tokens: {rendered_prompt.token_count}")
+                rendered_prompt_text = rendered_prompt.rendered_prompt
             
         except Exception as e:
             print(f"[ConversationManager] ⚠️ Prompt service error: {e}")
             rendered_prompt = None
             active_template = None
+            rendered_prompt_text = None
+        
+        prompt_time = (time.time() - prompt_start) * 1000
+        timing_breakdown["prompt_preparation_ms"] = round(prompt_time, 2)
 
         # Use Gemini 2.5 Flash for actual cleaning
         print(f"[ConversationManager] 🤖 Applying {cleaning_decision} cleaning with Gemini...")
         if model_params:
             print(f"[ConversationManager] Using custom model params: {model_params}")
+        gemini_start = time.time()
         cleaned_result = await self.gemini_service.clean_conversation_turn(
             raw_text=raw_text,
             speaker=speaker,
             cleaned_context=cleaned_context,
             cleaning_level=cleaning_decision,
-            model_params=model_params
+            model_params=model_params,
+            rendered_prompt=rendered_prompt_text  # Pass the prompt for storage
         )
+        gemini_time = (time.time() - gemini_start) * 1000
+        timing_breakdown["gemini_api_ms"] = round(gemini_time, 2)
         
         processing_time_ms = (time.time() - process_start) * 1000
         self.performance_metrics['user_processing_times'].append(processing_time_ms)
@@ -431,13 +453,17 @@ class ConversationManager:
             'processing_time_ms': processing_time_ms,
             'corrections': cleaned_result['metadata']['corrections'],
             'context_detected': cleaned_result['metadata']['context_detected'],
-            'ai_model_used': cleaned_result['metadata']['ai_model_used']
+            'ai_model_used': cleaned_result['metadata']['ai_model_used'],
+            'timing_breakdown': timing_breakdown,
+            'gemini_prompt': rendered_prompt_text if rendered_prompt_text else None,
+            'gemini_response': cleaned_result.get('raw_response', None)
         }
         
         # Add to conversation history (THIS IS THE KEY - cleaned version goes to history)
         conversation_state.add_to_history(turn_data)
         
         # Save to database (with error handling for testing)
+        db_start = time.time()
         try:
             db_turn = Turn(**turn_data)
             db.add(db_turn)
@@ -457,8 +483,11 @@ class ConversationManager:
                 'id': uuid.uuid4(),
                 'created_at': datetime.utcnow()
             })()
+        db_time = (time.time() - db_start) * 1000
+        timing_breakdown["database_save_ms"] = round(db_time, 2)
         
         # Log prompt usage for analytics
+        prompt_log_start = time.time()
         if active_template and rendered_prompt:
             try:
                 await self.prompt_service.log_prompt_usage(
@@ -475,6 +504,11 @@ class ConversationManager:
                 print(f"[ConversationManager] ✅ Logged prompt usage for analytics")
             except Exception as e:
                 print(f"[ConversationManager] ⚠️ Failed to log prompt usage: {e}")
+        prompt_log_time = (time.time() - prompt_log_start) * 1000
+        timing_breakdown["prompt_logging_ms"] = round(prompt_log_time, 2)
+        
+        # Calculate total time
+        timing_breakdown["total_ms"] = round(processing_time_ms, 2)
 
         print(f"[ConversationManager] ✅ User turn processed in {processing_time_ms:.2f}ms")
         print(f"[ConversationManager] Cleaning applied: {turn_data['cleaning_applied']}")
@@ -492,9 +526,15 @@ class ConversationManager:
                 'cleaning_applied': turn_data['cleaning_applied'],
                 'cleaning_level': turn_data['cleaning_level'],
                 'processing_time_ms': processing_time_ms,
+                'timing_breakdown': timing_breakdown,
                 'corrections': turn_data['corrections'],
                 'context_detected': turn_data['context_detected'],
-                'ai_model_used': turn_data['ai_model_used']
+                'ai_model_used': turn_data['ai_model_used'],
+                'gemini_query_details': {
+                    'prompt_sent': rendered_prompt_text if rendered_prompt_text else None,
+                    'response_received': cleaned_result.get('raw_response', None) if 'raw_response' in cleaned_result else None,
+                    'model_name': cleaned_result['metadata']['ai_model_used']
+                }
             },
             'created_at': db_turn.created_at.isoformat()
         }

@@ -75,7 +75,8 @@ class GeminiService:
         speaker: str,
         cleaned_context: List[Dict[str, Any]],
         cleaning_level: str = "full",
-        model_params: Dict[str, Any] = None
+        model_params: Dict[str, Any] = None,
+        rendered_prompt: str = None
     ) -> Dict[str, Any]:
         """
         Clean a single conversation turn using CleanerContext methodology
@@ -123,8 +124,11 @@ class GeminiService:
                 }
             }
         
-        # Build context-aware cleaning prompt
-        prompt = self._build_cleaning_prompt(raw_text, cleaned_context, cleaning_level)
+        # Use rendered prompt if provided, otherwise build default
+        if rendered_prompt:
+            prompt = rendered_prompt
+        else:
+            prompt = self._build_cleaning_prompt(raw_text, cleaned_context, cleaning_level)
         
         try:
             # Use custom model parameters if provided
@@ -166,7 +170,8 @@ class GeminiService:
                     "context_detected": result.get("context_detected", "business_conversation"),
                     "processing_time_ms": processing_time,
                     "ai_model_used": self.model_name
-                }
+                },
+                "raw_response": response.text  # Store the raw Gemini response
             }
             
             logger.info(f"Cleaned in {processing_time}ms, confidence: {cleaned_response['metadata']['confidence_score']}")
