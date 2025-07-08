@@ -39,12 +39,20 @@ Transform messy, error-filled transcripts into clean, professional conversations
 - **Dark/Light Themes**: Complete theme system with instant switching
 - **Error Handling**: Graceful degradation with clear user guidance
 
+### 🔧 Prompt Engineering Dashboard (NEW!)
+- **Turn Inspection**: Click any turn ID to see exact prompt and response
+- **Master Editor**: Monaco editor for live prompt template editing
+- **Version Control**: Save and manage multiple prompt variants
+- **A/B Testing**: Framework for systematic prompt optimization
+- **Analytics**: Track prompt performance and usage patterns
+
 ### 🔧 Advanced Developer Tools
 - **Comprehensive Logging**: Every operation logged with performance metrics
 - **Copy Functionality**: One-click log and data copying for debugging
 - **Performance Monitoring**: Real-time metrics and optimization tracking
 - **Context Visualization**: Live sliding window inspector
 - **E2E Testing**: 28 comprehensive Playwright tests with auto-error capture
+- **Prompt Engineering Dashboard**: Full visibility and control over AI prompts (NEW!)
 
 ### ⚡ Exceptional Performance
 - **UI Responsiveness**: 28ms average (target: <50ms) - 44% faster
@@ -134,6 +142,7 @@ npx playwright test            # E2E tests (28 passing)
 
 **Live URLs:**
 - 🎨 **Main Application**: http://127.0.0.1:6173
+- 🔧 **Prompt Engineering**: http://127.0.0.1:6173/prompt-engineering
 - 🧪 **CleanerContext Testing**: http://127.0.0.1:6173/test-cleaner-context
 - ⚡ **Real-time Testing**: http://127.0.0.1:6173/week3
 - 📚 **API Documentation**: http://127.0.0.1:8000/docs
@@ -353,9 +362,14 @@ This project represents a complete, production-ready implementation. For contrib
 4. Follow the established code quality standards
 5. Ensure all new features include comprehensive testing
 
+### GitHub Repository
+- **Repository**: https://github.com/scotty-git/sidelinescott
+- **Issues**: https://github.com/scotty-git/sidelinescott/issues
+- **Pull Requests**: All changes should go through PR review
+
 ---
 
 **Built with ❤️ for exceptional conversation processing and AI integration excellence**
 
-*Last updated: January 12, 2025*  
+*Last updated: January 8, 2025*  
 *System Status: Fully Operational Production Application* ✅
