@@ -41,23 +41,26 @@ Hey Claude! You're working on the **Lumen Transcript Cleaner** rebuild - a sophi
 
 ## 🔔 Ping Sound Notifications
 
-**Setup ping notification:**
+**CRITICAL RULE**: Ping EVERY TIME you finish work and pass the baton back to the user.
+
 ```bash
-# Ping sound is already configured with ~/claude-notify.sh
-~/claude-notify.sh  # Or use direct afplay command
 afplay /System/Library/Sounds/Ping.aiff
 ```
 
 **When to ping:**
-- ✅ When you finish a complete task and are waiting for next instructions
-- ✅ When you need user input to proceed with next phase
-- ✅ After completing major milestones (Week 1 foundation complete, etc.)
-- ✅ When presenting options/choices and need user decision
+- ✅ **ALWAYS** when you finish ANY task and stop working
+- ✅ When you complete what was asked and await next instructions
+- ✅ When you need user input/decision to continue
+- ✅ After fixing an error and the system is ready
+- ✅ When presenting results/options and waiting for response
 
 **When NOT to ping:**
-- ❌ During progress updates or while working
+- ❌ During work-in-progress
+- ❌ While actively debugging/coding
 - ❌ When you're about to continue with more work
-- ❌ Before asking questions (ask first, then ping)
+- ❌ Mid-task or between related operations
+
+**Simple rule**: If you're done working and waiting for user = PING!
 
 ## 🏗️ Project Architecture & Tech Stack
 
