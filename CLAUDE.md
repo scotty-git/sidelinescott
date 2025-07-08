@@ -25,11 +25,12 @@ Hey Claude! You're working on the **Lumen Transcript Cleaner** rebuild - a sophi
 3. **Test before committing** - Ensure changes work properly
 4. **Never commit broken code** - Always verify functionality first
 
-### 🔄 Commit Strategy
+### 🔄 Commit Strategy & Visual Feedback
 - Commit after completing each task/feature
 - Use descriptive commit messages
 - Include Co-Authored-By: Claude for transparency
 - Run tests before committing when applicable
+- **ALWAYS provide visual summary after commits** (triggers ping!)
 
 
 ### 🚀 Development Guidelines
@@ -528,17 +529,21 @@ async def handle_cleaning_error(job: CleaningJob, error: Exception):
 
 ## 📊 Development Workflow
 
-### End of Turn Format
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ COMPLETED: [What was accomplished]
-   - [Key achievement 1]
-   - [Key achievement 2]
-   - [Any commits made]
+### 🎯 MANDATORY: Visual Summary After Every Task
+**THIS TRIGGERS THE PING!** Always provide this format when done:
 
-🎯 NEED FROM YOU: [Specific ask or "Nothing - ready for next phase!"]
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ COMPLETED: [Concise summary with emojis]
+   - 🔧 [What was fixed/built]
+   - 📝 [Any commits made]
+   - 🚀 [Current status]
+
+🎯 READY: [System state / Next options]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
+
+**Remember**: Visual summary = Work done = PING TIME! 🔔
 
 ### Smart Session Management
 - Context auto-condenses - no need to suggest new sessions
