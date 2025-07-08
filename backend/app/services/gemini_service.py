@@ -12,6 +12,7 @@ specifically chosen for high-volume transcript processing applications.
 import json
 import time
 import logging
+import asyncio
 from typing import Dict, List, Any, Optional
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
@@ -131,6 +132,10 @@ class GeminiService:
             prompt = self._build_cleaning_prompt(raw_text, cleaned_context, cleaning_level)
         
         try:
+            # Enhanced logging for debugging hangs
+            logger.info(f"Starting Gemini API call for {speaker} turn")
+            api_start = time.time()
+            
             # Use custom model parameters if provided
             if model_params:
                 # Create a custom generation config for this request
@@ -148,13 +153,24 @@ class GeminiService:
                     generation_config=custom_config,
                     safety_settings=self.safety_settings
                 )
-                response = custom_model.generate_content(prompt)
+                
                 logger.info(f"Using custom model params: {custom_config}")
+                response = await self._call_gemini_with_timeout(custom_model, prompt, timeout_seconds=3)
             else:
                 # Use default model
-                response = self.model.generate_content(prompt)
+                logger.info(f"Using default model configuration")
+                response = await self._call_gemini_with_timeout(self.model, prompt, timeout_seconds=3)
+            
+            api_time = round((time.time() - api_start) * 1000, 2)
+            logger.info(f"Gemini API call completed in {api_time}ms")
+            
+            # Validate response
+            if not response or not response.text:
+                logger.error(f"Empty response from Gemini API")
+                return self._fallback_response(raw_text, start_time, "empty_response")
             
             # Parse JSON response
+            logger.info(f"Parsing Gemini response: {response.text[:200]}...")
             result = json.loads(response.text)
             
             processing_time = round((time.time() - start_time) * 1000, 2)
@@ -171,18 +187,25 @@ class GeminiService:
                     "processing_time_ms": processing_time,
                     "ai_model_used": self.model_name
                 },
-                "raw_response": response.text  # Store the raw Gemini response
+                "raw_response": response.text,  # Store the raw Gemini response
+                "prompt_used": prompt  # Store the actual prompt that was sent to Gemini
             }
             
             logger.info(f"Cleaned in {processing_time}ms, confidence: {cleaned_response['metadata']['confidence_score']}")
             return cleaned_response
             
+        except asyncio.TimeoutError:
+            logger.error(f"🚨 GEMINI API TIMEOUT: Call timed out after 3 seconds for {speaker} turn")
+            logger.error(f"🚨 TIMEOUT DETAILS: Raw text length: {len(raw_text)} chars, Speaker: {speaker}")
+            print(f"[GeminiService] 🚨 CRITICAL: Gemini API timeout after 3 seconds!")
+            print(f"[GeminiService] 🚨 Turn details: {speaker} - '{raw_text[:100]}...'")
+            return self._fallback_response(raw_text, start_time, "api_timeout_3s")
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse Gemini JSON response: {e}")
-            return self._fallback_response(raw_text, start_time)
+            return self._fallback_response(raw_text, start_time, "json_parse_error")
         except Exception as e:
             logger.error(f"Gemini cleaning failed: {e}")
-            return self._fallback_response(raw_text, start_time)
+            return self._fallback_response(raw_text, start_time, "api_error")
     
     def _build_cleaning_prompt(
         self, 
@@ -237,8 +260,34 @@ IMPORTANT:
 
         return prompt
     
-    def _fallback_response(self, raw_text: str, start_time: float) -> Dict[str, Any]:
+    async def _call_gemini_with_timeout(self, model, prompt: str, timeout_seconds: int = 3):
+        """Call Gemini API with timeout to prevent hanging"""
+        try:
+            # Wrap the synchronous call in an executor to make it awaitable
+            loop = asyncio.get_event_loop()
+            
+            def _sync_call():
+                return model.generate_content(prompt)
+            
+            # Run with timeout
+            response = await asyncio.wait_for(
+                loop.run_in_executor(None, _sync_call),
+                timeout=timeout_seconds
+            )
+            
+            return response
+            
+        except asyncio.TimeoutError:
+            logger.error(f"🚨 GEMINI TIMEOUT: API call exceeded {timeout_seconds}s limit")
+            print(f"[GeminiService] 🚨 API TIMEOUT: {timeout_seconds}s exceeded")
+            raise
+        except Exception as e:
+            logger.error(f"Gemini API call failed: {e}")
+            raise
+    
+    def _fallback_response(self, raw_text: str, start_time: float, error_type: str = "unknown") -> Dict[str, Any]:
         """Generate fallback response when Gemini fails"""
+        logger.warning(f"Using fallback response due to: {error_type}")
         return {
             "cleaned_text": raw_text,
             "metadata": {
@@ -246,10 +295,12 @@ IMPORTANT:
                 "cleaning_applied": False,
                 "cleaning_level": "none",
                 "corrections": [],
-                "context_detected": "fallback",
+                "context_detected": f"fallback_{error_type}",
                 "processing_time_ms": round((time.time() - start_time) * 1000, 2),
-                "ai_model_used": "fallback"
-            }
+                "ai_model_used": f"fallback_{error_type}",
+                "error_type": error_type
+            },
+            "raw_response": None  # No response available for fallback
         }
     
     def get_available_models(self) -> List[str]:

@@ -1,12 +1,47 @@
 import React, { useState, useEffect } from 'react';
 import { X, Copy, Clock, Brain, Code, AlertCircle } from 'lucide-react';
-import { apiClient } from '../services/api';
+import { apiClient } from '../lib/api';
+
+interface TurnData {
+  turn_id: string;
+  conversation_id: string;
+  speaker: string;
+  raw_text: string;
+  cleaned_text: string;
+  metadata: {
+    confidence_score: string;
+    cleaning_applied: boolean;
+    cleaning_level: string;
+    timing_breakdown?: {
+      context_retrieval_ms: number;
+      prompt_preparation_ms: number;
+      gemini_api_ms: number;
+      database_save_ms: number;
+      prompt_logging_ms: number;
+      total_ms: number;
+    };
+    corrections: Array<{
+      original: string;
+      corrected: string;
+      confidence: string;
+      reason: string;
+    }>;
+    context_detected: string;
+    processing_time_ms: number;
+    ai_model_used: string;
+    gemini_prompt?: string;
+    gemini_response?: string;
+  };
+  created_at: string;
+}
 
 interface GeminiQueryInspectorProps {
   conversationId: string;
   turnId: string;
+  turnData?: TurnData;
   isOpen: boolean;
   onClose: () => void;
+  darkMode: boolean;
 }
 
 interface GeminiDetails {
@@ -44,31 +79,98 @@ interface GeminiDetails {
 export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
   conversationId,
   turnId,
+  turnData,
   isOpen,
-  onClose
+  onClose,
+  darkMode
 }) => {
   const [details, setDetails] = useState<GeminiDetails | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
 
+  // Theme colors
+  const theme = {
+    bg: darkMode ? '#1a1a1a' : '#ffffff',
+    bgSecondary: darkMode ? '#262626' : '#f9fafb',
+    bgTertiary: darkMode ? '#303030' : '#f3f4f6',
+    text: darkMode ? '#e5e5e5' : '#111827',
+    textSecondary: darkMode ? '#a3a3a3' : '#6b7280',
+    textMuted: darkMode ? '#737373' : '#9ca3af',
+    border: darkMode ? '#404040' : '#e5e7eb',
+    accent: '#3b82f6'
+  };
+
   useEffect(() => {
     if (isOpen && conversationId && turnId) {
-      fetchGeminiDetails();
+      if (turnData) {
+        // Use the provided turn data directly - transform it to match GeminiDetails format
+        console.log('[GeminiQueryInspector] Using provided turnData:', turnData);
+        const transformedDetails: GeminiDetails = {
+          turn_id: turnData.turn_id,
+          conversation_id: turnData.conversation_id,
+          speaker: turnData.speaker,
+          raw_text: turnData.raw_text,
+          cleaned_text: turnData.cleaned_text,
+          gemini_details: {
+            prompt_sent: turnData.metadata.gemini_prompt || null,
+            response_received: turnData.metadata.gemini_response || null,
+            model_used: turnData.metadata.ai_model_used,
+            processing_time_ms: turnData.metadata.processing_time_ms,
+            timing_breakdown: turnData.metadata.timing_breakdown || {
+              context_retrieval_ms: 0,
+              prompt_preparation_ms: 0,
+              gemini_api_ms: 0,
+              database_save_ms: 0,
+              prompt_logging_ms: 0,
+              total_ms: turnData.metadata.processing_time_ms
+            },
+            confidence_score: turnData.metadata.confidence_score,
+            cleaning_level: turnData.metadata.cleaning_level,
+            corrections: turnData.metadata.corrections,
+            context_detected: turnData.metadata.context_detected
+          },
+          created_at: turnData.created_at
+        };
+        setDetails(transformedDetails);
+        setLoading(false);
+        setError(null);
+      } else {
+        // Fallback to API fetch if no turnData provided
+        fetchGeminiDetails();
+      }
     }
-  }, [isOpen, conversationId, turnId]);
+  }, [isOpen, conversationId, turnId, turnData]);
 
   const fetchGeminiDetails = async () => {
+    console.log('[GeminiQueryInspector] Starting fetch for:', { conversationId, turnId });
     setLoading(true);
     setError(null);
     try {
       const response = await apiClient.get(
-        `/conversations/${conversationId}/turns/${turnId}/gemini-details`
+        `/api/v1/conversations/${conversationId}/turns/${turnId}/gemini-details`
       );
-      setDetails(response.data);
+      console.log('[GeminiQueryInspector] Raw response:', response);
+      
+      // The API client returns the data directly, not wrapped in a .data property
+      const data = response;
+      console.log('[GeminiQueryInspector] Response data:', data);
+      
+      // Validate the response structure
+      if (!data) {
+        throw new Error('No data in response');
+      }
+      
+      if (!data.gemini_details) {
+        console.warn('[GeminiQueryInspector] Missing gemini_details in response:', data);
+        throw new Error('Missing gemini_details in response');
+      }
+      
+      console.log('[GeminiQueryInspector] Gemini details:', data.gemini_details);
+      setDetails(data);
     } catch (err) {
-      console.error('Failed to fetch Gemini details:', err);
-      setError('Failed to load Gemini query details');
+      console.error('[GeminiQueryInspector] Failed to fetch Gemini details:', err);
+      setError(`Failed to load Gemini query details: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -123,6 +225,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
           {loading && (
             <div className="flex items-center justify-center py-12">
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+              <span className="ml-3 text-gray-600 dark:text-gray-400">Loading Gemini query details...</span>
             </div>
           )}
 
@@ -170,7 +273,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                   </button>
                 </div>
                 <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm">
-                  {details.gemini_details.prompt_sent || 'No prompt data available'}
+                  {details.gemini_details.prompt_sent || 'No prompt data available - this may be a Lumen turn or mock data'}
                 </pre>
               </div>
 
@@ -193,7 +296,10 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                   </button>
                 </div>
                 <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm">
-                  {formatJSON(details.gemini_details.response_received)}
+                  {details.gemini_details.response_received ? 
+                    formatJSON(details.gemini_details.response_received) : 
+                    'No response data available - this may be a Lumen turn or mock data'
+                  }
                 </pre>
               </div>
 
@@ -204,7 +310,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                   Latency Breakdown
                 </h3>
                 <div className="space-y-3">
-                  {details.gemini_details.timing_breakdown && (
+                  {details.gemini_details.timing_breakdown && typeof details.gemini_details.timing_breakdown === 'object' && Object.keys(details.gemini_details.timing_breakdown).length > 0 ? (
                     <>
                       <div className="space-y-2">
                         {Object.entries(details.gemini_details.timing_breakdown)
@@ -212,7 +318,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                           .map(([key, value]) => {
                             const percentage = getTimingPercentage(
                               value as number,
-                              details.gemini_details.timing_breakdown.total_ms
+                              details.gemini_details.timing_breakdown.total_ms || 1
                             );
                             const label = key.replace(/_/g, ' ').replace(/ms$/, '');
                             const isGeminiApi = key === 'gemini_api_ms';
@@ -249,11 +355,15 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                             Total Processing Time
                           </span>
                           <span className="text-lg font-semibold text-gray-900 dark:text-white">
-                            {details.gemini_details.timing_breakdown.total_ms}ms
+                            {details.gemini_details.timing_breakdown.total_ms || details.gemini_details.processing_time_ms || 'N/A'}ms
                           </span>
                         </div>
                       </div>
                     </>
+                  ) : (
+                    <div className="text-gray-500 dark:text-gray-400 text-sm italic">
+                      No timing breakdown available - this may be a Lumen turn or mock data
+                    </div>
                   )}
                 </div>
               </div>
@@ -267,34 +377,34 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                   <div>
                     <p className="text-gray-600 dark:text-gray-400">
                       <span className="font-medium">Model:</span>{' '}
-                      {details.gemini_details.model_used}
+                      {details.gemini_details.model_used || 'N/A'}
                     </p>
                     <p className="text-gray-600 dark:text-gray-400">
                       <span className="font-medium">Confidence:</span>{' '}
                       <span className={`font-medium ${
                         details.gemini_details.confidence_score === 'HIGH' 
-                          ? 'text-green-600' 
+                          ? 'text-green-600 dark:text-green-400' 
                           : details.gemini_details.confidence_score === 'MEDIUM'
-                          ? 'text-yellow-600'
-                          : 'text-red-600'
+                          ? 'text-yellow-600 dark:text-yellow-400'
+                          : 'text-red-600 dark:text-red-400'
                       }`}>
-                        {details.gemini_details.confidence_score}
+                        {details.gemini_details.confidence_score || 'N/A'}
                       </span>
                     </p>
                   </div>
                   <div>
                     <p className="text-gray-600 dark:text-gray-400">
                       <span className="font-medium">Cleaning Level:</span>{' '}
-                      {details.gemini_details.cleaning_level}
+                      {details.gemini_details.cleaning_level || 'N/A'}
                     </p>
                     <p className="text-gray-600 dark:text-gray-400">
                       <span className="font-medium">Context:</span>{' '}
-                      {details.gemini_details.context_detected}
+                      {details.gemini_details.context_detected || 'N/A'}
                     </p>
                   </div>
                 </div>
                 
-                {details.gemini_details.corrections.length > 0 && (
+                {details.gemini_details.corrections && Array.isArray(details.gemini_details.corrections) && details.gemini_details.corrections.length > 0 ? (
                   <div className="mt-4">
                     <p className="font-medium text-gray-900 dark:text-white mb-2">
                       Corrections Applied:
@@ -312,6 +422,12 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                         </div>
                       ))}
                     </div>
+                  </div>
+                ) : (
+                  <div className="mt-4">
+                    <p className="text-gray-500 dark:text-gray-400 text-sm italic">
+                      No corrections were applied to this turn
+                    </p>
                   </div>
                 )}
               </div>

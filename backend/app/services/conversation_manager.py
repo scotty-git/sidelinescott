@@ -7,6 +7,7 @@ cleaning using cleaned history in sliding window context.
 
 import time
 import logging
+import asyncio
 from typing import Dict, List, Optional, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -34,14 +35,29 @@ class ConversationState:
     
     def get_cleaned_sliding_window(self) -> List[Dict[str, Any]]:
         """Get the cleaned conversation history for context (NOT raw text)"""
-        print(f"[ConversationState] Getting sliding window, current history length: {len(self.cleaned_history)}")
+        print(f"[ConversationState] 🔍 SLIDING WINDOW DEBUG: Getting sliding window")
+        print(f"[ConversationState] 📊 SLIDING WINDOW DEBUG: Current history length: {len(self.cleaned_history)}")
+        print(f"[ConversationState] 🎯 SLIDING WINDOW DEBUG: Window size configured: {self.sliding_window_size}")
+        
+        # Debug: Log ALL history before windowing
+        if len(self.cleaned_history) > 0:
+            print(f"[ConversationState] 📋 SLIDING WINDOW DEBUG: All available history:")
+            for i, turn in enumerate(self.cleaned_history):
+                print(f"[ConversationState]   History[{i}]: {turn['speaker']} - '{turn['cleaned_text'][:60]}...'")
         
         # Return last N turns of CLEANED conversation history
         window = self.cleaned_history[-self.sliding_window_size:]
         
-        print(f"[ConversationState] Sliding window contains {len(window)} turns")
-        for i, turn in enumerate(window):
-            print(f"[ConversationState] Window[{i}]: {turn['speaker']} -> '{turn['cleaned_text'][:50]}...'")
+        print(f"[ConversationState] ✂️ SLIDING WINDOW DEBUG: Sliding window contains {len(window)} turns")
+        print(f"[ConversationState] 🎯 SLIDING WINDOW DEBUG: Window range: turns {max(0, len(self.cleaned_history) - self.sliding_window_size)} to {len(self.cleaned_history)}")
+        
+        if len(window) > 0:
+            print(f"[ConversationState] 📋 SLIDING WINDOW DEBUG: Window contents:")
+            for i, turn in enumerate(window):
+                actual_turn_num = len(self.cleaned_history) - len(window) + i + 1
+                print(f"[ConversationState]   Window[{i}] (Turn {actual_turn_num}): {turn['speaker']} -> '{turn['cleaned_text'][:80]}...'")
+        else:
+            print(f"[ConversationState] ❌ SLIDING WINDOW DEBUG: Window is empty!")
         
         return window
     
@@ -83,7 +99,7 @@ class ConversationManager:
         print("[ConversationManager] Performance metrics tracking enabled")
         print("[ConversationManager] Prompt Engineering Service integrated")
     
-    def get_conversation_state(self, conversation_id: UUID, sliding_window_size: int = 10) -> ConversationState:
+    def get_conversation_state(self, conversation_id: UUID, sliding_window_size: int = 10, db: Session = None) -> ConversationState:
         """Get or create conversation state for stateful processing"""
         print(f"[ConversationManager] Getting conversation state for {conversation_id}")
         
@@ -92,7 +108,7 @@ class ConversationManager:
             self.active_conversations[conversation_id] = ConversationState(conversation_id, sliding_window_size)
             
             # Load existing turns from database to rebuild context
-            self._load_existing_context(conversation_id)
+            self._load_existing_context(conversation_id, db)
         else:
             print(f"[ConversationManager] Using existing conversation state for {conversation_id}")
             # Update sliding window size if provided
@@ -102,13 +118,76 @@ class ConversationManager:
         
         return self.active_conversations[conversation_id]
     
-    def _load_existing_context(self, conversation_id: UUID):
+    def _load_existing_context(self, conversation_id: UUID, db: Session = None):
         """Load existing turns from database to rebuild conversation context"""
-        print(f"[ConversationManager] Loading existing context for conversation {conversation_id}")
+        print(f"[ConversationManager] 🔍 CONTEXT DEBUG: Loading existing context for conversation {conversation_id}")
         
-        # This will be implemented when we have database session injection
-        # For now, we'll start with empty context
-        print(f"[ConversationManager] Context loading deferred - starting with fresh context")
+        if not db:
+            print(f"[ConversationManager] ❌ CONTEXT DEBUG: No database session available - starting with fresh context")
+            return
+        
+        try:
+            # Query existing turns for this conversation, ordered chronologically
+            print(f"[ConversationManager] 🔍 CONTEXT DEBUG: Querying database for existing turns...")
+            existing_turns = db.query(Turn).filter(
+                Turn.conversation_id == conversation_id
+            ).order_by(Turn.created_at.asc()).all()
+            
+            print(f"[ConversationManager] 📊 CONTEXT DEBUG: Found {len(existing_turns)} existing turns in database")
+            
+            if not existing_turns:
+                print(f"[ConversationManager] ❌ CONTEXT DEBUG: No existing turns found - starting with fresh context")
+                return
+            
+            # Get the conversation state for this conversation
+            conversation_state = self.active_conversations.get(conversation_id)
+            if not conversation_state:
+                print(f"[ConversationManager] ❌ CONTEXT DEBUG: No conversation state found for {conversation_id}")
+                return
+            
+            print(f"[ConversationManager] 🔍 CONTEXT DEBUG: Starting to load {len(existing_turns)} turns into context...")
+            
+            # Convert database turns to conversation state format
+            for i, turn in enumerate(existing_turns):
+                turn_data = {
+                    'conversation_id': conversation_id,
+                    'speaker': turn.speaker,
+                    'raw_text': turn.raw_text,
+                    'cleaned_text': turn.cleaned_text,
+                    'confidence_score': turn.confidence_score,
+                    'cleaning_applied': turn.cleaning_applied,
+                    'cleaning_level': turn.cleaning_level,
+                    'processing_time_ms': turn.processing_time_ms,
+                    'corrections': turn.corrections or [],
+                    'context_detected': turn.context_detected,
+                    'ai_model_used': turn.ai_model_used
+                }
+                
+                # Add to conversation state history
+                conversation_state.cleaned_history.append(turn_data)
+                
+                # Enhanced logging for each turn
+                print(f"[ConversationManager] 📝 CONTEXT DEBUG: Loaded Turn {i+1}: {turn.speaker}")
+                print(f"[ConversationManager]   ↳ Raw: '{turn.raw_text[:60]}...'")
+                print(f"[ConversationManager]   ↳ Cleaned: '{turn.cleaned_text[:60]}...'")
+                print(f"[ConversationManager]   ↳ Added to history (total: {len(conversation_state.cleaned_history)})")
+            
+            print(f"[ConversationManager] ✅ CONTEXT DEBUG: Successfully loaded {len(existing_turns)} turns into conversation context")
+            print(f"[ConversationManager] 📈 CONTEXT DEBUG: Total history length: {len(conversation_state.cleaned_history)}")
+            print(f"[ConversationManager] 🎯 CONTEXT DEBUG: Context spans from turn 1 to turn {len(existing_turns)}")
+            
+            # Log ALL turns for debugging
+            if len(conversation_state.cleaned_history) > 0:
+                print(f"[ConversationManager] 📋 CONTEXT DEBUG: Complete context history:")
+                for i, turn in enumerate(conversation_state.cleaned_history):
+                    print(f"[ConversationManager]   Turn {i+1}: {turn['speaker']} - '{turn['cleaned_text'][:80]}...'")
+                    
+        except Exception as e:
+            print(f"[ConversationManager] ❌ CONTEXT DEBUG: Failed to load existing context: {e}")
+            print(f"[ConversationManager] ❌ CONTEXT DEBUG: Exception type: {type(e).__name__}")
+            print(f"[ConversationManager] ❌ CONTEXT DEBUG: Continuing with fresh context")
+            import traceback
+            traceback.print_exc()
     
     async def add_turn(self, conversation_id: UUID, speaker: str, raw_text: str, db: Session, 
                        sliding_window_size: int = 10, cleaning_level: str = "full", 
@@ -127,7 +206,7 @@ class ConversationManager:
         print(f"[ConversationManager] Speaker: {speaker}")
         print(f"[ConversationManager] Raw text: '{raw_text}'")
         
-        conversation_state = self.get_conversation_state(conversation_id, sliding_window_size)
+        conversation_state = self.get_conversation_state(conversation_id, sliding_window_size, db)
         
         # Check for transcription errors before processing
         if skip_transcription_errors and self._is_likely_transcription_error(raw_text):
@@ -294,7 +373,17 @@ class ConversationManager:
             'processing_time_ms': processing_time_ms,
             'corrections': [],
             'context_detected': 'ai_response',
-            'ai_model_used': None
+            'ai_model_used': None,
+            'timing_breakdown': {
+                'context_retrieval_ms': 0,
+                'prompt_preparation_ms': 0,
+                'gemini_api_ms': 0,
+                'database_save_ms': 0,
+                'prompt_logging_ms': 0,
+                'total_ms': 0
+            },
+            'gemini_prompt': None,  # No prompt for Lumen turns
+            'gemini_response': None  # No Gemini processing for Lumen turns
         }
         
         # Add to conversation history
@@ -368,14 +457,23 @@ class ConversationManager:
         }
         
         # Get cleaned conversation context (the KEY innovation)
+        print(f"[ConversationManager] 🔍 CONTEXT FLOW DEBUG: About to retrieve cleaned sliding window...")
         context_start = time.time()
         cleaned_context = conversation_state.get_cleaned_sliding_window()
         context_time = (time.time() - context_start) * 1000
         timing_breakdown["context_retrieval_ms"] = round(context_time, 2)
         self.performance_metrics['context_retrieval_times'].append(context_time)
         
-        print(f"[ConversationManager] Retrieved cleaned context in {context_time:.2f}ms")
-        print(f"[ConversationManager] Context contains {len(cleaned_context)} previous turns")
+        print(f"[ConversationManager] ✅ CONTEXT FLOW DEBUG: Retrieved cleaned context in {context_time:.2f}ms")
+        print(f"[ConversationManager] 📊 CONTEXT FLOW DEBUG: Context contains {len(cleaned_context)} previous turns")
+        
+        # Debug: Log the context that will be passed to prompt building
+        if len(cleaned_context) > 0:
+            print(f"[ConversationManager] 📋 CONTEXT FLOW DEBUG: Context being passed to prompt:")
+            for i, turn in enumerate(cleaned_context):
+                print(f"[ConversationManager]   Context[{i}]: {turn['speaker']} - '{turn['cleaned_text'][:80]}...'")
+        else:
+            print(f"[ConversationManager] ❌ CONTEXT FLOW DEBUG: NO CONTEXT available for prompt!")
         
         # Use provided cleaning level or analyze for decision
         if cleaning_level == "auto":
@@ -394,18 +492,30 @@ class ConversationManager:
             print(f"[ConversationManager] Using prompt template: {active_template.name}")
             
             # Build variables for prompt
+            print(f"[ConversationManager] 🔍 PROMPT BUILD DEBUG: Building context string for prompt template...")
             context_str = ""
             if cleaned_context:
-                context_str = "\n".join([
-                    f"{turn['speaker']}: {turn['cleaned_text']}" 
-                    for turn in cleaned_context[-5:]  # Last 5 turns
-                ])
+                print(f"[ConversationManager] 📊 PROMPT BUILD DEBUG: Using {len(cleaned_context)} turns for context")
+                context_lines = []
+                for turn in cleaned_context[-5:]:  # Last 5 turns
+                    line = f"{turn['speaker']}: {turn['cleaned_text']}"
+                    context_lines.append(line)
+                    print(f"[ConversationManager]   → Context line: {line[:100]}...")
+                context_str = "\n".join(context_lines)
+                print(f"[ConversationManager] ✅ PROMPT BUILD DEBUG: Built context string ({len(context_str)} chars)")
+            else:
+                print(f"[ConversationManager] ❌ PROMPT BUILD DEBUG: No context available for prompt template!")
             
             variables = {
                 "conversation_context": context_str,
                 "raw_text": raw_text,
                 "cleaning_level": cleaning_decision
             }
+            
+            print(f"[ConversationManager] 📋 PROMPT BUILD DEBUG: Template variables:")
+            print(f"[ConversationManager]   → conversation_context: {len(context_str)} chars")
+            print(f"[ConversationManager]   → raw_text: '{raw_text[:50]}...'")
+            print(f"[ConversationManager]   → cleaning_level: {cleaning_decision}")
             
             # Render the prompt
             rendered_prompt = await self.prompt_service.render_prompt(db, active_template.id, variables)
@@ -427,20 +537,98 @@ class ConversationManager:
         print(f"[ConversationManager] 🤖 Applying {cleaning_decision} cleaning with Gemini...")
         if model_params:
             print(f"[ConversationManager] Using custom model params: {model_params}")
-        gemini_start = time.time()
-        cleaned_result = await self.gemini_service.clean_conversation_turn(
-            raw_text=raw_text,
-            speaker=speaker,
-            cleaned_context=cleaned_context,
-            cleaning_level=cleaning_decision,
-            model_params=model_params,
-            rendered_prompt=rendered_prompt_text  # Pass the prompt for storage
-        )
-        gemini_time = (time.time() - gemini_start) * 1000
-        timing_breakdown["gemini_api_ms"] = round(gemini_time, 2)
         
+        gemini_start = time.time()
+        try:
+            print(f"[ConversationManager] Calling Gemini service for {speaker} turn...")
+            
+            # Add progress monitoring for long API calls
+            async def progress_monitor():
+                await asyncio.sleep(10)  # Wait 10 seconds
+                if time.time() - gemini_start > 10:
+                    print(f"[ConversationManager] ⏳ Gemini call still running after 10s...")
+                await asyncio.sleep(20)  # Wait another 20 seconds  
+                if time.time() - gemini_start > 30:
+                    print(f"[ConversationManager] ⏳ Gemini call still running after 30s...")
+                await asyncio.sleep(30)  # Wait another 30 seconds
+                if time.time() - gemini_start > 60:
+                    print(f"[ConversationManager] ⚠️ Gemini call taking very long (60s+)...")
+            
+            # Start progress monitor
+            monitor_task = asyncio.create_task(progress_monitor())
+            
+            # Call Gemini service
+            cleaned_result = await self.gemini_service.clean_conversation_turn(
+                raw_text=raw_text,
+                speaker=speaker,
+                cleaned_context=cleaned_context,
+                cleaning_level=cleaning_decision,
+                model_params=model_params,
+                rendered_prompt=rendered_prompt_text  # Pass the prompt for storage
+            )
+            
+            # Cancel progress monitor since we're done
+            monitor_task.cancel()
+            
+            gemini_time = (time.time() - gemini_start) * 1000
+            timing_breakdown["gemini_api_ms"] = round(gemini_time, 2)
+            print(f"[ConversationManager] ✅ Gemini processing completed in {gemini_time:.2f}ms")
+            
+        except Exception as e:
+            gemini_time = (time.time() - gemini_start) * 1000
+            timing_breakdown["gemini_api_ms"] = round(gemini_time, 2)
+            
+            # Enhanced logging for timeouts
+            if "TimeoutError" in str(type(e).__name__):
+                print(f"[ConversationManager] 🚨 CRITICAL TIMEOUT: Gemini API timed out after {gemini_time:.2f}ms")
+                print(f"[ConversationManager] 🚨 TIMEOUT CONTEXT: {speaker} turn, {len(raw_text)} chars")
+                print(f"[ConversationManager] 🚨 TEXT PREVIEW: '{raw_text[:200]}...'")
+                logger.error(f"🚨 CRITICAL: Gemini timeout in conversation {conversation_id}")
+                logger.error(f"🚨 TIMEOUT TURN: {speaker} - {len(raw_text)} chars - {raw_text[:100]}...")
+            else:
+                print(f"[ConversationManager] ❌ Gemini processing failed after {gemini_time:.2f}ms: {e}")
+            
+            # Create fallback result when Gemini fails
+            error_type = "timeout_3s" if "TimeoutError" in str(type(e).__name__) else str(type(e).__name__)
+            cleaned_result = {
+                "cleaned_text": raw_text,  # Return original text as fallback
+                "metadata": {
+                    "confidence_score": "LOW",
+                    "cleaning_applied": False,
+                    "cleaning_level": "fallback",
+                    "corrections": [],
+                    "context_detected": f"error_fallback_{error_type}",
+                    "ai_model_used": f"fallback_due_to_{error_type}",
+                    "error_type": error_type,
+                    "timeout_occurred": "TimeoutError" in str(type(e).__name__)
+                },
+                "raw_response": None
+            }
+            print(f"[ConversationManager] Using fallback response for {speaker} turn due to {error_type}")
+        
+        # Calculate final timing before creating turn_data
         processing_time_ms = (time.time() - process_start) * 1000
         self.performance_metrics['user_processing_times'].append(processing_time_ms)
+        
+        # Complete timing breakdown BEFORE saving to database
+        # Calculate the sum of individual components to ensure math accuracy
+        component_sum = (
+            timing_breakdown.get("context_retrieval_ms", 0) +
+            timing_breakdown.get("prompt_preparation_ms", 0) +
+            timing_breakdown.get("gemini_api_ms", 0)
+        )
+        
+        # Add placeholders (will be filled after DB operations)
+        timing_breakdown["database_save_ms"] = 0  # Will be updated after DB save
+        timing_breakdown["prompt_logging_ms"] = 0  # Will be updated after prompt logging
+        timing_breakdown["total_ms"] = round(component_sum, 2)  # Use component sum, not wall clock time
+        
+        print(f"[ConversationManager] 🔍 TIMING FIX DEBUG: Final timing_breakdown before DB save: {timing_breakdown}")
+        print(f"[ConversationManager] 📊 TIMING FIX DEBUG: timing_breakdown keys: {list(timing_breakdown.keys())}")
+        print(f"[ConversationManager] 📊 TIMING FIX DEBUG: timing_breakdown length: {len(timing_breakdown)}")
+        
+        # Create a copy of timing_breakdown to avoid reference issues
+        timing_breakdown_copy = timing_breakdown.copy()
         
         turn_data = {
             'conversation_id': conversation_id,
@@ -454,8 +642,8 @@ class ConversationManager:
             'corrections': cleaned_result['metadata']['corrections'],
             'context_detected': cleaned_result['metadata']['context_detected'],
             'ai_model_used': cleaned_result['metadata']['ai_model_used'],
-            'timing_breakdown': timing_breakdown,
-            'gemini_prompt': rendered_prompt_text if rendered_prompt_text else None,
+            'timing_breakdown': timing_breakdown_copy,  # Use copy to avoid reference issues
+            'gemini_prompt': cleaned_result.get('prompt_used', None),
             'gemini_response': cleaned_result.get('raw_response', None)
         }
         
@@ -463,28 +651,80 @@ class ConversationManager:
         conversation_state.add_to_history(turn_data)
         
         # Save to database (with error handling for testing)
+        print(f"[ConversationManager] 🔍 DB SAVE DEBUG: Preparing to save turn to database...")
+        print(f"[ConversationManager] 📊 DB SAVE DEBUG: timing_breakdown data: {timing_breakdown}")
+        print(f"[ConversationManager] 🔍 DB SAVE DEBUG: timing_breakdown type: {type(timing_breakdown)}")
+        
         db_start = time.time()
         try:
+            print(f"[ConversationManager] 💾 DB SAVE DEBUG: Creating Turn object with turn_data...")
+            
+            # Debug database configuration
+            from app.core.config import settings
+            print(f"[ConversationManager] 🔍 DB CONFIG DEBUG: DATABASE_URL: {settings.DATABASE_URL[:60]}...{settings.DATABASE_URL[-20:]}")
+            print(f"[ConversationManager] 🔍 DB CONFIG DEBUG: Database session type: {type(db)}")
+            
+            # Debug the turn_data before saving
+            print(f"[ConversationManager] 📋 DB SAVE DEBUG: turn_data keys: {list(turn_data.keys())}")
+            print(f"[ConversationManager] 📊 DB SAVE DEBUG: turn_data.timing_breakdown: {turn_data.get('timing_breakdown', 'NOT_SET')}")
+            print(f"[ConversationManager] 🔍 DB SAVE DEBUG: timing_breakdown type: {type(turn_data.get('timing_breakdown'))}")
+            print(f"[ConversationManager] 📊 DB SAVE DEBUG: timing_breakdown contents: {turn_data.get('timing_breakdown')}")
+            
             db_turn = Turn(**turn_data)
+            
+            # Immediately check what got saved to the object
+            print(f"[ConversationManager] 🔍 DB SAVE DEBUG: IMMEDIATELY after Turn creation:")
+            print(f"[ConversationManager] 📊 DB SAVE DEBUG: db_turn.timing_breakdown: {db_turn.timing_breakdown}")
+            print(f"[ConversationManager] 📊 DB SAVE DEBUG: db_turn.timing_breakdown type: {type(db_turn.timing_breakdown)}")
+            print(f"[ConversationManager] 📊 DB SAVE DEBUG: db_turn.timing_breakdown keys: {list(db_turn.timing_breakdown.keys()) if db_turn.timing_breakdown else 'None'}")
+            
+            print(f"[ConversationManager] ✅ DB SAVE DEBUG: Turn object created successfully")
+            print(f"[ConversationManager] 📊 DB SAVE DEBUG: db_turn.timing_breakdown: {getattr(db_turn, 'timing_breakdown', 'NOT_SET')}")
+            
+            # Explicitly mark the timing_breakdown as modified for SQLAlchemy
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(db_turn, 'timing_breakdown')
+            
             db.add(db_turn)
             db.commit()
-            db.refresh(db_turn)
             
-            # Ensure created_at is available for response (for testing)
+            # Calculate database save time and update timing breakdown
+            db_time = (time.time() - db_start) * 1000
+            timing_breakdown["database_save_ms"] = round(db_time, 2)
+            
+            # Ensure created_at is available for response
             if not hasattr(db_turn, 'created_at') or db_turn.created_at is None:
                 from datetime import datetime
                 db_turn.created_at = datetime.utcnow()
+                
+            print(f"[ConversationManager] ⏱️ DB SAVE DEBUG: Database save took {db_time:.2f}ms")
+                
         except Exception as e:
+            print(f"[ConversationManager] ❌ CRITICAL DB ERROR: {e}")
+            print(f"[ConversationManager] ❌ CRITICAL ERROR TYPE: {type(e).__name__}")
+            print(f"[ConversationManager] ❌ CRITICAL ERROR DETAILS: {str(e)}")
+            
+            # Print the exact turn_data that's causing the issue
+            print(f"[ConversationManager] 🔍 PROBLEMATIC TURN DATA:")
+            for key, value in turn_data.items():
+                print(f"[ConversationManager]   {key}: {type(value)} = {str(value)[:100]}...")
+            
+            import traceback
+            print(f"[ConversationManager] ❌ FULL TRACEBACK:")
+            traceback.print_exc()
             print(f"[ConversationManager] ⚠️ Database error (continuing with mock): {e}")
             # Create mock turn for testing when database is unavailable
             from datetime import datetime
             import uuid
             db_turn = type('MockTurn', (), {
                 'id': uuid.uuid4(),
-                'created_at': datetime.utcnow()
+                'created_at': datetime.utcnow(),
+                'timing_breakdown': {},  # Empty timing for mock
+                'processing_time_ms': 0   # Zero processing time for mock
             })()
-        db_time = (time.time() - db_start) * 1000
-        timing_breakdown["database_save_ms"] = round(db_time, 2)
+            print(f"[ConversationManager] 🔧 DB SAVE DEBUG: Created mock turn for fallback")
+            db_time = (time.time() - db_start) * 1000
+            timing_breakdown["database_save_ms"] = round(db_time, 2)
         
         # Log prompt usage for analytics
         prompt_log_start = time.time()
@@ -507,10 +747,18 @@ class ConversationManager:
         prompt_log_time = (time.time() - prompt_log_start) * 1000
         timing_breakdown["prompt_logging_ms"] = round(prompt_log_time, 2)
         
-        # Calculate total time
-        timing_breakdown["total_ms"] = round(processing_time_ms, 2)
+        # Calculate accurate total from all components
+        final_total = (
+            timing_breakdown.get("context_retrieval_ms", 0) +
+            timing_breakdown.get("prompt_preparation_ms", 0) +
+            timing_breakdown.get("gemini_api_ms", 0) +
+            timing_breakdown.get("database_save_ms", 0) +
+            timing_breakdown.get("prompt_logging_ms", 0)
+        )
+        timing_breakdown["total_ms"] = round(final_total, 2)
 
         print(f"[ConversationManager] ✅ User turn processed in {processing_time_ms:.2f}ms")
+        print(f"[ConversationManager] 📊 Final timing breakdown: {timing_breakdown}")
         print(f"[ConversationManager] Cleaning applied: {turn_data['cleaning_applied']}")
         print(f"[ConversationManager] Confidence: {turn_data['confidence_score']}")
         print(f"[ConversationManager] Corrections made: {len(turn_data['corrections'])}")
@@ -530,11 +778,8 @@ class ConversationManager:
                 'corrections': turn_data['corrections'],
                 'context_detected': turn_data['context_detected'],
                 'ai_model_used': turn_data['ai_model_used'],
-                'gemini_query_details': {
-                    'prompt_sent': rendered_prompt_text if rendered_prompt_text else None,
-                    'response_received': cleaned_result.get('raw_response', None) if 'raw_response' in cleaned_result else None,
-                    'model_name': cleaned_result['metadata']['ai_model_used']
-                }
+                'gemini_prompt': turn_data.get('gemini_prompt', None),
+                'gemini_response': turn_data.get('gemini_response', None)
             },
             'created_at': db_turn.created_at.isoformat()
         }

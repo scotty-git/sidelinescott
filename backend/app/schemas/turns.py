@@ -28,9 +28,12 @@ class TurnMetadata(BaseModel):
     cleaning_applied: bool = Field(..., description="Whether any cleaning was applied")
     cleaning_level: str = Field(..., description="Cleaning level: none, light, full")
     processing_time_ms: float = Field(..., description="Processing time in milliseconds")
+    timing_breakdown: Optional[Dict[str, float]] = Field(default={}, description="Detailed timing breakdown by operation")
     corrections: List[CorrectionItem] = Field(default=[], description="List of corrections made")
     context_detected: Optional[str] = Field(None, description="Business context detected")
     ai_model_used: Optional[str] = Field(None, description="AI model used for processing")
+    gemini_prompt: Optional[str] = Field(None, description="Full prompt sent to Gemini API")
+    gemini_response: Optional[str] = Field(None, description="Raw response received from Gemini API")
 
 class TurnResponse(BaseModel):
     """Response schema for processed turn"""

@@ -22,6 +22,14 @@ interface CleanedTurn {
     confidence_score: string
     cleaning_applied: boolean
     cleaning_level: string
+    timing_breakdown?: {
+      context_retrieval_ms: number
+      prompt_preparation_ms: number
+      gemini_api_ms: number
+      database_save_ms: number
+      prompt_logging_ms: number
+      total_ms: number
+    }
     corrections: Array<{
       original: string
       corrected: string
@@ -31,6 +39,8 @@ interface CleanedTurn {
     context_detected: string
     processing_time_ms: number
     ai_model_used: string
+    gemini_prompt?: string
+    gemini_response?: string
   }
   created_at: string
 }
@@ -117,7 +127,7 @@ export function TranscriptCleanerPro() {
     return saved ? parseInt(saved) : 6
   })
   const [inspectorOpen, setInspectorOpen] = useState(false)
-  const [inspectedTurnId, setInspectedTurnId] = useState<string | null>(null)
+  const [inspectedTurn, setInspectedTurn] = useState<CleanedTurn | null>(null)
   
   // Save panel width to localStorage
   React.useEffect(() => {
@@ -1008,7 +1018,7 @@ export function TranscriptCleanerPro() {
                               {turn.speaker === 'User' && turn.metadata.ai_model_used && (
                                 <button
                                   onClick={() => {
-                                    setInspectedTurnId(turn.turn_id)
+                                    setInspectedTurn(turn)
                                     setInspectorOpen(true)
                                   }}
                                   style={{
@@ -1141,7 +1151,7 @@ export function TranscriptCleanerPro() {
                                   {turn.speaker === 'User' && turn.metadata.ai_model_used && (
                                     <button
                                       onClick={() => {
-                                        setInspectedTurnId(turn.turn_id)
+                                        setInspectedTurn(turn)
                                         setInspectorOpen(true)
                                       }}
                                       style={{
@@ -1673,15 +1683,17 @@ export function TranscriptCleanerPro() {
       </div>
       
       {/* Gemini Query Inspector Modal */}
-      {inspectorOpen && inspectedTurnId && conversationId && (
+      {inspectorOpen && inspectedTurn && conversationId && (
         <GeminiQueryInspector
           conversationId={conversationId}
-          turnId={inspectedTurnId}
+          turnId={inspectedTurn.turn_id}
+          turnData={inspectedTurn}
           isOpen={inspectorOpen}
           onClose={() => {
             setInspectorOpen(false)
-            setInspectedTurnId(null)
+            setInspectedTurn(null)
           }}
+          darkMode={darkMode}
         />
       )}
     </div>
