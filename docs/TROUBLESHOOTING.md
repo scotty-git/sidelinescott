@@ -39,10 +39,13 @@ lsof -ti:8000 | xargs kill -9
 ps aux | grep "vite\|uvicorn" | grep -v grep
 kill <process_id>
 
-# Restart services
-cd frontend && npm run dev
-cd backend && source venv/bin/activate && uvicorn app.main:app --reload
+# Restart services from project root
+cd /Users/calsmith/Documents/VS/sidelinescott
+cd frontend && npm run dev  # May auto-select port 6174
+cd ../backend && source venv/bin/activate && uvicorn app.main:app --reload
 ```
+
+**Note**: If frontend shows "Port 6173 is in use, trying another one..." and switches to 6174, this is normal behavior.
 
 #### Problem: Frontend not auto-reloading
 **Solution:**
@@ -225,22 +228,32 @@ curl -X POST http://127.0.0.1:8000/api/v1/auth/login \
 ```
 Network Error: Failed to fetch
 CORS error: Cross-Origin Request Blocked
+Connection refused
 ```
 
 **Solution:**
 ```bash
-# Check CORS configuration
+# First verify backend is actually running
+curl -s http://127.0.0.1:8000/health
+# If this fails with "Connection refused", backend isn't running
+
+# Check if processes are still alive after startup
+ps aux | grep "uvicorn" | grep -v grep
+lsof -i :8000  # Should show Python process listening
+
+# Check CORS configuration (if backend responds)
 curl -s -H "Origin: http://127.0.0.1:6173" \
      -H "Access-Control-Request-Method: GET" \
      -H "Access-Control-Request-Headers: Content-Type" \
      -X OPTIONS http://127.0.0.1:8000/health
 
-# Verify frontend API URL configuration
-cd frontend
-grep -r "127.0.0.1:8000" src/
+# Start backend in background to prevent exit on timeout
+cd /Users/calsmith/Documents/VS/sidelinescott/backend
+source venv/bin/activate
+nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload > ../backend.log 2>&1 &
 
-# Check if backend is running
-curl -s http://127.0.0.1:8000/health
+# Verify it started
+sleep 3 && curl -s http://127.0.0.1:8000/health
 ```
 
 #### Problem: TypeScript compilation errors
@@ -523,12 +536,78 @@ vm_stat  # macOS
 # Kill and restart development servers
 ```
 
+### 8. Server Process Management Issues
+
+#### Problem: "Servers show 'ready' but aren't accessible"
+```
+VITE v7.0.2  ready in 404 ms
+➜  Local:   http://127.0.0.1:6173/
+
+But: curl: (7) Failed to connect to 127.0.0.1 port 6173
+```
+
+**Root Cause**: Processes exit after CLI timeout, despite showing startup success.
+
+**Solution:**
+```bash
+# Use background processes and verify immediately
+cd /Users/calsmith/Documents/VS/sidelinescott
+
+# Frontend - start in background
+cd frontend && npm run dev > ../frontend.log 2>&1 &
+FRONTEND_PID=$!
+
+# Wait and test
+sleep 5
+curl -s http://127.0.0.1:6173 | head -1  # Should show HTML
+# If port 6173 fails, try 6174 (check frontend.log for actual port)
+
+# Backend - start in background  
+cd ../backend && source venv/bin/activate
+nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload > ../backend.log 2>&1 &
+BACKEND_PID=$!
+
+# Wait and test
+sleep 3
+curl -s http://127.0.0.1:8000/health  # Should show JSON
+
+# Check logs if issues
+tail ../frontend.log
+tail ../backend.log
+```
+
+#### Problem: "Directory navigation confusion"
+```
+no such file or directory: backend/venv/bin/activate
+Cannot find package.json
+```
+
+**Root Cause**: Wrong working directory - easy to get lost in nested `/frontend/backend/` paths.
+
+**Solution:**
+```bash
+# Always start from project root
+cd /Users/calsmith/Documents/VS/sidelinescott
+pwd  # Should show: /Users/calsmith/Documents/VS/sidelinescott
+
+# Verify structure
+ls -la  # Should show: frontend/, backend/, CLAUDE.md
+
+# Then navigate to subdirectories
+cd frontend   # For frontend work
+cd backend    # For backend work
+
+# Or use absolute paths
+cd /Users/calsmith/Documents/VS/sidelinescott/frontend
+cd /Users/calsmith/Documents/VS/sidelinescott/backend
+```
+
 ## 🔍 Debugging Strategies
 
 ### Backend Debugging
 ```bash
-# Enable debug logging
-cd backend
+# Enable debug logging (from project root)
+cd /Users/calsmith/Documents/VS/sidelinescott/backend
 source venv/bin/activate
 
 # Run with debug mode
@@ -612,10 +691,13 @@ grep -i error frontend.log
 ### Complete Health Check Script
 ```bash
 #!/bin/bash
-# Save as check-system.sh
+# Save as check-system.sh in project root
 
 echo "🔍 System Health Check"
 echo "====================="
+
+# Ensure we're in project root
+cd /Users/calsmith/Documents/VS/sidelinescott
 
 # Check Node.js
 echo -n "Node.js: "
@@ -629,17 +711,35 @@ python3 --version 2>/dev/null && echo "✅" || echo "❌ Not installed"
 echo -n "Git: "
 git --version 2>/dev/null && echo "✅" || echo "❌ Not installed"
 
-# Check services
-echo -n "Frontend (6173): "
-curl -s http://127.0.0.1:6173 >/dev/null && echo "✅ Running" || echo "❌ Not running"
+# Check services (try both common ports)
+echo -n "Frontend: "
+if curl -s http://127.0.0.1:6173 >/dev/null 2>&1; then
+    echo "✅ Running on 6173"
+elif curl -s http://127.0.0.1:6174 >/dev/null 2>&1; then
+    echo "✅ Running on 6174"
+else
+    echo "❌ Not running (tried 6173, 6174)"
+fi
 
 echo -n "Backend (8000): "
 curl -s http://127.0.0.1:8000/health >/dev/null && echo "✅ Running" || echo "❌ Not running"
+
+# Check processes
+echo -n "Frontend process: "
+ps aux | grep -v grep | grep "vite" >/dev/null && echo "✅ Active" || echo "❌ Not found"
+
+echo -n "Backend process: "
+ps aux | grep -v grep | grep "uvicorn" >/dev/null && echo "✅ Active" || echo "❌ Not found"
 
 # Check database
 echo -n "Database: "
 cd backend && source venv/bin/activate 2>/dev/null && python3 -c "from app.core.database import get_db; print('✅ Connected')" 2>/dev/null || echo "❌ Not connected"
 
+echo ""
+echo "📋 Quick Fix Commands:"
+echo "Kill all servers: lsof -ti:6173 | xargs kill -9; lsof -ti:8000 | xargs kill -9"
+echo "Start frontend: cd frontend && npm run dev &"
+echo "Start backend: cd backend && source venv/bin/activate && uvicorn app.main:app --reload &"
 echo ""
 echo "Run this script with: bash check-system.sh"
 ```
@@ -680,12 +780,16 @@ When reporting issues, include:
 ### Emergency Recovery
 ```bash
 # Nuclear option - complete reset
-cd sidelinescott
+cd /Users/calsmith/Documents/VS/sidelinescott  # Always start from project root
 
 # Backup any important changes
 git status
 git add .
 git commit -m "Backup before reset"
+
+# Kill any running processes
+lsof -ti:6173 | xargs kill -9 2>/dev/null
+lsof -ti:8000 | xargs kill -9 2>/dev/null
 
 # Reset frontend
 cd frontend
@@ -698,11 +802,17 @@ rm -rf venv
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-# Reinstall all dependencies
+pip install fastapi uvicorn sqlalchemy alembic asyncpg supabase
+pip install python-multipart python-jose[cryptography] pytest
 
-# Restart services
-cd ../frontend && npm run dev &
-cd ../backend && source venv/bin/activate && uvicorn app.main:app --reload &
+# Restart services in background
+cd ../frontend && nohup npm run dev > ../frontend.log 2>&1 &
+cd ../backend && source venv/bin/activate && nohup uvicorn app.main:app --reload > ../backend.log 2>&1 &
+
+# Wait and verify
+sleep 5
+echo "Frontend: $(curl -s http://127.0.0.1:6173 >/dev/null && echo 'OK' || curl -s http://127.0.0.1:6174 >/dev/null && echo 'OK on 6174' || echo 'Failed')"
+echo "Backend: $(curl -s http://127.0.0.1:8000/health >/dev/null && echo 'OK' || echo 'Failed')"
 ```
 
 ## 🎯 Production System Troubleshooting Summary ✅
@@ -723,6 +833,27 @@ cd ../backend && source venv/bin/activate && uvicorn app.main:app --reload &
 ---
 
 **This troubleshooting guide documents complete production system support with comprehensive error handling and recovery procedures. All scenarios have been tested and validated with the fully operational system.**
+
+### Quick Reference: Common Server Startup Issues
+
+| Issue | Symptom | Solution |
+|-------|---------|----------|
+| **Wrong Directory** | `no such file or directory: venv/bin/activate` | Always start from `/Users/calsmith/Documents/VS/sidelinescott` |
+| **Process Exits** | Startup logs show "ready" but `curl` fails | Use background processes (`&`) and verify with `curl` |
+| **Port Conflicts** | `Port 6173 is in use, trying another one...` | Normal behavior - use the new port shown in output |
+| **Connection Refused** | `curl: (7) Failed to connect` | Process isn't actually running - check with `ps aux \| grep vite` |
+| **Virtual Env Missing** | `No such file or directory: venv/bin/activate` | Wrong backend directory - use absolute path |
+
+**Server Management Commands:**
+```bash
+# Quick restart (from project root)
+cd /Users/calsmith/Documents/VS/sidelinescott
+lsof -ti:6173 | xargs kill -9; lsof -ti:8000 | xargs kill -9  # Kill existing
+cd frontend && npm run dev &                                   # Start frontend
+cd ../backend && source venv/bin/activate && uvicorn app.main:app --reload &  # Start backend
+sleep 3 && curl -s http://127.0.0.1:8000/health               # Verify backend
+curl -s http://127.0.0.1:6173 >/dev/null || curl -s http://127.0.0.1:6174 >/dev/null  # Verify frontend
+```
 
 ---
 

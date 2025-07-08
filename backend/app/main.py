@@ -1,10 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from app.api.v1.health import router as health_router
-from app.api.v1.conversations import router as conversations_router
-from app.api.v1.turns import router as turns_router
-from app.api.v1 import auth
+from app.api.v1 import api_router
 
 app = FastAPI(
     title="Lumen Transcript Cleaner API",
@@ -22,11 +19,8 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-# Include routers
-app.include_router(health_router, tags=["health"])
-app.include_router(auth.router, prefix="/api/v1/auth", tags=["authentication"])
-app.include_router(conversations_router, prefix="/api/v1/conversations", tags=["conversations"])
-app.include_router(turns_router, prefix="/api/v1/conversations", tags=["turns"])
+# Include the main API router with all sub-routers
+app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/")
 async def root():

@@ -113,7 +113,7 @@ export function TranscriptCleanerPro() {
   const [fontSize, setFontSize] = useState<'small' | 'medium' | 'large'>('medium')
   const [leftPanelWidth, setLeftPanelWidth] = useState(() => {
     const saved = localStorage.getItem('transcript-cleaner-panel-width')
-    return saved ? parseInt(saved) : 20
+    return saved ? parseInt(saved) : 6
   })
   
   // Save panel width to localStorage
@@ -457,6 +457,31 @@ export function TranscriptCleanerPro() {
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '24px', fontSize: '14px' }}>
+              <a
+                href="/prompt-engineering"
+                style={{
+                  padding: '8px 16px',
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: '6px',
+                  backgroundColor: theme.bgSecondary,
+                  color: theme.text,
+                  textDecoration: 'none',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  transition: 'all 0.15s ease'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = theme.bgTertiary
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = theme.bgSecondary
+                }}
+              >
+                🔧 Prompt Engineering
+              </a>
               <button
                 onClick={() => setDarkMode(!darkMode)}
                 style={{
@@ -571,7 +596,7 @@ export function TranscriptCleanerPro() {
             <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>Paste your conversation transcript here</p>
           </div>
           
-          <div style={{ flex: 1, padding: '24px' }}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '12px' }}>
             <textarea
               value={rawTranscript}
               onChange={(e) => setRawTranscript(e.target.value)}
@@ -588,14 +613,15 @@ export function TranscriptCleanerPro() {
                 width: '100%',
                 height: '100%',
                 resize: 'none',
-                border: `1px solid ${theme.border}`,
-                borderRadius: '6px',
-                padding: '12px',
+                border: 'none',
+                borderRadius: '0px',
+                padding: '16px',
                 fontSize: '14px',
                 fontFamily: 'monospace',
                 outline: 'none',
-                backgroundColor: theme.bgSecondary,
-                color: theme.text
+                backgroundColor: 'transparent',
+                color: theme.text,
+                cursor: 'text'
               }}
             />
           </div>

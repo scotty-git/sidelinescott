@@ -16,6 +16,7 @@ from app.models.conversation import Conversation
 from app.models.turn import Turn
 from app.core.database import get_db
 from app.services.gemini_service import GeminiService
+from app.services.prompt_engineering_service import PromptEngineeringService
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ class ConversationManager:
     def __init__(self):
         self.active_conversations: Dict[UUID, ConversationState] = {}
         self.gemini_service = GeminiService()
+        self.prompt_service = PromptEngineeringService()
         self.performance_metrics: Dict[str, List[float]] = {
             'lumen_processing_times': [],
             'user_processing_times': [],
@@ -79,6 +81,7 @@ class ConversationManager:
         
         print("[ConversationManager] Initialized with stateful conversation tracking and Gemini 2.5 Flash")
         print("[ConversationManager] Performance metrics tracking enabled")
+        print("[ConversationManager] Prompt Engineering Service integrated")
     
     def get_conversation_state(self, conversation_id: UUID, sliding_window_size: int = 10) -> ConversationState:
         """Get or create conversation state for stateful processing"""
@@ -372,6 +375,36 @@ class ConversationManager:
             cleaning_decision = cleaning_level
             print(f"[ConversationManager] Using provided cleaning level: {cleaning_decision}")
         
+        # Get active prompt template for processing (or use default)
+        try:
+            active_template = await self.prompt_service.get_or_create_default_template(db)
+            print(f"[ConversationManager] Using prompt template: {active_template.name}")
+            
+            # Build variables for prompt
+            context_str = ""
+            if cleaned_context:
+                context_str = "\n".join([
+                    f"{turn['speaker']}: {turn['cleaned_text']}" 
+                    for turn in cleaned_context[-5:]  # Last 5 turns
+                ])
+            
+            variables = {
+                "conversation_context": context_str,
+                "raw_text": raw_text,
+                "cleaning_level": cleaning_decision
+            }
+            
+            # Render the prompt
+            rendered_prompt = await self.prompt_service.render_prompt(db, active_template.id, variables)
+            if rendered_prompt:
+                print(f"[ConversationManager] Rendered prompt with {len(variables)} variables")
+                print(f"[ConversationManager] Estimated tokens: {rendered_prompt.token_count}")
+            
+        except Exception as e:
+            print(f"[ConversationManager] ⚠️ Prompt service error: {e}")
+            rendered_prompt = None
+            active_template = None
+
         # Use Gemini 2.5 Flash for actual cleaning
         print(f"[ConversationManager] 🤖 Applying {cleaning_decision} cleaning with Gemini...")
         if model_params:
@@ -425,6 +458,24 @@ class ConversationManager:
                 'created_at': datetime.utcnow()
             })()
         
+        # Log prompt usage for analytics
+        if active_template and rendered_prompt:
+            try:
+                await self.prompt_service.log_prompt_usage(
+                    db=db,
+                    template_id=active_template.id,
+                    rendered_prompt=rendered_prompt.rendered_prompt,
+                    variables=variables,
+                    turn_id=db_turn.id,
+                    conversation_id=conversation_id,
+                    processing_time_ms=processing_time_ms,
+                    confidence_score=turn_data['confidence_score'],
+                    corrections_count=len(turn_data['corrections'])
+                )
+                print(f"[ConversationManager] ✅ Logged prompt usage for analytics")
+            except Exception as e:
+                print(f"[ConversationManager] ⚠️ Failed to log prompt usage: {e}")
+
         print(f"[ConversationManager] ✅ User turn processed in {processing_time_ms:.2f}ms")
         print(f"[ConversationManager] Cleaning applied: {turn_data['cleaning_applied']}")
         print(f"[ConversationManager] Confidence: {turn_data['confidence_score']}")

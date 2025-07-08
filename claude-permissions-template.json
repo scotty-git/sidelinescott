@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "disableBypassPermissionsMode": false,
+    "allow": [
+      "*"
+    ],
+    "deny": [
+      "mcp__supabase__apply_migration",
+      "mcp__supabase__execute_sql",
+      "mcp__supabase__create_branch",
+      "mcp__supabase__delete_branch",
+      "mcp__supabase__merge_branch",
+      "mcp__supabase__reset_branch",
+      "mcp__supabase__rebase_branch",
+      "mcp__supabase__deploy_edge_function"
+    ],
+    "auto_approve": []
+  }
+}

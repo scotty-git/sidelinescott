@@ -313,29 +313,38 @@ kill $BACKEND_PID
 
 ### Step 1: Start All Services
 
+**CRITICAL**: Always start from the project root directory (`/Users/calsmith/Documents/VS/sidelinescott`) to avoid path confusion.
+
 ```bash
-# Terminal 1 - Backend (from backend directory)
+# Terminal 1 - Backend (from project root)
+cd /Users/calsmith/Documents/VS/sidelinescott
 cd backend
 source venv/bin/activate
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ```bash
-# Terminal 2 - Frontend (from frontend directory)  
+# Terminal 2 - Frontend (from project root)  
+cd /Users/calsmith/Documents/VS/sidelinescott
 cd frontend
 npm run dev
 ```
 
+**Note**: Frontend may auto-select a different port (e.g., 6174) if 6173 is in use. This is normal.
+
 ### Step 2: Verify System Integration
 
 ```bash
-# Terminal 3 - Integration tests
+# Terminal 3 - Integration tests (from project root)
+cd /Users/calsmith/Documents/VS/sidelinescott
+
 # Test backend health
 curl -s http://127.0.0.1:8000/health | grep '"status"'
 # Expected output: "status": "healthy"
 
-# Test frontend loading
-curl -s http://127.0.0.1:6173 | grep -o '<title>.*</title>'
+# Test frontend loading (check actual port from startup logs)
+curl -s http://127.0.0.1:6173 | grep -o '<title>.*</title>' || \
+curl -s http://127.0.0.1:6174 | grep -o '<title>.*</title>'
 # Expected output: <title>Vite + React + TS</title>
 
 # Test API documentation accessibility
@@ -352,18 +361,23 @@ curl -s -H "Origin: http://127.0.0.1:6173" \
 
 ### Step 3: Verify Live URLs
 
+**Important**: Check the actual port numbers from your terminal output, as ports may auto-increment if in use.
+
 Open these URLs in your browser:
 
-1. **Frontend Application**: http://127.0.0.1:6173
+1. **Frontend Application**: http://127.0.0.1:6173 (or 6174 if port switched)
    - Should show: React application with modern UI
    - Console should be error-free
+   - **Troubleshooting**: If not loading, check terminal for actual port number
 
 2. **Backend API Documentation**: http://127.0.0.1:8000/docs  
    - Should show: Interactive OpenAPI documentation
    - Try the `/health` endpoint to verify it's working
+   - **Troubleshooting**: If not loading, verify backend started without errors
 
 3. **Direct Health Check**: http://127.0.0.1:8000/health
    - Should show: JSON response with system status
+   - **Troubleshooting**: If connection refused, check if backend process is still running
 
 ## 🧪 Comprehensive Testing
 
@@ -395,20 +409,22 @@ echo "✅ Integration test complete"
 ### Daily Development Commands
 
 ```bash
-# Start development (run in separate terminals)
+# Start development (run in separate terminals from project root)
 
 # Terminal 1 - Backend
-cd backend
+cd /Users/calsmith/Documents/VS/sidelinescott/backend
 source venv/bin/activate  
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 # Terminal 2 - Frontend
-cd frontend
+cd /Users/calsmith/Documents/VS/sidelinescott/frontend
 npm run dev
+# Note: Check terminal output for actual port (may be 6174 instead of 6173)
 
 # Terminal 3 - Testing/Development
+cd /Users/calsmith/Documents/VS/sidelinescott/frontend
 npm run test                                    # Frontend tests
-cd ../backend && python3 -m pytest tests/ -v  # Backend tests
+cd ../backend && source venv/bin/activate && python3 -m pytest tests/ -v  # Backend tests
 
 # CleanerContext Testing (Week 2)
 python3 -m pytest tests/test_conversation_manager.py -v  # CleanerContext tests
@@ -684,12 +700,14 @@ curl http://127.0.0.1:8000/health             # Backend health
 curl http://127.0.0.1:6173                    # Frontend health
 ```
 
-**Live URLs:**
-- Frontend: http://127.0.0.1:6173
-- Week 3 Real-time Testing: http://127.0.0.1:6173/week3
-- CleanerContext Testing: http://127.0.0.1:6173/test-cleaner-context
+**Live URLs** (check terminal output for actual ports):
+- Frontend: http://127.0.0.1:6173 (or 6174)
+- Week 3 Real-time Testing: http://127.0.0.1:6173/week3 (or 6174)
+- CleanerContext Testing: http://127.0.0.1:6173/test-cleaner-context (or 6174)
 - Backend API: http://127.0.0.1:8000
 - API Documentation: http://127.0.0.1:8000/docs
+
+**Port Auto-Detection**: If you see "Port 6173 is in use, trying another one..." in the frontend startup, use the new port number shown in the output.
 
 ---
 
