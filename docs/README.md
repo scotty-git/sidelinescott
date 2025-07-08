@@ -1,11 +1,13 @@
-# Lumen Transcript Cleaner - Production-Ready System ✅
+# Lumen Transcript Cleaner - Stable Production System v1.0.0 ✅
 
 **Revolutionary AI-powered conversation cleaning with stateful CleanerContext intelligence**
 
 [![System Status](https://img.shields.io/badge/System-Fully%20Operational-brightgreen)](#)
 [![Tests](https://img.shields.io/badge/Tests-52%20Passing-brightgreen)](#)
 [![Performance](https://img.shields.io/badge/Performance-40%25%20Above%20Targets-brightgreen)](#)
-[![Production Ready](https://img.shields.io/badge/Production-Ready-brightgreen)](#)
+[![Production Ready](https://img.shields.io/badge/Production-Ready%20v1.0.0-brightgreen)](#)
+
+*Last Updated: January 7, 2025*
 
 ---
 
@@ -39,12 +41,19 @@ Transform messy, error-filled transcripts into clean, professional conversations
 - **Dark/Light Themes**: Complete theme system with instant switching
 - **Error Handling**: Graceful degradation with clear user guidance
 
-### 🔧 Prompt Engineering Dashboard (NEW!)
+### 🔧 Prompt Engineering Dashboard
 - **Turn Inspection**: Click any turn ID to see exact prompt and response
 - **Master Editor**: Monaco editor for live prompt template editing
 - **Version Control**: Save and manage multiple prompt variants
 - **A/B Testing**: Framework for systematic prompt optimization
 - **Analytics**: Track prompt performance and usage patterns
+
+### 🔍 Gemini Query Inspector
+- **Full Transparency**: View exact prompts sent to Gemini AI
+- **Response Analysis**: See raw JSON responses from Gemini
+- **Timing Breakdown**: Detailed latency analysis for each operation
+- **Confidence Tracking**: Visual indicators for cleaning confidence
+- **Correction History**: Track all text modifications made
 
 ### 🔧 Advanced Developer Tools
 - **Comprehensive Logging**: Every operation logged with performance metrics
