@@ -25,6 +25,7 @@ export class APIClient {
 
     if (this.authToken) {
       headers.Authorization = `Bearer ${this.authToken}`
+      console.log('API request with auth token:', endpoint, `Bearer ${this.authToken.substring(0, 50)}...`)
     }
 
     const config: RequestInit = {

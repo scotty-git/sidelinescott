@@ -22,14 +22,14 @@ router = APIRouter()
 @router.post("", response_model=ConversationResponse)
 async def create_conversation(
     conversation_data: CreateConversationRequest,
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Create a new conversation."""
     try:
-        # Use a test user ID for development
-        test_user_id = "550e8400-e29b-41d4-a716-446655440000"
+        # Use authenticated user ID
         conversation = Conversation(
-            user_id=test_user_id,
+            user_id=current_user["id"],
             name=conversation_data.name,
             description=conversation_data.description,
             status="active",

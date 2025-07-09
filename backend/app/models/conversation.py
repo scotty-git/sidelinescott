@@ -9,7 +9,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), nullable=False)  # Supabase Auth user ID (no FK constraint)
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     status = Column(String, default="active")  # active, paused, completed
@@ -18,6 +18,5 @@ class Conversation(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # Relationships
-    user = relationship("User")
+    # Relationships (removed User relationship since we use Supabase Auth)
     turns = relationship("Turn", back_populates="conversation", cascade="all, delete-orphan")

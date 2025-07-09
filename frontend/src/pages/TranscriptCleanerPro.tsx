@@ -66,7 +66,12 @@ interface ProcessingStats {
   avg_turn_length_chars: number
 }
 
-export function TranscriptCleanerPro() {
+interface TranscriptCleanerProProps {
+  user?: { id: string; email: string; created_at: string } | null
+  logout?: () => Promise<void>
+}
+
+export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps = {}) {
   // Theme helper functions
   const getFontSize = () => {
     switch (fontSize) {
@@ -128,6 +133,7 @@ export function TranscriptCleanerPro() {
   })
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const [inspectedTurn, setInspectedTurn] = useState<CleanedTurn | null>(null)
+  const [showProfileDropdown, setShowProfileDropdown] = useState(false)
   
   // Save panel width to localStorage
   React.useEffect(() => {
@@ -145,6 +151,25 @@ export function TranscriptCleanerPro() {
   React.useEffect(() => {
     addDetailedLog(`Theme switched to ${darkMode ? 'dark' : 'light'} mode`)
   }, [darkMode])
+
+  // Close profile dropdown when clicking outside
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element
+      // Don't close if clicking on the profile button or dropdown
+      if (target.closest('[data-profile-dropdown]')) {
+        return
+      }
+      if (showProfileDropdown) {
+        setShowProfileDropdown(false)
+      }
+    }
+
+    if (showProfileDropdown) {
+      document.addEventListener('click', handleClickOutside)
+      return () => document.removeEventListener('click', handleClickOutside)
+    }
+  }, [showProfileDropdown])
   
   // Settings with local storage persistence
   const [settings, setSettings] = useState(() => {
@@ -519,6 +544,106 @@ export function TranscriptCleanerPro() {
               <div style={{ color: theme.textMuted }}>
                 <span style={{ fontWeight: '500' }}>{averageLatency}ms</span> avg latency
               </div>
+
+              {/* Profile Dropdown */}
+              {user && (
+                <div style={{ position: 'relative' }} data-profile-dropdown>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      console.log('Profile button clicked, current state:', showProfileDropdown)
+                      setShowProfileDropdown(!showProfileDropdown)
+                    }}
+                    style={{
+                      width: '36px',
+                      height: '36px',
+                      minWidth: '36px',
+                      minHeight: '36px',
+                      borderRadius: '50%',
+                      backgroundColor: theme.bgSecondary,
+                      border: `1px solid ${theme.border}`,
+                      color: theme.text,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '16px',
+                      fontWeight: '500',
+                      transition: 'all 0.15s ease',
+                      padding: '0',
+                      flexShrink: 0
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = theme.bgTertiary
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = theme.bgSecondary
+                    }}
+                  >
+                    👤
+                  </button>
+
+                  {showProfileDropdown && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: '40px',
+                        right: '0',
+                        backgroundColor: darkMode ? '#374151' : '#ffffff',
+                        border: `2px solid ${darkMode ? '#4b5563' : '#e5e7eb'}`,
+                        borderRadius: '8px',
+                        boxShadow: darkMode
+                          ? '0 8px 25px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.3)'
+                          : '0 8px 25px rgba(0, 0, 0, 0.15), 0 4px 12px rgba(0, 0, 0, 0.1)',
+                        minWidth: '200px',
+                        zIndex: 1000,
+                        overflow: 'hidden'
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div style={{ padding: '12px 16px', borderBottom: `1px solid ${theme.border}` }}>
+                        <div style={{ fontSize: '14px', fontWeight: '500', color: theme.text }}>
+                          {user.email}
+                        </div>
+                        <div style={{ fontSize: '12px', color: theme.textMuted, marginTop: '2px' }}>
+                          Signed in
+                        </div>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          setShowProfileDropdown(false)
+                          try {
+                            if (logout) await logout()
+                          } catch (error) {
+                            console.error('Logout failed:', error)
+                            localStorage.clear()
+                            window.location.reload()
+                          }
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '12px 16px',
+                          border: 'none',
+                          backgroundColor: 'transparent',
+                          color: theme.text,
+                          cursor: 'pointer',
+                          fontSize: '14px',
+                          textAlign: 'left',
+                          transition: 'background-color 0.15s ease'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.backgroundColor = theme.bgSecondary
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = 'transparent'
+                        }}
+                      >
+                        Sign out
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>

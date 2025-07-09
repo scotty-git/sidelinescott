@@ -10,7 +10,7 @@ async def login(request: LoginRequest):
     """User login endpoint with Supabase authentication."""
     try:
         auth_result = await auth_manager.authenticate_with_supabase(
-            request.email, 
+            request.email,
             request.password
         )
         return LoginResponse(**auth_result)

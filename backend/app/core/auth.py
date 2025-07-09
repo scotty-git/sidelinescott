@@ -16,17 +16,25 @@ class AuthManager:
     def __init__(self):
         self.jwt_secret = settings.JWT_SECRET_KEY
         self.algorithm = settings.JWT_ALGORITHM
-        self.supabase_jwt_secret = settings.JWT_SECRET_KEY  # Supabase uses same secret
+        # Use Supabase's JWT secret for token validation
+        self.supabase_jwt_secret = settings.SUPABASE_JWT_SECRET
     
     def verify_supabase_token(self, token: str) -> Optional[Dict[str, Any]]:
         """Verify Supabase JWT token."""
         try:
-            payload = jwt.decode(token, self.supabase_jwt_secret, algorithms=[self.algorithm])
+            # Supabase uses HS256 algorithm, but let's be explicit
+            payload = jwt.decode(
+                token, 
+                self.supabase_jwt_secret, 
+                algorithms=["HS256"],
+                options={"verify_aud": False}  # Disable audience verification for now
+            )
             user_id = payload.get("sub")
             if user_id is None:
                 return None
             return payload
-        except JWTError:
+        except JWTError as e:
+            print(f"JWT decode error: {e}")
             return None
     
     def create_access_token(self, data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
@@ -57,7 +65,8 @@ class AuthManager:
                     "user": {
                         "id": auth_response.user.id,
                         "email": auth_response.user.email,
-                        "created_at": auth_response.user.created_at
+                        "created_at": auth_response.user.created_at.isoformat() if auth_response.user.created_at else "",
+                        "is_active": True  # Supabase users are active by default
                     },
                     "expires_in": 3600
                 }
@@ -74,18 +83,25 @@ class AuthManager:
     
     async def get_current_user(self, token: str) -> Dict[str, Any]:
         """Get current user from token."""
+        print(f"Verifying token: {token[:50]}...")
         payload = self.verify_supabase_token(token)
+        print(f"Token payload: {payload}")
+        
         if payload:
             user_id = payload.get("sub")
             email = payload.get("email")
+            
+            print(f"User ID: {user_id}, Email: {email}")
             
             if user_id and email:
                 return {
                     "id": user_id,
                     "email": email,
-                    "created_at": payload.get("created_at", "")
+                    "created_at": payload.get("created_at", ""),
+                    "is_active": True
                 }
         
+        print("Token validation failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",

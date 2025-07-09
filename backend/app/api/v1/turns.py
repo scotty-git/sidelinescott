@@ -28,6 +28,7 @@ conversation_manager = ConversationManager()
 async def create_turn(
     conversation_id: UUID,
     turn_data: TurnCreateRequest,
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> TurnResponse:
     """
@@ -42,30 +43,19 @@ async def create_turn(
     print(f"[TurnsAPI] Conversation ID: {conversation_id}")
     print(f"[TurnsAPI] Speaker: {turn_data.speaker}")
     print(f"[TurnsAPI] Raw text length: {len(turn_data.raw_text)} chars")
-    print(f"[TurnsAPI] User: test")
+    print(f"[TurnsAPI] User: {current_user['email']}")
     
-    # Verify conversation exists (bypass user access for testing)
-    try:
-        conversation = db.query(Conversation).filter(
-            Conversation.id == conversation_id
-        ).first()
-        
-        if not conversation:
-            print(f"[TurnsAPI] ❌ Conversation not found, creating mock conversation")
-            # Create mock conversation for testing
-            conversation = type('MockConversation', (), {
-                'id': conversation_id,
-                'name': 'Test Conversation',
-                'turns_count': 0
-            })()
-    except Exception as e:
-        print(f"[TurnsAPI] ⚠️ Database error, using mock conversation: {e}")
-        # Create mock conversation for testing
-        conversation = type('MockConversation', (), {
-            'id': conversation_id,
-            'name': 'Test Conversation',
-            'turns_count': 0
-        })()
+    # Verify conversation exists and belongs to authenticated user
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == current_user["id"]
+    ).first()
+    
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found or access denied"
+        )
     
     print(f"[TurnsAPI] ✅ Conversation verified: '{conversation.name}'")
     print(f"[TurnsAPI] Current turns count: {conversation.turns_count}")
@@ -305,6 +295,7 @@ async def get_performance_metrics(
 async def create_turn_realtime(
     conversation_id: UUID,
     turn_data: TurnCreateRequest,
+    current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
