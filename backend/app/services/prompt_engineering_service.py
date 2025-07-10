@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 
 from app.models.prompt_template import PromptTemplate, PromptUsage, ABTest, ABTestResult
+from app.models.test_conversation import TestConversation
 from app.schemas.prompt import (
     PromptTemplate as PromptTemplateSchema,
     RenderedPrompt,
@@ -436,3 +437,70 @@ IMPORTANT:
             },
             model_performance_by_prompt={}  # Would populate with template performance data
         )
+
+    # Test Conversation Management Methods
+    
+    async def create_test_conversation(self, db: Session, user_id: UUID, name: str, 
+                                     description: Optional[str] = None,
+                                     variables: Dict[str, Any] = None) -> TestConversation:
+        """Create a new test conversation"""
+        if variables is None:
+            variables = {}
+            
+        test_conversation = TestConversation(
+            user_id=user_id,
+            name=name,
+            description=description,
+            variables=variables
+        )
+        
+        db.add(test_conversation)
+        db.commit()
+        db.refresh(test_conversation)
+        
+        logger.info(f"Created test conversation: {name} ({test_conversation.id})")
+        return test_conversation
+
+    async def get_test_conversations(self, db: Session, user_id: Optional[UUID] = None) -> List[TestConversation]:
+        """Get all test conversations, optionally filtered by user"""
+        query = db.query(TestConversation)
+        
+        if user_id:
+            query = query.filter(TestConversation.user_id == user_id)
+        
+        return query.order_by(desc(TestConversation.updated_at)).all()
+
+    async def get_test_conversation(self, db: Session, test_conversation_id: UUID) -> Optional[TestConversation]:
+        """Get a specific test conversation by ID"""
+        return db.query(TestConversation).filter(TestConversation.id == test_conversation_id).first()
+
+    async def update_test_conversation(self, db: Session, test_conversation_id: UUID, 
+                                     **updates) -> Optional[TestConversation]:
+        """Update a test conversation with the provided fields"""
+        test_conversation = db.query(TestConversation).filter(TestConversation.id == test_conversation_id).first()
+        
+        if not test_conversation:
+            return None
+        
+        for key, value in updates.items():
+            if hasattr(test_conversation, key):
+                setattr(test_conversation, key, value)
+        
+        db.commit()
+        db.refresh(test_conversation)
+        
+        logger.info(f"Updated test conversation: {test_conversation.id}")
+        return test_conversation
+
+    async def delete_test_conversation(self, db: Session, test_conversation_id: UUID) -> bool:
+        """Delete a test conversation"""
+        test_conversation = db.query(TestConversation).filter(TestConversation.id == test_conversation_id).first()
+        
+        if not test_conversation:
+            return False
+        
+        db.delete(test_conversation)
+        db.commit()
+        
+        logger.info(f"Deleted test conversation: {test_conversation_id}")
+        return True

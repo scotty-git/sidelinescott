@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react'
+import React, { useState } from 'react'
 import { apiClient } from '../lib/api'
 import { GeminiQueryInspector } from '../components/GeminiQueryInspector'
 
@@ -112,10 +112,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   }
   
   // State declarations
-  const [rawTranscript, setRawTranscript] = useState('')
   const [parsedTurns, setParsedTurns] = useState<ParsedTurn[]>([])
   const [cleanedTurns, setCleanedTurns] = useState<CleanedTurn[]>([])
-  const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null)
+  const [processingStats] = useState<ProcessingStats | null>(null)
   const [apiCalls, setApiCalls] = useState<APICall[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
   const [currentTurnIndex, setCurrentTurnIndex] = useState(0)
@@ -134,6 +133,14 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const [inspectedTurn, setInspectedTurn] = useState<CleanedTurn | null>(null)
   const [showProfileDropdown, setShowProfileDropdown] = useState(false)
+  
+  // Conversations modal state
+  const [showConversationsModal, setShowConversationsModal] = useState(false)
+  const [conversations, setConversations] = useState<any[]>([])
+  const [loadingConversations, setLoadingConversations] = useState(false)
+  const [newConversationName, setNewConversationName] = useState('')
+  const [newConversationDescription, setNewConversationDescription] = useState('')
+  const [newConversationText, setNewConversationText] = useState('')
   
   // Save panel width to localStorage
   React.useEffect(() => {
@@ -213,7 +220,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
 
   const apiCallWithLogging = async (method: string, endpoint: string, data?: any) => {
     const startTime = Date.now()
-    const callId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    const callId = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
     
     try {
       let response
@@ -256,32 +263,6 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     }
   }
 
-  const parseTranscript = async () => {
-    if (!rawTranscript.trim()) return
-
-    addDetailedLog(`Starting transcript parsing - ${rawTranscript.length} characters`)
-    try {
-      setIsProcessing(true)
-      const response = await apiCallWithLogging('POST', '/api/v1/conversations/parse-transcript', {
-        raw_transcript: rawTranscript
-      })
-
-      setParsedTurns(response.parsed_turns)
-      setProcessingStats(response.stats)
-      addDetailedLog(`✅ Transcript parsed successfully: ${response.parsed_turns.length} turns`)
-      
-      if (settings.autoStart) {
-        addDetailedLog('Auto-start enabled, beginning cleaning in 500ms')
-        setTimeout(() => startCleaning(), 500)
-      }
-    } catch (error) {
-      addDetailedLog(`❌ Parse error: ${error}`)
-      console.error('Parse error:', error)
-    } finally {
-      setIsProcessing(false)
-      addDetailedLog('Parse transcript process completed')
-    }
-  }
 
   const startCleaning = async () => {
     if (parsedTurns.length === 0) return
@@ -308,7 +289,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             model_name: settings.modelName
           }
         }
-      })
+      }) as any
       
       const newConversationId = convResponse.id || convResponse.conversation?.id
       if (!newConversationId) {
@@ -360,7 +341,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 model_name: settings.modelName
               }
             }
-          })
+          }) as any
           
           const turnEndTime = Date.now()
           const turnProcessingTime = turnEndTime - turnStartTime
@@ -371,7 +352,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           
           if (cleanResponse.metadata.corrections && cleanResponse.metadata.corrections.length > 0) {
             addDetailedLog(`🔧 Applied ${cleanResponse.metadata.corrections.length} corrections:`)
-            cleanResponse.metadata.corrections.forEach((correction, idx) => {
+            cleanResponse.metadata.corrections.forEach((correction: any, idx: number) => {
               addDetailedLog(`  ${idx + 1}. "${correction.original}" → "${correction.corrected}" (${correction.reason})`)
             })
           }
@@ -407,8 +388,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           setCleanedTurns([...cleaned])
         }
       }
-    } catch (error) {
-      addDetailedLog(`❌ Cleaning process failed: ${error}`)
+    } catch (error: any) {
+      addDetailedLog(`❌ Cleaning process failed: ${error.message || error}`)
       console.error('Cleaning error:', error)
       alert(`Cleaning failed: ${error.message || error}`)
     } finally {
@@ -418,18 +399,133 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     }
   }
 
-  const loadExampleScript = async () => {
+
+  // Conversations management functions
+  const loadConversations = async () => {
     try {
-      const response = await fetch('/examplescripts/examplescript2')
-      const content = await response.text()
-      setRawTranscript(content)
+      setLoadingConversations(true)
+      const response = await apiClient.get('/api/v1/conversations') as any
+      setConversations(response.conversations || [])
+    } catch (error) {
+      console.error('Failed to load conversations:', error)
+    } finally {
+      setLoadingConversations(false)
+    }
+  }
+
+  const createConversation = async () => {
+    if (!newConversationName.trim() || !newConversationText.trim()) {
+      alert('Please provide both name and conversation text')
+      return
+    }
+
+    try {
+      setLoadingConversations(true)
       
-      if (settings.autoStart) {
-        setTimeout(() => parseTranscript(), 100)
+      // Step 1: Create the conversation
+      const convResponse = await apiClient.post('/api/v1/conversations', {
+        name: newConversationName,
+        description: newConversationDescription,
+        metadata: {
+          source: 'manual_input',
+          raw_transcript: newConversationText
+        }
+      })
+      
+      const conversationId = (convResponse as any).id
+      addDetailedLog(`✅ Created conversation: ${newConversationName}`)
+      
+      // Step 2: Parse the transcript and save turns
+      addDetailedLog(`🔄 Parsing transcript and saving turns...`)
+      await apiClient.post(`/api/v1/conversations/${conversationId}/parse-transcript`, {
+        raw_transcript: newConversationText
+      })
+      
+      addDetailedLog(`✅ Transcript parsed and turns saved to database`)
+      
+      // Reset form
+      setNewConversationName('')
+      setNewConversationDescription('')
+      setNewConversationText('')
+      
+      // Reload conversations to show updated turns_count
+      await loadConversations()
+      
+      addDetailedLog(`🎉 Conversation created successfully with turns saved!`)
+    } catch (error) {
+      console.error('Failed to create conversation:', error)
+      alert('Failed to create conversation')
+      addDetailedLog(`❌ Failed to create conversation: ${error}`)
+    } finally {
+      setLoadingConversations(false)
+    }
+  }
+
+  const deleteConversation = async (conversationId: string) => {
+    if (!confirm('Are you sure you want to delete this conversation?')) {
+      return
+    }
+
+    try {
+      setLoadingConversations(true)
+      await apiClient.delete(`/api/v1/conversations/${conversationId}`)
+      await loadConversations()
+    } catch (error) {
+      console.error('Failed to delete conversation:', error)
+      alert('Failed to delete conversation')
+    } finally {
+      setLoadingConversations(false)
+    }
+  }
+
+  const loadConversationToEditor = async (conversation: any) => {
+    try {
+      // Set the conversation ID and load its turns
+      setConversationId(conversation.id)
+      setShowConversationsModal(false)
+      
+      // Load turns from the database
+      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as any
+      
+      if (turnsResponse.turns && turnsResponse.turns.length > 0) {
+        // Convert turns to the format expected by the UI
+        const turns = turnsResponse.turns.map((turn: any) => ({
+          speaker: turn.speaker,
+          raw_text: turn.raw_text,
+          turn_index: turnsResponse.turns.indexOf(turn),
+          original_speaker_label: turn.speaker,
+          vt_tags: [],
+          has_noise: false,
+          has_foreign_text: false
+        }))
+        
+        const cleanedTurns = turnsResponse.turns.map((turn: any) => ({
+          turn_id: turn.id,
+          conversation_id: turn.conversation_id,
+          speaker: turn.speaker,
+          raw_text: turn.raw_text,
+          cleaned_text: turn.cleaned_text,
+          metadata: turn.metadata,
+          created_at: turn.created_at
+        }))
+        
+        setParsedTurns(turns)
+        setCleanedTurns(cleanedTurns)
+        setSelectedTab('results')
+        
+        addDetailedLog(`✅ Loaded conversation: ${conversation.name} with ${turnsResponse.turns.length} turns`)
+      } else {
+        addDetailedLog(`⚠️ Conversation loaded but no turns found. Use the Conversations modal to add transcript content.`)
       }
     } catch (error) {
-      console.error('Failed to load example script:', error)
+      console.error('Failed to load conversation:', error)
+      alert('Failed to load conversation')
     }
+  }
+
+  const openConversationsModal = () => {
+    setShowConversationsModal(true)
+    loadConversations()
   }
 
   const calculateDiff = (original: string, cleaned: string) => {
@@ -697,7 +793,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
               </select>
             </div>
             <button 
-              onClick={loadExampleScript}
+              onClick={openConversationsModal}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -708,10 +804,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 fontWeight: '500',
                 color: theme.textSecondary,
                 backgroundColor: theme.bgSecondary,
-                cursor: 'pointer'
+                cursor: 'pointer',
+                gap: '6px'
               }}
             >
-              Load Example
+              💬 Conversations
             </button>
           </div>
         </div>
@@ -730,45 +827,108 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           maxWidth: '50%'
         }}>
           <div style={{ padding: '24px', borderBottom: `1px solid ${theme.border}` }}>
-            <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>Raw Transcript</h2>
-            <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>Paste your conversation transcript here</p>
+            <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>Conversation</h2>
+            <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>Load conversations through the Conversations modal</p>
           </div>
           
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '12px' }}>
-            <textarea
-              value={rawTranscript}
-              onChange={(e) => setRawTranscript(e.target.value)}
-              onPaste={(e) => {
-                if (settings.autoProcessOnPaste) {
-                  // Wait for paste content to be applied, then auto-process
-                  setTimeout(() => {
-                    parseTranscript()
-                  }, 100)
-                }
-              }}
-              placeholder="Paste your raw transcript here... (AI/User format supported)"
-              style={{
-                width: '100%',
-                height: '100%',
-                resize: 'none',
-                border: 'none',
-                borderRadius: '0px',
-                padding: '16px',
-                fontSize: '14px',
-                fontFamily: 'monospace',
-                outline: 'none',
-                backgroundColor: 'transparent',
-                color: theme.text,
-                cursor: 'text'
-              }}
-            />
+          <div style={{ flex: 1, overflow: 'auto', padding: '16px' }}>
+            {conversationId && parsedTurns.length > 0 ? (
+              // Show conversation turns
+              <div>
+                <div style={{ 
+                  marginBottom: '16px', 
+                  paddingBottom: '12px', 
+                  borderBottom: `1px solid ${theme.border}` 
+                }}>
+                  <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: theme.text }}>
+                    Conversation Loaded
+                  </h3>
+                  <p style={{ margin: 0, fontSize: '12px', color: theme.textMuted }}>
+                    {parsedTurns.length} turns • Ready for cleaning
+                  </p>
+                </div>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {parsedTurns.slice(0, 10).map((turn, index) => (
+                    <div key={index} style={{
+                      padding: '8px 12px',
+                      backgroundColor: theme.bgSecondary,
+                      borderRadius: '6px',
+                      fontSize: '12px'
+                    }}>
+                      <div style={{ 
+                        fontWeight: '600', 
+                        color: turn.speaker === 'Lumen' ? theme.accent : theme.text,
+                        marginBottom: '4px'
+                      }}>
+                        {turn.speaker}:
+                      </div>
+                      <div style={{ 
+                        color: theme.textSecondary,
+                        fontFamily: 'monospace',
+                        lineHeight: '1.4'
+                      }}>
+                        {turn.raw_text.substring(0, 150)}{turn.raw_text.length > 150 ? '...' : ''}
+                      </div>
+                    </div>
+                  ))}
+                  {parsedTurns.length > 10 && (
+                    <div style={{
+                      padding: '8px 12px',
+                      textAlign: 'center',
+                      color: theme.textMuted,
+                      fontSize: '12px'
+                    }}>
+                      ...and {parsedTurns.length - 10} more turns
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              // Show instruction to load conversation
+              <div style={{ 
+                height: '100%', 
+                display: 'flex', 
+                flexDirection: 'column',
+                alignItems: 'center', 
+                justifyContent: 'center',
+                textAlign: 'center',
+                padding: '40px 20px'
+              }}>
+                <div style={{ fontSize: '48px', marginBottom: '16px' }}>💬</div>
+                <h3 style={{ margin: '0 0 8px 0', fontSize: '18px', color: theme.text }}>
+                  No Conversation Loaded
+                </h3>
+                <p style={{ margin: '0 0 20px 0', fontSize: '14px', color: theme.textMuted, lineHeight: '1.5' }}>
+                  Click the "💬 Conversations" button above to create a new conversation or load an existing one.
+                </p>
+                <button
+                  onClick={openConversationsModal}
+                  style={{
+                    padding: '12px 24px',
+                    backgroundColor: theme.accent,
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  💬 Open Conversations
+                </button>
+              </div>
+            )}
           </div>
           
           <div style={{ padding: '24px', borderTop: `1px solid ${theme.border}`, backgroundColor: theme.bgTertiary }}>
             <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
               <button 
-                onClick={parseTranscript}
-                disabled={!rawTranscript.trim() || isProcessing}
+                onClick={openConversationsModal}
+                disabled={isProcessing}
                 style={{
                   flex: 1,
                   display: 'inline-flex',
@@ -780,11 +940,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                   fontSize: '14px',
                   fontWeight: '500',
                   color: 'white',
-                  backgroundColor: isProcessing || !rawTranscript.trim() ? theme.textMuted : theme.accent,
-                  cursor: isProcessing || !rawTranscript.trim() ? 'not-allowed' : 'pointer'
+                  backgroundColor: isProcessing ? theme.textMuted : theme.accent,
+                  cursor: isProcessing ? 'not-allowed' : 'pointer'
                 }}
               >
-                {isProcessing ? 'Parsing...' : 'Parse Transcript'}
+                💬 Load Conversation
               </button>
               <button 
                 onClick={startCleaning}
@@ -810,7 +970,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             
             <div style={{ fontSize: '14px', color: theme.textMuted }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>{rawTranscript.length.toLocaleString()} characters</span>
+                {conversationId && parsedTurns.length > 0 ? (
+                  <span>{parsedTurns.length} turns loaded</span>
+                ) : (
+                  <span>No conversation loaded</span>
+                )}
                 {processingStats && (
                   <span>{processingStats.total_turns} turns ({processingStats.user_turns} user, {processingStats.lumen_turns} AI)</span>
                 )}
@@ -1820,6 +1984,265 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           }}
           darkMode={darkMode}
         />
+      )}
+
+      {/* Conversations Modal */}
+      {showConversationsModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            backgroundColor: theme.bg,
+            borderRadius: '12px',
+            border: `1px solid ${theme.border}`,
+            width: '90%',
+            maxWidth: '1000px',
+            maxHeight: '80vh',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}>
+            {/* Modal Header */}
+            <div style={{
+              padding: '20px 24px',
+              borderBottom: `1px solid ${theme.border}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}>
+              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '600', color: theme.text }}>
+                💬 Conversations Manager
+              </h2>
+              <button
+                onClick={() => setShowConversationsModal(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: theme.textMuted,
+                  padding: '4px'
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+              {/* Left Panel - Create New */}
+              <div style={{
+                width: '40%',
+                borderRight: `1px solid ${theme.border}`,
+                padding: '20px',
+                overflow: 'auto'
+              }}>
+                <h3 style={{ margin: '0 0 16px 0', fontSize: '16px', fontWeight: '600', color: theme.text }}>
+                  Create New Conversation
+                </h3>
+                
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '6px' }}>
+                    Name *
+                  </label>
+                  <input
+                    type="text"
+                    value={newConversationName}
+                    onChange={(e) => setNewConversationName(e.target.value)}
+                    placeholder="Enter conversation name..."
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '6px',
+                      fontSize: '14px',
+                      backgroundColor: theme.bgSecondary,
+                      color: theme.text
+                    }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '6px' }}>
+                    Description
+                  </label>
+                  <input
+                    type="text"
+                    value={newConversationDescription}
+                    onChange={(e) => setNewConversationDescription(e.target.value)}
+                    placeholder="Optional description..."
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '6px',
+                      fontSize: '14px',
+                      backgroundColor: theme.bgSecondary,
+                      color: theme.text
+                    }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '20px' }}>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '6px' }}>
+                    Conversation Text *
+                  </label>
+                  <textarea
+                    value={newConversationText}
+                    onChange={(e) => setNewConversationText(e.target.value)}
+                    placeholder="Paste your conversation transcript here..."
+                    style={{
+                      width: '100%',
+                      height: '200px',
+                      padding: '12px',
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '6px',
+                      fontSize: '14px',
+                      backgroundColor: theme.bgSecondary,
+                      color: theme.text,
+                      fontFamily: 'monospace',
+                      resize: 'vertical'
+                    }}
+                  />
+                </div>
+
+                <button
+                  onClick={createConversation}
+                  disabled={loadingConversations || !newConversationName.trim() || !newConversationText.trim()}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    backgroundColor: theme.accent,
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: loadingConversations ? 'not-allowed' : 'pointer',
+                    opacity: (loadingConversations || !newConversationName.trim() || !newConversationText.trim()) ? 0.5 : 1
+                  }}
+                >
+                  {loadingConversations ? 'Creating...' : '💾 Save Conversation'}
+                </button>
+              </div>
+
+              {/* Right Panel - Existing Conversations */}
+              <div style={{
+                width: '60%',
+                padding: '20px',
+                overflow: 'auto'
+              }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '16px'
+                }}>
+                  <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: theme.text }}>
+                    Existing Conversations ({conversations.length})
+                  </h3>
+                  <button
+                    onClick={loadConversations}
+                    disabled={loadingConversations}
+                    style={{
+                      padding: '6px 12px',
+                      backgroundColor: theme.bgTertiary,
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      color: theme.textSecondary,
+                      cursor: loadingConversations ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {loadingConversations ? '🔄' : '🔄 Refresh'}
+                  </button>
+                </div>
+
+                {loadingConversations ? (
+                  <div style={{ textAlign: 'center', padding: '40px', color: theme.textMuted }}>
+                    Loading conversations...
+                  </div>
+                ) : conversations.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px', color: theme.textMuted }}>
+                    No conversations found. Create your first one!
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {conversations.map((conversation) => (
+                      <div
+                        key={conversation.id}
+                        style={{
+                          border: `1px solid ${theme.border}`,
+                          borderRadius: '8px',
+                          padding: '16px',
+                          backgroundColor: theme.bgSecondary
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '8px' }}>
+                          <div style={{ flex: 1 }}>
+                            <h4 style={{ margin: '0 0 4px 0', fontSize: '14px', fontWeight: '600', color: theme.text }}>
+                              {conversation.name}
+                            </h4>
+                            {conversation.description && (
+                              <p style={{ margin: '0 0 8px 0', fontSize: '12px', color: theme.textMuted }}>
+                                {conversation.description}
+                              </p>
+                            )}
+                            <div style={{ fontSize: '11px', color: theme.textMuted }}>
+                              Created: {new Date(conversation.created_at).toLocaleDateString()} • 
+                              Turns: {conversation.turns_count || 0}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                          <button
+                            onClick={() => loadConversationToEditor(conversation)}
+                            style={{
+                              padding: '6px 12px',
+                              backgroundColor: theme.accent,
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              fontSize: '12px',
+                              fontWeight: '500',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            📥 Load
+                          </button>
+                          <button
+                            onClick={() => deleteConversation(conversation.id)}
+                            style={{
+                              padding: '6px 12px',
+                              backgroundColor: '#ef4444',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              fontSize: '12px',
+                              fontWeight: '500',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            🗑️ Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

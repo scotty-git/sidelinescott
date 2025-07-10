@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.services.prompt_engineering_service import PromptEngineeringService
+from app.models import Conversation, Turn
 from app.schemas.prompt import (
     PromptTemplate,
     CreatePromptTemplateRequest,
@@ -20,7 +21,11 @@ from app.schemas.prompt import (
     TurnPromptAnalysis,
     PromptInsights,
     CreateABTestRequest,
-    PromptSimulationRequest
+    PromptSimulationRequest,
+    ConversationSimulationRequest,
+    CreateTestConversationRequest,
+    UpdateTestConversationRequest,
+    TestConversationResponse
 )
 
 logger = logging.getLogger(__name__)
@@ -334,3 +339,225 @@ async def get_or_create_default_template(
         "is_active": template.is_active,
         "created_at": template.created_at
     }
+
+
+# Test Conversation Management Endpoints
+
+@router.post("/test-conversations", response_model=TestConversationResponse)
+async def create_test_conversation(
+    request: CreateTestConversationRequest,
+    db: Session = Depends(get_db)
+):
+    """Create a new test conversation"""
+    try:
+        test_conversation = await prompt_service.create_test_conversation(
+            db=db,
+            user_id=request.user_id,
+            name=request.name,
+            description=request.description,
+            variables=request.variables
+        )
+        return TestConversationResponse(**test_conversation.to_dict())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to create test conversation: {str(e)}")
+
+
+@router.get("/test-conversations", response_model=List[TestConversationResponse])
+async def get_test_conversations(
+    user_id: Optional[UUID] = Query(None, description="Filter by user ID"),
+    db: Session = Depends(get_db)
+):
+    """Get all test conversations, optionally filtered by user"""
+    test_conversations = await prompt_service.get_test_conversations(db, user_id=user_id)
+    return [TestConversationResponse(**tc.to_dict()) for tc in test_conversations]
+
+
+@router.get("/test-conversations/{test_conversation_id}", response_model=TestConversationResponse)
+async def get_test_conversation(
+    test_conversation_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Get a specific test conversation"""
+    test_conversation = await prompt_service.get_test_conversation(db, test_conversation_id)
+    if not test_conversation:
+        raise HTTPException(status_code=404, detail="Test conversation not found")
+    return TestConversationResponse(**test_conversation.to_dict())
+
+
+@router.put("/test-conversations/{test_conversation_id}", response_model=TestConversationResponse)
+async def update_test_conversation(
+    test_conversation_id: UUID,
+    request: UpdateTestConversationRequest,
+    db: Session = Depends(get_db)
+):
+    """Update an existing test conversation"""
+    updates = {k: v for k, v in request.dict().items() if v is not None}
+    test_conversation = await prompt_service.update_test_conversation(db, test_conversation_id, **updates)
+    if not test_conversation:
+        raise HTTPException(status_code=404, detail="Test conversation not found")
+    return TestConversationResponse(**test_conversation.to_dict())
+
+
+@router.delete("/test-conversations/{test_conversation_id}")
+async def delete_test_conversation(
+    test_conversation_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Delete a test conversation"""
+    success = await prompt_service.delete_test_conversation(db, test_conversation_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Test conversation not found")
+    return {"message": "Test conversation deleted successfully"}
+
+
+@router.post("/templates/{template_id}/simulate/conversation")
+async def simulate_prompt_with_conversation(
+    template_id: UUID,
+    request: ConversationSimulationRequest,
+    db: Session = Depends(get_db)
+):
+    """Test a prompt against real conversation data"""
+    # Get the template
+    template = await prompt_service.get_template(db, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    # Get the conversation
+    conversation = db.query(Conversation).filter(Conversation.id == request.conversation_id).first()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    # Get all turns for the conversation
+    turns = db.query(Turn).filter(Turn.conversation_id == request.conversation_id).order_by(Turn.created_at).all()
+    if not turns:
+        raise HTTPException(status_code=404, detail="No turns found for this conversation")
+    
+    if request.testing_mode == "single_turn":
+        # Single turn testing
+        if request.turn_index is None:
+            raise HTTPException(status_code=400, detail="turn_index is required for single_turn mode")
+        
+        if request.turn_index >= len(turns):
+            raise HTTPException(status_code=400, detail="turn_index out of range")
+        
+        selected_turn = turns[request.turn_index]
+        
+        # Build context from previous turns
+        context_turns = turns[max(0, request.turn_index - 5):request.turn_index]
+        context_str = "\n".join([
+            f"{turn.speaker}: {turn.cleaned_text or turn.raw_text}" 
+            for turn in context_turns
+        ])
+        
+        # Build variables
+        variables = {
+            "conversation_context": context_str,
+            "raw_text": selected_turn.raw_text,
+            "cleaning_level": "full",
+            "call_context": getattr(conversation, 'call_context', ''),
+            "additional_context": getattr(conversation, 'additional_context', ''),
+            "custom_variable": request.custom_variable or ""
+        }
+        
+        # Render the prompt
+        rendered = await prompt_service.render_prompt(db, template_id, variables)
+        if not rendered:
+            raise HTTPException(status_code=400, detail="Failed to render prompt")
+        
+        return {
+            "mode": "single_turn",
+            "template_used": {
+                "id": str(template.id),
+                "name": template.name,
+                "version": template.version
+            },
+            "conversation": {
+                "id": str(conversation.id),
+                "name": conversation.name
+            },
+            "turn_tested": {
+                "index": request.turn_index,
+                "speaker": selected_turn.speaker,
+                "raw_text": selected_turn.raw_text,
+                "cleaned_text": selected_turn.cleaned_text
+            },
+            "context_turns_used": len(context_turns),
+            "input_variables": variables,
+            "rendered_prompt": rendered.rendered_prompt,
+            "token_count": rendered.token_count,
+            "simulation_note": "This is a simulation - no actual Gemini API call was made"
+        }
+    
+    elif request.testing_mode == "full_conversation":
+        # Full conversation testing
+        results = []
+        
+        # Test each user turn (skip Lumen turns)
+        for i, turn in enumerate(turns):
+            if turn.speaker == "Lumen":
+                continue
+            
+            # Build context from previous turns
+            context_turns = turns[max(0, i - 5):i]
+            context_str = "\n".join([
+                f"{turn.speaker}: {turn.cleaned_text or turn.raw_text}" 
+                for turn in context_turns
+            ])
+            
+            # Build variables
+            variables = {
+                "conversation_context": context_str,
+                "raw_text": turn.raw_text,
+                "cleaning_level": "full",
+                "call_context": getattr(conversation, 'call_context', ''),
+                "additional_context": getattr(conversation, 'additional_context', ''),
+                "custom_variable": request.custom_variable or ""
+            }
+            
+            # Render the prompt
+            rendered = await prompt_service.render_prompt(db, template_id, variables)
+            if rendered:
+                results.append({
+                    "turn_index": i,
+                    "speaker": turn.speaker,
+                    "raw_text": turn.raw_text,
+                    "cleaned_text": turn.cleaned_text,
+                    "context_turns_used": len(context_turns),
+                    "rendered_prompt": rendered.rendered_prompt,
+                    "token_count": rendered.token_count,
+                    "success": True
+                })
+            else:
+                results.append({
+                    "turn_index": i,
+                    "speaker": turn.speaker,
+                    "raw_text": turn.raw_text,
+                    "error": "Failed to render prompt",
+                    "success": False
+                })
+        
+        return {
+            "mode": "full_conversation",
+            "template_used": {
+                "id": str(template.id),
+                "name": template.name,
+                "version": template.version
+            },
+            "conversation": {
+                "id": str(conversation.id),
+                "name": conversation.name,
+                "total_turns": len(turns),
+                "user_turns_processed": len(results)
+            },
+            "results": results,
+            "summary": {
+                "total_turns_tested": len(results),
+                "successful_renders": sum(1 for r in results if r["success"]),
+                "failed_renders": sum(1 for r in results if not r["success"]),
+                "avg_token_count": sum(r.get("token_count", 0) for r in results) / len(results) if results else 0
+            },
+            "simulation_note": "This is a simulation - no actual Gemini API calls were made"
+        }
+    
+    else:
+        raise HTTPException(status_code=400, detail="Invalid testing_mode. Must be 'single_turn' or 'full_conversation'")

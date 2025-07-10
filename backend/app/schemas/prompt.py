@@ -5,6 +5,7 @@ Prompt Engineering Schema - For Prompt Dashboard API
 from typing import Dict, List, Any, Optional
 from pydantic import BaseModel
 from datetime import datetime
+from uuid import UUID
 
 
 class PromptTemplate(BaseModel):
@@ -131,3 +132,39 @@ class PromptSimulationRequest(BaseModel):
     sample_speaker: str
     sample_context: List[Dict[str, Any]]
     cleaning_level: str = "full"
+
+
+class ConversationSimulationRequest(BaseModel):
+    """Test a prompt against real conversation data"""
+    template_id: str
+    conversation_id: UUID
+    testing_mode: str = "single_turn"  # "single_turn" or "full_conversation"
+    turn_index: Optional[int] = None  # Required for single_turn mode
+    custom_variable: Optional[str] = None  # Custom variable for testing
+
+
+# Test Conversation schemas
+class TestConversationResponse(BaseModel):
+    """Response schema for test conversations"""
+    id: str
+    user_id: str
+    name: str
+    description: Optional[str] = None
+    variables: Dict[str, Any]
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CreateTestConversationRequest(BaseModel):
+    """Request schema for creating test conversations"""
+    user_id: UUID
+    name: str
+    description: Optional[str] = None
+    variables: Dict[str, Any]
+
+
+class UpdateTestConversationRequest(BaseModel):
+    """Request schema for updating test conversations"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    variables: Optional[Dict[str, Any]] = None

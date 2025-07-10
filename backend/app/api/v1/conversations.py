@@ -155,13 +155,30 @@ async def delete_conversation(
     db.commit()
     return {"success": True}
 
-@router.post("/parse-transcript", response_model=ParseTranscriptResponse)
+@router.post("/{conversation_id}/parse-transcript", response_model=ParseTranscriptResponse)
 async def parse_transcript(
-    request: ParseTranscriptRequest
+    conversation_id: str,
+    request: ParseTranscriptRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
-    """Parse a raw transcript into structured turns with analysis."""
+    """Parse a raw transcript into structured turns and save them to the conversation."""
     try:
-        print(f"[ParseTranscriptAPI] Received transcript of {len(request.raw_transcript)} characters")
+        print(f"[ParseTranscriptAPI] Received transcript of {len(request.raw_transcript)} characters for conversation {conversation_id}")
+        
+        # Verify conversation exists and user has access
+        from uuid import UUID
+        conversation_uuid = UUID(conversation_id)
+        conversation = db.query(Conversation).filter(
+            Conversation.id == conversation_uuid,
+            Conversation.user_id == current_user['id']
+        ).first()
+        
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found"
+            )
         
         # Initialize parser
         parser = TranscriptParser()
@@ -175,9 +192,31 @@ async def parse_transcript(
         print(f"[ParseTranscriptAPI] Parsed {len(parsed_turns)} turns")
         print(f"[ParseTranscriptAPI] Stats: {stats}")
         
-        # Convert to response format
-        turn_responses = [
-            ParsedTurnResponse(
+        # Save turns to database
+        from app.models.turn import Turn
+        turn_responses = []
+        
+        for turn in parsed_turns:
+            # Create turn in database with cleaned_text initially set to raw_text
+            db_turn = Turn(
+                conversation_id=conversation_uuid,
+                speaker=turn.speaker,
+                raw_text=turn.raw_text,
+                cleaned_text=turn.raw_text,  # Will be updated during cleaning
+                confidence_score="PENDING",  # Will be updated during cleaning
+                cleaning_applied="false",    # Will be updated during cleaning
+                cleaning_level="none",       # Will be updated during cleaning
+                processing_time_ms=0.0,      # Will be updated during cleaning
+                corrections=[],              # Will be updated during cleaning
+                context_detected="unknown",  # Will be updated during cleaning
+                ai_model_used="none"         # Will be updated during cleaning
+            )
+            
+            db.add(db_turn)
+            db.flush()  # Get the ID without committing
+            
+            # Create response
+            turn_responses.append(ParsedTurnResponse(
                 speaker=turn.speaker,
                 raw_text=turn.raw_text,
                 turn_index=turn.turn_index,
@@ -185,9 +224,16 @@ async def parse_transcript(
                 vt_tags=turn.vt_tags,
                 has_noise=turn.has_noise,
                 has_foreign_text=turn.has_foreign_text
-            )
-            for turn in parsed_turns
-        ]
+            ))
+        
+        # Update conversation turns_count
+        conversation.turns_count = len(parsed_turns)
+        
+        # Commit all changes
+        db.commit()
+        
+        print(f"[ParseTranscriptAPI] Saved {len(parsed_turns)} turns to conversation {conversation_id}")
+        print(f"[ParseTranscriptAPI] Updated conversation turns_count to {conversation.turns_count}")
         
         stats_response = TranscriptStatsResponse(
             total_turns=stats.get('total_turns', 0),
@@ -211,6 +257,79 @@ async def parse_transcript(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to parse transcript: {str(e)}"
+        )
+
+
+@router.get("/{conversation_id}/turns")
+async def get_conversation_turns(
+    conversation_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all turns for a conversation"""
+    try:
+        from uuid import UUID
+        conversation_uuid = UUID(conversation_id)
+        
+        # Verify conversation exists and user has access
+        conversation = db.query(Conversation).filter(
+            Conversation.id == conversation_uuid,
+            Conversation.user_id == current_user['id']
+        ).first()
+        
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found"
+            )
+        
+        # Get all turns for this conversation
+        from app.models.turn import Turn
+        turns = db.query(Turn).filter(
+            Turn.conversation_id == conversation_uuid
+        ).order_by(Turn.created_at).all()
+        
+        # Convert to response format
+        turn_responses = []
+        for turn in turns:
+            turn_responses.append({
+                "id": str(turn.id),
+                "conversation_id": str(turn.conversation_id),
+                "speaker": turn.speaker,
+                "raw_text": turn.raw_text,
+                "cleaned_text": turn.cleaned_text,
+                "metadata": {
+                    "confidence_score": turn.confidence_score,
+                    "cleaning_applied": turn.cleaning_applied == "true",
+                    "cleaning_level": turn.cleaning_level,
+                    "processing_time_ms": turn.processing_time_ms,
+                    "corrections": turn.corrections or [],
+                    "context_detected": turn.context_detected,
+                    "ai_model_used": turn.ai_model_used,
+                    "timing_breakdown": turn.timing_breakdown or {},
+                    "gemini_prompt": turn.gemini_prompt,
+                    "gemini_response": turn.gemini_response
+                },
+                "created_at": turn.created_at.isoformat() if turn.created_at else None
+            })
+        
+        return {
+            "conversation_id": str(conversation.id),
+            "conversation_name": conversation.name,
+            "turns": turn_responses,
+            "total_turns": len(turn_responses)
+        }
+        
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid conversation ID format"
+        )
+    except Exception as e:
+        print(f"[GetTurnsAPI] Error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get turns: {str(e)}"
         )
 
 # ============================================================================

@@ -70,6 +70,18 @@ export function PromptEngineeringDashboard() {
   const [selectedTurnId, setSelectedTurnId] = useState('')
   const [turnAnalysis, setTurnAnalysis] = useState<TurnAnalysis | null>(null)
 
+  // New dual testing mode state
+  const [dataSource, setDataSource] = useState<'test' | 'real' | 'saved'>('test')
+  const [conversations, setConversations] = useState<any[]>([])
+  const [selectedConversationId, setSelectedConversationId] = useState('')
+  const [conversationTurns, setConversationTurns] = useState<any[]>([])
+  const [testingMode, setTestingMode] = useState<'single_turn' | 'full_conversation'>('single_turn')
+  const [selectedTurnIndex, setSelectedTurnIndex] = useState(0)
+  const [customVariable, setCustomVariable] = useState('')
+  const [testConversations, setTestConversations] = useState<any[]>([])
+  const [selectedTestConversationId, setSelectedTestConversationId] = useState('')
+  const [conversationSimulationResult, setConversationSimulationResult] = useState<any>(null)
+
   // Theme
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem('prompt-dashboard-dark-mode')
@@ -93,6 +105,20 @@ export function PromptEngineeringDashboard() {
   useEffect(() => {
     loadTemplates()
   }, [])
+
+  useEffect(() => {
+    if (dataSource === 'real') {
+      loadConversations()
+    } else if (dataSource === 'saved') {
+      loadTestConversations()
+    }
+  }, [dataSource])
+
+  useEffect(() => {
+    if (selectedConversationId && dataSource === 'real') {
+      loadConversationTurns(selectedConversationId)
+    }
+  }, [selectedConversationId, dataSource])
 
   useEffect(() => {
     localStorage.setItem('prompt-dashboard-dark-mode', JSON.stringify(darkMode))
@@ -195,6 +221,55 @@ export function PromptEngineeringDashboard() {
     }
   }
 
+  const loadConversations = async () => {
+    try {
+      const response = await apiClient.get('/api/v1/conversations')
+      setConversations(response.conversations || [])
+    } catch (err) {
+      setError(`Failed to load conversations: ${err}`)
+    }
+  }
+
+  const loadConversationTurns = async (conversationId: string) => {
+    try {
+      const response = await apiClient.get(`/api/v1/conversations/${conversationId}/turns`)
+      setConversationTurns(response.turns || [])
+    } catch (err) {
+      setError(`Failed to load conversation turns: ${err}`)
+    }
+  }
+
+  const loadTestConversations = async () => {
+    try {
+      const response = await apiClient.get('/api/v1/prompt-engineering/test-conversations')
+      setTestConversations(response || [])
+    } catch (err) {
+      setError(`Failed to load test conversations: ${err}`)
+    }
+  }
+
+  const simulateWithConversation = async () => {
+    if (!activeTemplate || !selectedConversationId) return
+
+    try {
+      setLoading(true)
+      const payload = {
+        template_id: activeTemplate.id,
+        conversation_id: selectedConversationId,
+        testing_mode: testingMode,
+        turn_index: testingMode === 'single_turn' ? selectedTurnIndex : undefined,
+        custom_variable: customVariable
+      }
+
+      const response = await apiClient.post(`/api/v1/prompt-engineering/templates/${activeTemplate.id}/simulate/conversation`, payload)
+      setConversationSimulationResult(response)
+    } catch (err) {
+      setError(`Failed to simulate with conversation: ${err}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const simulatePrompt = async () => {
     if (!activeTemplate) return
 
@@ -231,13 +306,33 @@ export function PromptEngineeringDashboard() {
         padding: '16px 24px'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold' }}>
-              🔧 Prompt Engineering Dashboard
-            </h1>
-            <p style={{ margin: '4px 0 0 0', color: theme.textMuted }}>
-              Full visibility and control over AI cleaning prompts
-            </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <button
+              onClick={() => window.location.href = '/'}
+              style={{
+                padding: '8px 12px',
+                backgroundColor: theme.bgTertiary,
+                border: `1px solid ${theme.border}`,
+                borderRadius: '6px',
+                color: theme.text,
+                cursor: 'pointer',
+                fontSize: '14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}
+              title="Back to Main Dashboard"
+            >
+              ← Back
+            </button>
+            <div>
+              <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold' }}>
+                🔧 Prompt Engineering Dashboard
+              </h1>
+              <p style={{ margin: '4px 0 0 0', color: theme.textMuted }}>
+                Full visibility and control over AI cleaning prompts
+              </p>
+            </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <button
@@ -452,18 +547,41 @@ export function PromptEngineeringDashboard() {
             {/* Right Panel - Preview & Variables */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               
-              {/* Variable Values */}
+              {/* Data Source Selection */}
               <div style={{ 
                 backgroundColor: theme.bgSecondary,
                 borderRadius: '8px',
                 border: `1px solid ${theme.border}`,
                 padding: '16px'
               }}>
-                <h4 style={{ margin: '0 0 8px 0' }}>Preview Variables</h4>
-                <div style={{ 
-                  backgroundColor: theme.bgTertiary, 
-                  border: `1px solid ${theme.border}`,
-                  borderRadius: '4px',
+                <h4 style={{ margin: '0 0 12px 0' }}>Testing Data Source</h4>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                  {(['test', 'real', 'saved'] as const).map((source) => (
+                    <button
+                      key={source}
+                      onClick={() => setDataSource(source)}
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: dataSource === source ? theme.accent : theme.bgTertiary,
+                        color: dataSource === source ? 'white' : theme.text,
+                        border: `1px solid ${theme.border}`,
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        fontWeight: dataSource === source ? '600' : '400'
+                      }}
+                    >
+                      {source === 'test' ? 'Test Data' : source === 'real' ? 'Real Conversation' : 'Saved Test'}
+                    </button>
+                  ))}
+                </div>
+
+                {dataSource === 'test' && (
+                  <>
+                    <div style={{ 
+                      backgroundColor: theme.bgTertiary, 
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '4px',
                   padding: '8px',
                   marginBottom: '16px',
                   fontSize: '11px',
@@ -588,23 +706,295 @@ export function PromptEngineeringDashboard() {
                   />
                 </div>
 
-                <button
-                  onClick={simulatePrompt}
-                  style={{
-                    width: '100%',
-                    padding: '10px',
-                    backgroundColor: theme.warning,
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontSize: '14px',
-                    fontWeight: '600'
-                  }}
-                >
-                  🧪 Test Prompt (Simulation)
-                </button>
+                    <button
+                      onClick={simulatePrompt}
+                      style={{
+                        width: '100%',
+                        padding: '10px',
+                        backgroundColor: theme.warning,
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        fontWeight: '600'
+                      }}
+                    >
+                      🧪 Test Prompt (Simulation)
+                    </button>
+                  </>
+                )}
+
+                {dataSource === 'real' && (
+                  <>
+                    <div style={{ marginBottom: '16px' }}>
+                      <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
+                        Select Conversation
+                      </label>
+                      <select
+                        value={selectedConversationId}
+                        onChange={(e) => setSelectedConversationId(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '8px',
+                          backgroundColor: theme.bg,
+                          border: `1px solid ${theme.border}`,
+                          borderRadius: '4px',
+                          color: theme.text,
+                          fontSize: '14px'
+                        }}
+                      >
+                        <option value="">Select a conversation...</option>
+                        {conversations.map((conv) => (
+                          <option key={conv.id} value={conv.id}>
+                            {conv.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {selectedConversationId && (
+                      <>
+                        <div style={{ marginBottom: '16px' }}>
+                          <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
+                            Testing Mode
+                          </label>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              onClick={() => setTestingMode('single_turn')}
+                              style={{
+                                padding: '6px 12px',
+                                backgroundColor: testingMode === 'single_turn' ? theme.accent : theme.bgTertiary,
+                                color: testingMode === 'single_turn' ? 'white' : theme.text,
+                                border: `1px solid ${theme.border}`,
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '12px'
+                              }}
+                            >
+                              Single Turn
+                            </button>
+                            <button
+                              onClick={() => setTestingMode('full_conversation')}
+                              style={{
+                                padding: '6px 12px',
+                                backgroundColor: testingMode === 'full_conversation' ? theme.accent : theme.bgTertiary,
+                                color: testingMode === 'full_conversation' ? 'white' : theme.text,
+                                border: `1px solid ${theme.border}`,
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '12px'
+                              }}
+                            >
+                              Full Conversation
+                            </button>
+                          </div>
+                        </div>
+
+                        {testingMode === 'single_turn' && conversationTurns.length > 0 && (
+                          <div style={{ marginBottom: '16px' }}>
+                            <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
+                              Select Turn (Turn {selectedTurnIndex + 1} of {conversationTurns.length})
+                            </label>
+                            <input
+                              type="range"
+                              min="0"
+                              max={conversationTurns.length - 1}
+                              value={selectedTurnIndex}
+                              onChange={(e) => setSelectedTurnIndex(parseInt(e.target.value))}
+                              style={{ width: '100%', marginBottom: '8px' }}
+                            />
+                            <div style={{
+                              backgroundColor: theme.bgTertiary,
+                              padding: '8px',
+                              borderRadius: '4px',
+                              fontSize: '12px',
+                              fontFamily: 'monospace'
+                            }}>
+                              <strong>{conversationTurns[selectedTurnIndex]?.speaker}:</strong> {conversationTurns[selectedTurnIndex]?.raw_text?.substring(0, 100)}...
+                            </div>
+                          </div>
+                        )}
+
+                        <div style={{ marginBottom: '16px' }}>
+                          <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
+                            Custom Variable (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={customVariable}
+                            onChange={(e) => setCustomVariable(e.target.value)}
+                            placeholder="Add custom variable for testing..."
+                            style={{
+                              width: '100%',
+                              padding: '8px',
+                              backgroundColor: theme.bg,
+                              border: `1px solid ${theme.border}`,
+                              borderRadius: '4px',
+                              color: theme.text,
+                              fontSize: '12px'
+                            }}
+                          />
+                        </div>
+
+                        {conversationTurns.length > 0 && (
+                          <div style={{
+                            backgroundColor: theme.bgTertiary,
+                            padding: '12px',
+                            borderRadius: '4px',
+                            marginBottom: '16px',
+                            maxHeight: '200px',
+                            overflowY: 'auto',
+                            fontSize: '11px',
+                            fontFamily: 'monospace'
+                          }}>
+                            <strong>Conversation Preview:</strong><br/>
+                            {conversationTurns.slice(0, 10).map((turn, i) => (
+                              <div key={i} style={{ marginBottom: '4px' }}>
+                                <span style={{ color: theme.accent }}>{turn.speaker}:</span> {turn.raw_text?.substring(0, 80)}...
+                              </div>
+                            ))}
+                            {conversationTurns.length > 10 && <div>...and {conversationTurns.length - 10} more turns</div>}
+                          </div>
+                        )}
+
+                        <button
+                          onClick={simulateWithConversation}
+                          disabled={loading}
+                          style={{
+                            width: '100%',
+                            padding: '10px',
+                            backgroundColor: theme.accent,
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: loading ? 'not-allowed' : 'pointer',
+                            fontSize: '14px',
+                            fontWeight: '600',
+                            opacity: loading ? 0.6 : 1
+                          }}
+                        >
+                          🚀 Test with {testingMode === 'single_turn' ? 'Single Turn' : 'Full Conversation'}
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+
+                {dataSource === 'saved' && (
+                  <>
+                    <div style={{ marginBottom: '16px' }}>
+                      <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
+                        Select Saved Test
+                      </label>
+                      <select
+                        value={selectedTestConversationId}
+                        onChange={(e) => setSelectedTestConversationId(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '8px',
+                          backgroundColor: theme.bg,
+                          border: `1px solid ${theme.border}`,
+                          borderRadius: '4px',
+                          color: theme.text,
+                          fontSize: '14px'
+                        }}
+                      >
+                        <option value="">Select a saved test...</option>
+                        {testConversations.map((test) => (
+                          <option key={test.id} value={test.id}>
+                            {test.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {testConversations.length === 0 && (
+                      <div style={{
+                        textAlign: 'center',
+                        color: theme.textMuted,
+                        fontSize: '12px',
+                        padding: '20px'
+                      }}>
+                        No saved test conversations yet.<br/>
+                        Create one by switching to "Test Data" mode and saving your configuration.
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
+
+              {/* Results Display */}
+              {conversationSimulationResult && dataSource === 'real' && (
+                <div style={{ 
+                  backgroundColor: theme.bgSecondary,
+                  borderRadius: '8px',
+                  border: `1px solid ${theme.border}`,
+                  flex: 1
+                }}>
+                  <div style={{ 
+                    padding: '16px',
+                    borderBottom: `1px solid ${theme.border}`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}>
+                    <h4 style={{ margin: 0 }}>
+                      {conversationSimulationResult.mode === 'single_turn' ? 'Single Turn Results' : 'Full Conversation Results'}
+                    </h4>
+                    <div style={{ fontSize: '12px', color: theme.textMuted }}>
+                      {conversationSimulationResult.mode === 'full_conversation' 
+                        ? `${conversationSimulationResult.summary?.total_turns_tested} turns tested`
+                        : `~${conversationSimulationResult.token_count} tokens`
+                      }
+                    </div>
+                  </div>
+                  <div style={{ 
+                    padding: '16px',
+                    maxHeight: '400px',
+                    overflowY: 'auto'
+                  }}>
+                    {conversationSimulationResult.mode === 'single_turn' ? (
+                      <div style={{
+                        fontFamily: 'monospace',
+                        fontSize: '12px',
+                        lineHeight: '1.5',
+                        whiteSpace: 'pre-wrap',
+                        backgroundColor: theme.bg,
+                        padding: '12px',
+                        borderRadius: '4px'
+                      }}>
+                        {conversationSimulationResult.rendered_prompt}
+                      </div>
+                    ) : (
+                      <div>
+                        <div style={{ marginBottom: '16px', fontSize: '12px' }}>
+                          <strong>Summary:</strong> {conversationSimulationResult.summary?.successful_renders}/{conversationSimulationResult.summary?.total_turns_tested} successful renders
+                        </div>
+                        {conversationSimulationResult.results?.slice(0, 5).map((result: any, i: number) => (
+                          <div key={i} style={{
+                            marginBottom: '12px',
+                            padding: '8px',
+                            backgroundColor: theme.bgTertiary,
+                            borderRadius: '4px',
+                            fontSize: '11px'
+                          }}>
+                            <strong>Turn {result.turn_index + 1} ({result.speaker}):</strong><br/>
+                            {result.raw_text?.substring(0, 100)}...<br/>
+                            <span style={{ color: result.success ? theme.success : theme.error }}>
+                              {result.success ? '✓ Rendered successfully' : '✗ Failed to render'}
+                            </span>
+                          </div>
+                        ))}
+                        {conversationSimulationResult.results?.length > 5 && (
+                          <div style={{ fontSize: '11px', color: theme.textMuted }}>
+                            ...and {conversationSimulationResult.results.length - 5} more results
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Rendered Preview */}
               {renderedPreview && (
