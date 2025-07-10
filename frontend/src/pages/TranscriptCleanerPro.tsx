@@ -18,6 +18,7 @@ interface CleanedTurn {
   speaker: string
   raw_text: string
   cleaned_text: string
+  processing_state?: 'pending' | 'processing' | 'completed' | 'skipped'
   metadata: {
     confidence_score: string
     cleaning_applied: boolean
@@ -321,11 +322,51 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           addDetailedLog(`📚 Context: No previous turns (first turn)`)
         }
         
+        // First, add the turn in "processing" state so it appears in UI
+        const processingTurn: CleanedTurn = {
+          turn_id: `processing-${i}`,
+          conversation_id: newConversationId,
+          speaker: turn.speaker,
+          raw_text: turn.raw_text,
+          cleaned_text: turn.raw_text, // Show original text while processing
+          processing_state: turn.speaker === 'Lumen' ? 'skipped' : 'processing',
+          metadata: {
+            confidence_score: 'PENDING',
+            cleaning_applied: false,
+            cleaning_level: 'none',
+            corrections: [],
+            context_detected: 'Processing...',
+            processing_time_ms: 0,
+            ai_model_used: settings.modelName
+          },
+          created_at: new Date().toISOString()
+        }
+        
+        cleaned.push(processingTurn)
+        setCleanedTurns([...cleaned])
+        
         try {
+          // Skip processing for Lumen turns
+          if (turn.speaker === 'Lumen') {
+            addDetailedLog(`⚡ Skipping Lumen turn ${i + 1} (bypass mode)`)
+            // Update to completed state with no processing
+            cleaned[cleaned.length - 1] = {
+              ...processingTurn,
+              processing_state: 'skipped',
+              metadata: {
+                ...processingTurn.metadata,
+                confidence_score: 'BYPASS',
+                context_detected: 'Lumen response - no processing needed'
+              }
+            }
+            setCleanedTurns([...cleaned])
+            continue
+          }
+          
           addDetailedLog(`🤖 Sending to Gemini 2.5 Flash-Lite...`)
           const turnStartTime = Date.now()
           
-          // Call the turn processing endpoint - THIS WAS MISSING
+          // Call the turn processing endpoint
           const cleanResponse = await apiCallWithLogging('POST', `/api/v1/conversations/${newConversationId}/turns`, {
             speaker: turn.speaker,
             raw_text: turn.raw_text,
@@ -357,34 +398,35 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             })
           }
           
-          cleaned.push(cleanResponse)
+          // Update the processing turn with completed results
+          cleaned[cleaned.length - 1] = {
+            ...cleanResponse,
+            processing_state: 'completed'
+          }
           setCleanedTurns([...cleaned])
           
-          // Real-time update with progress indicator
+          // Small delay for smooth UX
           await new Promise(resolve => setTimeout(resolve, 200))
           
         } catch (turnError) {
           addDetailedLog(`❌ Turn ${i + 1} failed: ${turnError}`)
           console.error(`Turn ${i + 1} failed:`, turnError)
-          // Create error turn to show in UI
-          const errorTurn: CleanedTurn = {
-            turn_id: `error-${i}`,
-            conversation_id: newConversationId,
-            speaker: turn.speaker,
-            raw_text: turn.raw_text,
-            cleaned_text: turn.raw_text,
+          
+          // Update the processing turn to show error state
+          cleaned[cleaned.length - 1] = {
+            ...processingTurn,
+            processing_state: 'completed',
+            cleaned_text: turn.raw_text, // Keep original text on error
             metadata: {
-              confidence_score: 'LOW',
+              confidence_score: 'ERROR',
               cleaning_applied: false,
               cleaning_level: 'none',
               corrections: [],
-              context_detected: 'error',
+              context_detected: `Error: ${turnError}`,
               processing_time_ms: 0,
               ai_model_used: 'error'
-            },
-            created_at: new Date().toISOString()
+            }
           }
-          cleaned.push(errorTurn)
           setCleanedTurns([...cleaned])
         }
       }
@@ -499,19 +541,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           has_foreign_text: false
         }))
         
-        const cleanedTurns = turnsResponse.turns.map((turn: any) => ({
-          turn_id: turn.id,
-          conversation_id: turn.conversation_id,
-          speaker: turn.speaker,
-          raw_text: turn.raw_text,
-          cleaned_text: turn.cleaned_text,
-          metadata: turn.metadata,
-          created_at: turn.created_at
-        }))
-        
+        // Don't pre-populate results - they should only appear during actual cleaning
         setParsedTurns(turns)
-        setCleanedTurns(cleanedTurns)
-        setSelectedTab('results')
+        setCleanedTurns([])  // Keep results empty until cleaning starts
+        // Don't auto-switch to results tab - let user decide when to start cleaning
         
         addDetailedLog(`✅ Loaded conversation: ${conversation.name} with ${turnsResponse.turns.length} turns`)
       } else {
@@ -569,7 +602,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
 
   return (
     <div style={{
-      minHeight: '100vh',
+      height: '100vh',
+      maxHeight: '100vh',
+      overflow: 'hidden',
       backgroundColor: theme.bgSecondary,
       display: 'flex',
       flexDirection: 'column'
@@ -815,7 +850,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       </div>
 
       {/* Main Content */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
         {/* Left Panel - Input */}
         <div style={{ 
           width: `${leftPanelWidth}%`, 
@@ -828,62 +863,62 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         }}>
           <div style={{ padding: '24px', borderBottom: `1px solid ${theme.border}` }}>
             <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>Conversation</h2>
-            <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>Load conversations through the Conversations modal</p>
+            <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>
+              {conversationId && parsedTurns.length > 0 
+                ? `${parsedTurns.length} turns loaded • Ready for cleaning`
+                : 'Load conversations through the Conversations modal'
+              }
+            </p>
           </div>
           
-          <div style={{ flex: 1, overflow: 'auto', padding: '16px' }}>
+          <div style={{ 
+            flex: 1, 
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}>
             {conversationId && parsedTurns.length > 0 ? (
               // Show conversation turns
-              <div>
-                <div style={{ 
-                  marginBottom: '16px', 
-                  paddingBottom: '12px', 
-                  borderBottom: `1px solid ${theme.border}` 
-                }}>
-                  <h3 style={{ margin: '0 0 4px 0', fontSize: '16px', color: theme.text }}>
-                    Conversation Loaded
-                  </h3>
-                  <p style={{ margin: 0, fontSize: '12px', color: theme.textMuted }}>
-                    {parsedTurns.length} turns • Ready for cleaning
-                  </p>
-                </div>
-                
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {parsedTurns.slice(0, 10).map((turn, index) => (
-                    <div key={index} style={{
-                      padding: '8px 12px',
-                      backgroundColor: theme.bgSecondary,
-                      borderRadius: '6px',
-                      fontSize: '12px'
-                    }}>
-                      <div style={{ 
-                        fontWeight: '600', 
-                        color: turn.speaker === 'Lumen' ? theme.accent : theme.text,
-                        marginBottom: '4px'
+              <div style={{ 
+                flex: 1,
+                overflowY: 'auto',
+                overflowX: 'hidden',
+                padding: '16px',
+                scrollbarWidth: 'thin',
+                scrollbarColor: `${theme.textMuted} transparent`
+              }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {parsedTurns.map((turn, index) => (
+                      <div key={index} style={{
+                        padding: '10px 12px',
+                        backgroundColor: theme.bgSecondary,
+                        borderRadius: '8px',
+                        fontSize: '12px',
+                        border: `1px solid ${theme.border}`,
+                        transition: 'all 0.2s ease'
                       }}>
-                        {turn.speaker}:
+                        <div style={{ 
+                          fontWeight: '600', 
+                          color: turn.speaker === 'Lumen' ? theme.accent : theme.text,
+                          marginBottom: '6px',
+                          fontSize: '13px'
+                        }}>
+                          #{index + 1} {turn.speaker}:
+                        </div>
+                        <div style={{ 
+                          color: theme.textSecondary,
+                          fontFamily: 'monospace',
+                          lineHeight: '1.4',
+                          fontSize: '11px',
+                          wordBreak: 'break-word'
+                        }}>
+                          {turn.raw_text.substring(0, 200)}{turn.raw_text.length > 200 ? '...' : ''}
+                        </div>
                       </div>
-                      <div style={{ 
-                        color: theme.textSecondary,
-                        fontFamily: 'monospace',
-                        lineHeight: '1.4'
-                      }}>
-                        {turn.raw_text.substring(0, 150)}{turn.raw_text.length > 150 ? '...' : ''}
-                      </div>
-                    </div>
-                  ))}
-                  {parsedTurns.length > 10 && (
-                    <div style={{
-                      padding: '8px 12px',
-                      textAlign: 'center',
-                      color: theme.textMuted,
-                      fontSize: '12px'
-                    }}>
-                      ...and {parsedTurns.length - 10} more turns
-                    </div>
-                  )}
+                    ))}
+                  </div>
                 </div>
-              </div>
+            
             ) : (
               // Show instruction to load conversation
               <div style={{ 
@@ -1072,12 +1107,17 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           </div>
 
           {/* Tab Content */}
-          <div style={{ flex: 1, overflow: 'hidden' }}>
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
             {selectedTab === 'results' && (
-              <div style={{ height: '100%', overflowY: 'auto' }}>
-                <div style={{ padding: `${getSpacing(24)}px`, display: 'flex', flexDirection: 'column', gap: `${getSpacing(24)}px`, fontSize: getFontSize() }}>
-                  {/* Filter Controls */}
-                  {cleanedTurns.length > 0 && (
+              <>
+                {/* Filter Controls - Fixed at top */}
+                {cleanedTurns.length > 0 && (
+                  <div style={{ 
+                    padding: `${getSpacing(16)}px ${getSpacing(24)}px`,
+                    borderBottom: `1px solid ${theme.border}`,
+                    backgroundColor: theme.bg,
+                    flexShrink: 0
+                  }}>
                     <div style={{ 
                       display: 'flex', 
                       gap: '12px', 
@@ -1164,24 +1204,41 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                         </select>
                       </div>
                     </div>
-                  )}
-                  {/* Explanation Panel */}
-                  <div style={{ 
-                    backgroundColor: theme.bgTertiary, 
-                    borderRadius: '8px', 
-                    padding: '16px', 
-                    border: `1px solid ${theme.border}`,
-                    fontSize: '14px'
-                  }}>
-                    <div style={{ fontWeight: '600', color: theme.text, marginBottom: '8px' }}>Understanding the Results:</div>
-                    <div style={{ color: theme.textSecondary, lineHeight: '1.5' }}>
-                      • <strong>User turns</strong> (light blue background) are processed by AI for cleaning<br/>
-                      • <strong>Lumen turns</strong> (cyan background) pass through without processing<br/>
-                      • <strong>HIGH confidence</strong> (green) = AI is very confident in cleaning quality<br/>
-                      • <strong>MEDIUM confidence</strong> (yellow) = Moderately confident<br/>
-                      • <strong>LOW confidence</strong> (red) = Review recommended, possible transcription errors
-                    </div>
                   </div>
+                )}
+                
+                {/* Scrollable Content Area */}
+                <div style={{ 
+                  flex: 1,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  scrollbarWidth: 'thin',
+                  scrollbarColor: `${theme.textMuted} transparent`
+                }}>
+                  <div style={{ 
+                    padding: `${getSpacing(24)}px`, 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: `${getSpacing(16)}px`, 
+                    fontSize: getFontSize() 
+                  }}>
+                    {/* Explanation Panel */}
+                    <div style={{ 
+                      backgroundColor: theme.bgTertiary, 
+                      borderRadius: '8px', 
+                      padding: '16px', 
+                      border: `1px solid ${theme.border}`,
+                      fontSize: '14px'
+                    }}>
+                      <div style={{ fontWeight: '600', color: theme.text, marginBottom: '8px' }}>Understanding the Results:</div>
+                      <div style={{ color: theme.textSecondary, lineHeight: '1.5' }}>
+                        • <strong>User turns</strong> (light blue background) are processed by AI for cleaning<br/>
+                        • <strong>Lumen turns</strong> (cyan background) pass through without processing<br/>
+                        • <strong>HIGH confidence</strong> (green) = AI is very confident in cleaning quality<br/>
+                        • <strong>MEDIUM confidence</strong> (yellow) = Moderately confident<br/>
+                        • <strong>LOW confidence</strong> (red) = Review recommended, possible transcription errors
+                      </div>
+                    </div>
                   {/* Live Processing Indicator */}
                   {isProcessing && (
                     <div style={{ 
@@ -1225,8 +1282,24 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                   
                   {cleanedTurns.length === 0 && !isProcessing ? (
                     <div style={{ textAlign: 'center', padding: '48px', color: theme.textMuted }}>
-                      <div style={{ fontSize: '18px', fontWeight: '500', marginBottom: '8px' }}>No results yet</div>
-                      <div style={{ fontSize: '14px' }}>Process a transcript to see cleaning results here</div>
+                      {parsedTurns.length > 0 ? (
+                        <>
+                          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🧹</div>
+                          <div style={{ fontSize: '18px', fontWeight: '500', marginBottom: '8px', color: theme.text }}>Ready to clean transcript</div>
+                          <div style={{ fontSize: '14px', marginBottom: '20px' }}>
+                            {parsedTurns.length} turns loaded. Click "Start Cleaning" to begin processing.
+                          </div>
+                          <div style={{ fontSize: '13px', color: theme.textMuted, fontStyle: 'italic' }}>
+                            Results will appear here as each turn gets processed
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: '48px', marginBottom: '16px' }}>📊</div>
+                          <div style={{ fontSize: '18px', fontWeight: '500', marginBottom: '8px' }}>No results yet</div>
+                          <div style={{ fontSize: '14px' }}>Load a conversation and start cleaning to see results here</div>
+                        </>
+                      )}
                     </div>
                   ) : (
                     cleanedTurns
@@ -1238,6 +1311,59 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       .map((turn, index) => {
                       const diff = settings.showDiffs ? calculateDiff(turn.raw_text, turn.cleaned_text) : null
                       
+                      // Render minimal card for skipped turns
+                      if (turn.processing_state === 'skipped') {
+                        return (
+                          <div key={turn.turn_id} style={{ 
+                            backgroundColor: theme.bgSecondary,
+                            borderRadius: '8px', 
+                            padding: `${getSpacing(16)}px`, 
+                            border: `1px solid ${theme.border}`,
+                            marginBottom: `${getSpacing(12)}px`,
+                            opacity: 0.7
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                              <span style={{ fontSize: '14px', fontWeight: '500', color: theme.textMuted }}>
+                                Turn {index + 1}
+                              </span>
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                padding: '3px 8px',
+                                borderRadius: '9999px',
+                                fontSize: '11px',
+                                fontWeight: '500',
+                                backgroundColor: '#f3f4f6',
+                                color: '#6b7280'
+                              }}>
+                                {turn.speaker}
+                              </span>
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                padding: '3px 8px',
+                                borderRadius: '9999px',
+                                fontSize: '11px',
+                                fontWeight: '500',
+                                backgroundColor: '#e0e7ff',
+                                color: '#3730a3'
+                              }}>
+                                ⚡ Skipped
+                              </span>
+                              <span style={{ 
+                                fontSize: '12px', 
+                                color: theme.textMuted, 
+                                fontStyle: 'italic',
+                                flex: 1
+                              }}>
+                                {turn.raw_text.substring(0, 80)}{turn.raw_text.length > 80 ? '...' : ''}
+                              </span>
+                            </div>
+                          </div>
+                        )
+                      }
+                      
+                      // Render full card for processed turns
                       return (
                         <div key={turn.turn_id} style={{ 
                           backgroundColor: turn.speaker === 'User' ? 
@@ -1267,7 +1393,13 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                 {turn.speaker}
                               </span>
                               <span 
-                                title={`AI Confidence: ${turn.metadata.confidence_score === 'HIGH' ? 'Very confident in cleaning quality' : turn.metadata.confidence_score === 'MEDIUM' ? 'Moderately confident' : 'Low confidence - review recommended'}`}
+                                title={
+                                  turn.metadata.confidence_score === 'PENDING' ? 'Processing...' :
+                                  turn.metadata.confidence_score === 'BYPASS' ? 'Lumen response - no processing needed' :
+                                  turn.metadata.confidence_score === 'ERROR' ? 'Processing failed' :
+                                  turn.metadata.confidence_score === 'HIGH' ? 'Very confident in cleaning quality' : 
+                                  turn.metadata.confidence_score === 'MEDIUM' ? 'Moderately confident' : 'Low confidence - review recommended'
+                                }
                                 style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
@@ -1275,12 +1407,23 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                 borderRadius: '9999px',
                                 fontSize: '12px',
                                 fontWeight: '500',
-                                backgroundColor: turn.metadata.confidence_score === 'HIGH' ? '#dcfce7' : 
+                                backgroundColor: 
+                                  turn.metadata.confidence_score === 'PENDING' ? '#f3f4f6' :
+                                  turn.metadata.confidence_score === 'BYPASS' ? '#e0e7ff' :
+                                  turn.metadata.confidence_score === 'ERROR' ? '#fee2e2' :
+                                  turn.metadata.confidence_score === 'HIGH' ? '#dcfce7' : 
                                   turn.metadata.confidence_score === 'MEDIUM' ? '#fef3c7' : '#fee2e2',
-                                color: turn.metadata.confidence_score === 'HIGH' ? '#166534' : 
+                                color: 
+                                  turn.metadata.confidence_score === 'PENDING' ? '#6b7280' :
+                                  turn.metadata.confidence_score === 'BYPASS' ? '#3730a3' :
+                                  turn.metadata.confidence_score === 'ERROR' ? '#dc2626' :
+                                  turn.metadata.confidence_score === 'HIGH' ? '#166534' : 
                                   turn.metadata.confidence_score === 'MEDIUM' ? '#92400e' : '#991b1b',
                                 cursor: 'help'
                               }}>
+                                {turn.processing_state === 'processing' && (
+                                  <span style={{ marginRight: '4px' }}>⏳</span>
+                                )}
                                 {turn.metadata.confidence_score}
                               </span>
                               {turn.metadata.cleaning_applied && (
@@ -1360,108 +1503,153 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                             </div>
                           )}
                           
-                          {/* Side-by-Side Original vs Cleaned */}
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
-                            {/* Original Text */}
-                            <div style={{ 
-                              backgroundColor: theme.bgTertiary, 
-                              borderRadius: '6px', 
-                              padding: '16px',
-                              border: `1px solid ${theme.border}`
-                            }}>
+                          {/* Content Display - varies based on processing state */}
+                          {turn.processing_state === 'processing' ? (
+                            // Show processing state with single panel
+                            <div style={{ marginBottom: '16px' }}>
                               <div style={{ 
-                                fontSize: '12px', 
-                                fontWeight: '600', 
-                                color: theme.textMuted, 
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.05em',
-                                marginBottom: '8px' 
-                              }}>
-                                ORIGINAL → GEMINI
-                              </div>
-                              <div style={{ 
-                                color: theme.textSecondary, 
-                                lineHeight: '1.6', 
-                                fontSize: '14px',
-                                fontFamily: 'monospace',
-                                wordBreak: 'break-word'
-                              }}>
-                                {turn.raw_text}
-                              </div>
-                              <div style={{ 
-                                fontSize: '11px', 
-                                color: theme.textMuted, 
-                                marginTop: '8px',
-                                fontFamily: 'monospace'
-                              }}>
-                                {turn.raw_text.length} chars
-                              </div>
-                            </div>
-                            
-                            {/* Cleaned Text */}
-                            <div style={{ 
-                              backgroundColor: theme.bg, 
-                              borderRadius: '6px', 
-                              padding: '16px',
-                              border: `2px solid ${turn.metadata.cleaning_applied ? '#10b981' : theme.border}`
-                            }}>
-                              <div style={{ 
-                                fontSize: '12px', 
-                                fontWeight: '600', 
-                                color: turn.metadata.cleaning_applied ? '#10b981' : theme.textMuted, 
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.05em',
-                                marginBottom: '8px' 
-                              }}>
-                                GEMINI → CLEANED
-                              </div>
-                              <div style={{ 
-                                color: theme.text, 
-                                lineHeight: '1.6', 
-                                fontSize: '14px',
-                                wordBreak: 'break-word'
-                              }}>
-                                {turn.cleaned_text}
-                              </div>
-                              <div style={{ 
-                                fontSize: '11px', 
-                                color: theme.textMuted, 
-                                marginTop: '8px',
-                                fontFamily: 'monospace',
+                                backgroundColor: theme.bgTertiary, 
+                                borderRadius: '6px', 
+                                padding: '16px',
+                                border: `2px solid ${theme.accent}`,
                                 display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center'
+                                alignItems: 'center',
+                                gap: '16px'
                               }}>
-                                <span>{turn.cleaned_text.length} chars</span>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  <span style={{ color: turn.metadata.cleaning_applied ? '#10b981' : theme.textMuted }}>
-                                    {turn.metadata.processing_time_ms.toFixed(1)}ms
-                                  </span>
-                                  {turn.speaker === 'User' && turn.metadata.ai_model_used && (
-                                    <button
-                                      onClick={() => {
-                                        setInspectedTurn(turn)
-                                        setInspectorOpen(true)
-                                      }}
-                                      style={{
-                                        padding: '2px 6px',
-                                        fontSize: '11px',
-                                        backgroundColor: theme.bgSecondary,
-                                        border: `1px solid ${theme.border}`,
-                                        borderRadius: '3px',
-                                        color: theme.text,
-                                        cursor: 'pointer',
-                                        transition: 'all 0.15s ease'
-                                      }}
-                                      title="Inspect Gemini Query"
-                                    >
-                                      🔍
-                                    </button>
-                                  )}
+                                <div style={{
+                                  width: '16px',
+                                  height: '16px',
+                                  border: `3px solid ${theme.accent}`,
+                                  borderTopColor: 'transparent',
+                                  borderRadius: '50%',
+                                  animation: 'spin 1s linear infinite'
+                                }}></div>
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ 
+                                    fontSize: '12px', 
+                                    fontWeight: '600', 
+                                    color: theme.accent, 
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.05em',
+                                    marginBottom: '8px' 
+                                  }}>
+                                    PROCESSING WITH GEMINI...
+                                  </div>
+                                  <div style={{ 
+                                    color: theme.textSecondary, 
+                                    lineHeight: '1.6', 
+                                    fontSize: '14px',
+                                    wordBreak: 'break-word'
+                                  }}>
+                                    {turn.raw_text}
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                          </div>
+                          ) : (
+                            // Show side-by-side comparison for completed processing
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+                              {/* Original Text */}
+                              <div style={{ 
+                                backgroundColor: theme.bgTertiary, 
+                                borderRadius: '6px', 
+                                padding: '16px',
+                                border: `1px solid ${theme.border}`
+                              }}>
+                                <div style={{ 
+                                  fontSize: '12px', 
+                                  fontWeight: '600', 
+                                  color: theme.textMuted, 
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.05em',
+                                  marginBottom: '8px' 
+                                }}>
+                                  ORIGINAL TEXT
+                                </div>
+                                <div style={{ 
+                                  color: theme.textSecondary, 
+                                  lineHeight: '1.6', 
+                                  fontSize: '14px',
+                                  fontFamily: 'monospace',
+                                  wordBreak: 'break-word'
+                                }}>
+                                  {turn.raw_text}
+                                </div>
+                                <div style={{ 
+                                  fontSize: '11px', 
+                                  color: theme.textMuted, 
+                                  marginTop: '8px',
+                                  fontFamily: 'monospace'
+                                }}>
+                                  {turn.raw_text.length} chars
+                                </div>
+                              </div>
+                              
+                              {/* Cleaned Text - only show if actually processed */}
+                              <div style={{ 
+                                backgroundColor: theme.bg, 
+                                borderRadius: '6px', 
+                                padding: '16px',
+                                border: `2px solid ${turn.metadata.cleaning_applied ? '#10b981' : theme.border}`
+                              }}>
+                                <div style={{ 
+                                  fontSize: '12px', 
+                                  fontWeight: '600', 
+                                  color: turn.metadata.cleaning_applied ? '#10b981' : theme.textMuted, 
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.05em',
+                                  marginBottom: '8px' 
+                                }}>
+                                  {turn.metadata.cleaning_applied ? 'CLEANED RESULT' : 'NO CLEANING NEEDED'}
+                                </div>
+                                <div style={{ 
+                                  color: theme.text, 
+                                  lineHeight: '1.6', 
+                                  fontSize: '14px',
+                                  wordBreak: 'break-word'
+                                }}>
+                                  {turn.cleaned_text}
+                                </div>
+                                <div style={{ 
+                                  fontSize: '11px', 
+                                  color: theme.textMuted, 
+                                  marginTop: '8px',
+                                  fontFamily: 'monospace',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center'
+                                }}>
+                                  <span>{turn.cleaned_text.length} chars</span>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <span style={{ color: turn.metadata.cleaning_applied ? '#10b981' : theme.textMuted }}>
+                                      {turn.metadata.processing_time_ms.toFixed(1)}ms
+                                    </span>
+                                    {turn.speaker === 'User' && turn.metadata.ai_model_used && (
+                                      <button
+                                        onClick={() => {
+                                          setInspectedTurn(turn)
+                                          setInspectorOpen(true)
+                                        }}
+                                        style={{
+                                          padding: '2px 6px',
+                                          fontSize: '11px',
+                                          backgroundColor: theme.bgSecondary,
+                                          border: `1px solid ${theme.border}`,
+                                          borderRadius: '3px',
+                                          color: theme.text,
+                                          cursor: 'pointer',
+                                          transition: 'all 0.15s ease'
+                                        }}
+                                        title="Inspect Gemini Query"
+                                      >
+                                        🔍
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                           
                           {turn.metadata.corrections.length > 0 && (
                             <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: '16px' }}>
@@ -1512,8 +1700,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       )
                     })
                   )}
+                  </div>
                 </div>
-              </div>
+              </>
             )}
             
             {selectedTab === 'api' && (
@@ -2006,6 +2195,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             border: `1px solid ${theme.border}`,
             width: '90%',
             maxWidth: '1000px',
+            height: '80vh',
             maxHeight: '80vh',
             overflow: 'hidden',
             display: 'flex',
@@ -2042,9 +2232,18 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
               <div style={{
                 width: '40%',
                 borderRight: `1px solid ${theme.border}`,
-                padding: '20px',
-                overflow: 'auto'
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden'
               }}>
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  padding: '20px',
+                  scrollbarWidth: 'thin',
+                  scrollbarColor: `${theme.textMuted} transparent`
+                }}>
                 <h3 style={{ margin: '0 0 16px 0', fontSize: '16px', fontWeight: '600', color: theme.text }}>
                   Create New Conversation
                 </h3>
@@ -2132,14 +2331,24 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 >
                   {loadingConversations ? 'Creating...' : '💾 Save Conversation'}
                 </button>
+                </div>
               </div>
 
               {/* Right Panel - Existing Conversations */}
               <div style={{
                 width: '60%',
-                padding: '20px',
-                overflow: 'auto'
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden'
               }}>
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  padding: '20px',
+                  scrollbarWidth: 'thin',
+                  scrollbarColor: `${theme.textMuted} transparent`
+                }}>
                 <div style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -2239,6 +2448,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                     ))}
                   </div>
                 )}
+                </div>
               </div>
             </div>
           </div>
