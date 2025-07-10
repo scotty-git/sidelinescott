@@ -459,41 +459,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     }
   }
 
-  const loadConversationToEditor = async (conversation: any) => {
-    try {
-      // Set the conversation ID and load its turns
-      setConversationId(conversation.id)
-      setShowConversationsModal(false)
-      
-      // Load turns from the database
-      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as any
-      
-      if (turnsResponse.turns && turnsResponse.turns.length > 0) {
-        // Convert turns to the format expected by the UI
-        const turns = turnsResponse.turns.map((turn: any) => ({
-          speaker: turn.speaker,
-          raw_text: turn.raw_text,
-          turn_index: turnsResponse.turns.indexOf(turn),
-          original_speaker_label: turn.speaker,
-          vt_tags: [],
-          has_noise: false,
-          has_foreign_text: false
-        }))
-        
-        // Don't pre-populate results - they should only appear during actual cleaning
-        setParsedTurns(turns)
-        setCleanedTurns([])  // Keep results empty until cleaning starts
-        // Don't auto-switch to results tab - let user decide when to start cleaning
-        
-        addDetailedLog(`✅ Loaded conversation: ${conversation.name} with ${turnsResponse.turns.length} turns`)
-      } else {
-        addDetailedLog(`⚠️ Conversation loaded but no turns found. Use the Conversations modal to add transcript content.`)
-      }
-    } catch (error) {
-      console.error('Failed to load conversation:', error)
-      alert('Failed to load conversation')
-    }
-  }
+
 
   const openConversationsModal = () => {
     setShowConversationsModal(true)

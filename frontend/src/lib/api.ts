@@ -18,9 +18,13 @@ export class APIClient {
   ): Promise<T> {
     const url = `${this.baseURL}${endpoint}`
     
-    const headers: HeadersInit = {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      ...options.headers,
+    }
+
+    // Add any additional headers from options
+    if (options.headers) {
+      Object.assign(headers, options.headers)
     }
 
     if (this.authToken) {
