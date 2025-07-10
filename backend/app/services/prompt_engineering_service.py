@@ -117,6 +117,37 @@ IMPORTANT:
         import re
         variables = re.findall(r'{(\w+)}', template)
         return list(set(variables))  # Remove duplicates
+    
+    def validate_template_variables(self, template_str: str, variables: Dict[str, str]) -> Dict[str, Any]:
+        """Validate template variables against 5-variable system - NO auto-fixes"""
+        from app.core.variables import SUPPORTED_VARIABLES
+        
+        detected_vars = self._extract_variables(template_str)
+        warnings = []
+        errors = []
+        
+        # Check for unsupported variables
+        unsupported = [v for v in detected_vars if v not in SUPPORTED_VARIABLES]
+        if unsupported:
+            errors.append(f"Unsupported variables: {unsupported}")
+        
+        # Check for missing required variables
+        required_vars = [v for v in detected_vars if SUPPORTED_VARIABLES.get(v, {}).get("required", False)]
+        for var_name in required_vars:
+            if var_name not in variables or not variables[var_name]:
+                errors.append(f"Required variable '{var_name}' is missing or empty")
+        
+        # Generate warnings for empty optional variables (but don't error)
+        for var_name in detected_vars:
+            if var_name in variables and not variables[var_name]:
+                warnings.append(f"Variable '{var_name}' is empty - will appear blank in prompt")
+        
+        return {
+            "valid": len(errors) == 0,
+            "errors": errors,
+            "warnings": warnings,
+            "detected_variables": detected_vars
+        }
 
     async def get_templates(self, db: Session, include_inactive: bool = False) -> List[PromptTemplate]:
         """Get all prompt templates"""
@@ -174,12 +205,23 @@ IMPORTANT:
 
     async def render_prompt(self, db: Session, template_id: UUID, 
                           variables: Dict[str, Any]) -> Optional[RenderedPrompt]:
-        """Render a prompt with given variables"""
+        """Render prompt with pure variable substitution and validation"""
         template = await self.get_template(db, template_id)
         if not template:
             return None
         
+        # Validate template against 5-variable system
+        validation = self.validate_template_variables(template.template, variables)
+        if not validation["valid"]:
+            logger.error(f"Template validation failed: {validation['errors']}")
+            return None
+        
+        # Log warnings to console (don't block)
+        if validation["warnings"]:
+            logger.warning(f"Template warnings: {validation['warnings']}")
+        
         try:
+            # Pure substitution - no additions, no defaults
             rendered = template.template.format(**variables)
             
             # Convert variables to PromptVariable objects

@@ -18,6 +18,7 @@ from app.models.turn import Turn
 from app.core.database import get_db
 from app.services.gemini_service import GeminiService
 from app.services.prompt_engineering_service import PromptEngineeringService
+from app.core.variables import SUPPORTED_VARIABLES
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,38 @@ class ConversationManager:
             print(f"[ConversationManager] ❌ CONTEXT DEBUG: Continuing with fresh context")
             import traceback
             traceback.print_exc()
+    
+    def _build_template_variables(self, raw_text: str, cleaned_context: List[Dict[str, Any]], 
+                                 cleaning_decision: str, conversation) -> Dict[str, str]:
+        """Build variables for template using pure 5-variable system - NO defaults"""
+        
+        # Build context string from cleaned history
+        context_str = ""
+        if cleaned_context:
+            print(f"[ConversationManager] 📊 CONTEXT BUILD: Using {len(cleaned_context)} turns for context")
+            context_lines = []
+            for turn in cleaned_context[-5:]:  # Last 5 turns
+                line = f"{turn['speaker']}: {turn['cleaned_text']}"
+                context_lines.append(line)
+                print(f"[ConversationManager]   → Context line: {line[:100]}...")
+            context_str = "\n".join(context_lines)
+            print(f"[ConversationManager] ✅ CONTEXT BUILD: Built context string ({len(context_str)} chars)")
+        else:
+            print(f"[ConversationManager] ❌ CONTEXT BUILD: No context available!")
+        
+        # Build pure 5-variable system (NO defaults, NO additions)
+        variables = {
+            # Required variables (always present)
+            "raw_text": raw_text,
+            "conversation_context": context_str,  # Empty string if no context
+            "cleaning_level": cleaning_decision,
+            
+            # Optional variables (EXACTLY as provided, or empty string)
+            "call_context": conversation.call_context or "",
+            "additional_context": conversation.additional_context or ""
+        }
+        
+        return variables
     
     async def add_turn(self, conversation_id: UUID, speaker: str, raw_text: str, db: Session, 
                        sliding_window_size: int = 10, cleaning_level: str = "full", 
@@ -491,33 +524,47 @@ class ConversationManager:
             active_template = await self.prompt_service.get_or_create_default_template(db)
             print(f"[ConversationManager] Using prompt template: {active_template.name}")
             
-            # Build variables for prompt
-            print(f"[ConversationManager] 🔍 PROMPT BUILD DEBUG: Building context string for prompt template...")
-            context_str = ""
-            if cleaned_context:
-                print(f"[ConversationManager] 📊 PROMPT BUILD DEBUG: Using {len(cleaned_context)} turns for context")
-                context_lines = []
-                for turn in cleaned_context[-5:]:  # Last 5 turns
-                    line = f"{turn['speaker']}: {turn['cleaned_text']}"
-                    context_lines.append(line)
-                    print(f"[ConversationManager]   → Context line: {line[:100]}...")
-                context_str = "\n".join(context_lines)
-                print(f"[ConversationManager] ✅ PROMPT BUILD DEBUG: Built context string ({len(context_str)} chars)")
-            else:
-                print(f"[ConversationManager] ❌ PROMPT BUILD DEBUG: No context available for prompt template!")
+            # Get conversation object for context fields
+            from app.models.conversation import Conversation
+            conversation = db.query(Conversation).filter(
+                Conversation.id == conversation_id
+            ).first()
             
-            variables = {
-                "conversation_context": context_str,
-                "raw_text": raw_text,
-                "cleaning_level": cleaning_decision
-            }
+            if not conversation:
+                raise ValueError(f"Conversation {conversation_id} not found")
             
-            print(f"[ConversationManager] 📋 PROMPT BUILD DEBUG: Template variables:")
-            print(f"[ConversationManager]   → conversation_context: {len(context_str)} chars")
-            print(f"[ConversationManager]   → raw_text: '{raw_text[:50]}...'")
-            print(f"[ConversationManager]   → cleaning_level: {cleaning_decision}")
+            # Build variables using pure 5-variable system
+            print(f"[ConversationManager] 🎯 PURE VARIABLES: Building 5-variable system...")
+            variables = self._build_template_variables(
+                raw_text=raw_text,
+                cleaned_context=cleaned_context,
+                cleaning_decision=cleaning_decision,
+                conversation=conversation
+            )
             
-            # Render the prompt
+            # Debug: Show all variables being used
+            print(f"[ConversationManager] 📋 PURE VARIABLES: Built {len(variables)} variables:")
+            for key, value in variables.items():
+                preview = value[:50] + "..." if len(value) > 50 else value
+                print(f"[ConversationManager]   → {key}: '{preview}' ({len(value)} chars)")
+            
+            # Validate template variables and show warnings
+            validation = self.prompt_service.validate_template_variables(active_template.template, variables)
+            
+            # Log warnings to user (don't auto-fix)
+            if validation["warnings"]:
+                print(f"[ConversationManager] ⚠️ Template Warnings:")
+                for warning in validation["warnings"]:
+                    print(f"[ConversationManager]   → {warning}")
+            
+            # Fail if validation errors exist
+            if not validation["valid"]:
+                print(f"[ConversationManager] ❌ Template Errors:")
+                for error in validation["errors"]:
+                    print(f"[ConversationManager]   → {error}")
+                raise ValueError(f"Template validation failed: {validation['errors']}")
+            
+            # Render the prompt with validated variables
             rendered_prompt = await self.prompt_service.render_prompt(db, active_template.id, variables)
             if rendered_prompt:
                 print(f"[ConversationManager] Rendered prompt with {len(variables)} variables")

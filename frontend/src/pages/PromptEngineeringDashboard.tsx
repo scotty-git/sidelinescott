@@ -60,7 +60,9 @@ export function PromptEngineeringDashboard() {
   const [previewVariables, setPreviewVariables] = useState({
     conversation_context: 'User: Hey there\nLumen: Hello! How can I help you today?',
     raw_text: 'So umm, like, I was thinking we could maybe, you know, try to...',
-    cleaning_level: 'full'
+    cleaning_level: 'full',
+    call_context: '',
+    additional_context: ''
   })
   const [renderedPreview, setRenderedPreview] = useState<RenderedPrompt | null>(null)
 
@@ -457,11 +459,25 @@ export function PromptEngineeringDashboard() {
                 border: `1px solid ${theme.border}`,
                 padding: '16px'
               }}>
-                <h4 style={{ margin: '0 0 16px 0' }}>Preview Variables</h4>
+                <h4 style={{ margin: '0 0 8px 0' }}>Preview Variables</h4>
+                <div style={{ 
+                  backgroundColor: theme.bgTertiary, 
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: '4px',
+                  padding: '8px',
+                  marginBottom: '16px',
+                  fontSize: '11px',
+                  color: theme.textMuted
+                }}>
+                  <strong style={{ color: theme.text }}>5-Variable System:</strong><br/>
+                  <span style={{ color: theme.error }}>Required:</span> raw_text, conversation_context, cleaning_level<br/>
+                  <span style={{ color: theme.warning }}>Optional:</span> call_context, additional_context<br/>
+                  <em>Empty variables appear as blank in prompt (no hidden defaults)</em>
+                </div>
                 
                 <div style={{ marginBottom: '12px' }}>
                   <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
-                    conversation_context
+                    conversation_context <span style={{ color: theme.error }}>(required)</span>
                   </label>
                   <textarea
                     value={previewVariables.conversation_context}
@@ -483,7 +499,7 @@ export function PromptEngineeringDashboard() {
 
                 <div style={{ marginBottom: '12px' }}>
                   <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
-                    raw_text
+                    raw_text <span style={{ color: theme.error }}>(required)</span>
                   </label>
                   <textarea
                     value={previewVariables.raw_text}
@@ -505,7 +521,7 @@ export function PromptEngineeringDashboard() {
 
                 <div style={{ marginBottom: '16px' }}>
                   <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
-                    cleaning_level
+                    cleaning_level <span style={{ color: theme.error }}>(required)</span>
                   </label>
                   <select
                     value={previewVariables.cleaning_level}
@@ -524,6 +540,52 @@ export function PromptEngineeringDashboard() {
                     <option value="full">full</option>
                     <option value="none">none</option>
                   </select>
+                </div>
+
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
+                    call_context <span style={{ color: theme.warning }}>(optional)</span>
+                  </label>
+                  <textarea
+                    value={previewVariables.call_context}
+                    onChange={(e) => setPreviewVariables({...previewVariables, call_context: e.target.value})}
+                    placeholder="Business context from prequalification flow..."
+                    style={{
+                      width: '100%',
+                      height: '60px',
+                      padding: '8px',
+                      backgroundColor: theme.bg,
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '4px',
+                      color: theme.text,
+                      fontSize: '12px',
+                      fontFamily: 'monospace',
+                      resize: 'vertical'
+                    }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
+                    additional_context <span style={{ color: theme.warning }}>(optional)</span>
+                  </label>
+                  <textarea
+                    value={previewVariables.additional_context}
+                    onChange={(e) => setPreviewVariables({...previewVariables, additional_context: e.target.value})}
+                    placeholder="User-defined additional context for cleaning..."
+                    style={{
+                      width: '100%',
+                      height: '60px',
+                      padding: '8px',
+                      backgroundColor: theme.bg,
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '4px',
+                      color: theme.text,
+                      fontSize: '12px',
+                      fontFamily: 'monospace',
+                      resize: 'vertical'
+                    }}
+                  />
                 </div>
 
                 <button

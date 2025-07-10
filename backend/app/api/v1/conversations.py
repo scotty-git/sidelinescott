@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends, Body
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
+from uuid import UUID
 from app.schemas.conversations import (
     CreateConversationRequest, 
     ConversationResponse, 
@@ -286,3 +287,76 @@ async def create_turn(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Turn processing failed: {str(e)}"
         )
+
+
+@router.put("/{conversation_id}/context")
+async def update_conversation_context(
+    conversation_id: UUID,
+    call_context: Optional[str] = Body(None),
+    additional_context: Optional[str] = Body(None),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update conversation context fields for 5-variable system"""
+    
+    # Get the conversation
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == current_user['id']
+    ).first()
+    
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+    
+    # Update only provided fields
+    if call_context is not None:
+        conversation.call_context = call_context
+    if additional_context is not None:
+        conversation.additional_context = additional_context
+    
+    try:
+        db.commit()
+        db.refresh(conversation)
+        
+        return {
+            "conversation_id": str(conversation.id),
+            "call_context": conversation.call_context,
+            "additional_context": conversation.additional_context,
+            "message": "Context updated successfully"
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update context: {str(e)}"
+        )
+
+
+@router.get("/{conversation_id}/context")
+async def get_conversation_context(
+    conversation_id: UUID,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get conversation context fields"""
+    
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == current_user['id']
+    ).first()
+    
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+    
+    return {
+        "conversation_id": str(conversation.id),
+        "call_context": conversation.call_context or "",
+        "additional_context": conversation.additional_context or ""
+    }

@@ -10,7 +10,13 @@ Usage:
     python start_servers.py
     
 To stop: Press Ctrl+C
+
+
+Legacy path (Good for debugging):
+cd backend && source venv/bin/activate && uvicorn app.main:app --reload
+cd frontend && npm run dev
 """
+
 
 import subprocess
 import sys
