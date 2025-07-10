@@ -105,6 +105,51 @@ export class APIClient {
       method: 'DELETE',
     })
   }
+
+  // Evaluation endpoints
+  async getEvaluations(conversationId: string) {
+    return this.request(`/api/v1/evaluations/conversations/${conversationId}/evaluations`)
+  }
+
+  async getEvaluationDetails(evaluationId: string) {
+    return this.request(`/api/v1/evaluations/evaluations/${evaluationId}`)
+  }
+
+  async createEvaluation(conversationId: string, data: {
+    name: string
+    description?: string
+    prompt_template?: string
+    settings?: any
+  }) {
+    return this.request(`/api/v1/evaluations/conversations/${conversationId}/evaluations`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async processAllTurns(evaluationId: string) {
+    return this.request(`/api/v1/evaluations/evaluations/${evaluationId}/process-all`, {
+      method: 'POST',
+    })
+  }
+
+  async deleteEvaluation(evaluationId: string) {
+    return this.request(`/api/v1/evaluations/evaluations/${evaluationId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  // Legacy conversation endpoints (for raw turns)
+  async parseTranscript(conversationId: string, rawTranscript: string) {
+    return this.request(`/api/v1/conversations/${conversationId}/parse-transcript`, {
+      method: 'POST',
+      body: JSON.stringify({ raw_transcript: rawTranscript }),
+    })
+  }
+
+  async getConversationTurns(conversationId: string) {
+    return this.request(`/api/v1/conversations/${conversationId}/turns`)
+  }
 }
 
 export const apiClient = new APIClient()

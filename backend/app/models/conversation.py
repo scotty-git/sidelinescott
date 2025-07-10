@@ -25,3 +25,4 @@ class Conversation(Base):
 
     # Relationships (removed User relationship since we use Supabase Auth)
     turns = relationship("Turn", back_populates="conversation", cascade="all, delete-orphan")
+    evaluations = relationship("Evaluation", back_populates="conversation", cascade="all, delete-orphan")
