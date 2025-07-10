@@ -831,6 +831,130 @@ class ConversationManager:
             'created_at': db_turn.created_at.isoformat()
         }
     
+    async def process_turn_preview(self, conversation_id: UUID, speaker: str, raw_text: str, 
+                                   context: List[Dict[str, Any]] = None,
+                                   sliding_window_size: int = 10, cleaning_level: str = "full", 
+                                   model_params: Dict[str, Any] = None, skip_transcription_errors: bool = True) -> Dict[str, Any]:
+        """
+        Process a turn for preview WITHOUT saving to database.
+        
+        This method:
+        - Processes the turn with CleanerContext intelligence
+        - Uses provided context instead of loading from database
+        - Returns cleaned results with all metadata
+        - Does NOT save anything to database
+        """
+        start_time = time.time()
+        print(f"\n[ConversationManager] ===== PREVIEW PROCESSING =====")
+        print(f"[ConversationManager] Conversation: {conversation_id}")
+        print(f"[ConversationManager] Speaker: {speaker}")
+        print(f"[ConversationManager] Raw text: '{raw_text}'")
+        print(f"[ConversationManager] Context provided: {len(context) if context else 0} turns")
+        print(f"[ConversationManager] PREVIEW MODE: No database saves")
+        
+        # Skip processing for Lumen turns (instant bypass)
+        if speaker.lower() in ['lumen', 'ai', 'assistant']:
+            processing_time_ms = (time.time() - start_time) * 1000
+            print(f"[ConversationManager] ⚡ Lumen turn bypass in {processing_time_ms:.2f}ms")
+            
+            import uuid
+            from datetime import datetime
+            
+            return {
+                'turn_id': str(uuid.uuid4()),  # Generate preview ID
+                'conversation_id': str(conversation_id),
+                'speaker': speaker,
+                'raw_text': raw_text,
+                'cleaned_text': raw_text,  # No cleaning for Lumen
+                'metadata': {
+                    'confidence_score': 'BYPASS',
+                    'cleaning_applied': False,
+                    'cleaning_level': 'none',
+                    'processing_time_ms': processing_time_ms,
+                    'timing_breakdown': {
+                        'context_retrieval_ms': 0,
+                        'prompt_preparation_ms': 0,
+                        'gemini_api_ms': 0,
+                        'database_save_ms': 0,
+                        'prompt_logging_ms': 0,
+                        'total_ms': processing_time_ms
+                    },
+                    'corrections': [],
+                    'context_detected': 'ai_response',
+                    'ai_model_used': None,
+                    'gemini_prompt': None,
+                    'gemini_response': None
+                },
+                'created_at': datetime.utcnow().isoformat()
+            }
+        
+        # Process user turn with Gemini
+        process_start = time.time()
+        
+        # Convert provided context (ContextTurn objects) to the format expected by Gemini
+        cleaned_context = []
+        if context:
+            for turn in context:
+                # Convert ContextTurn object to dictionary format
+                cleaned_context.append({
+                    'speaker': turn.speaker,
+                    'cleaned_text': turn.cleaned_text
+                })
+        print(f"[ConversationManager] Using provided context: {len(cleaned_context)} turns")
+        
+        # Process with Gemini using the same method as regular processing
+        gemini_start = time.time()
+        cleaned_result = await self.gemini_service.clean_conversation_turn(
+            raw_text=raw_text,
+            speaker=speaker,
+            cleaned_context=cleaned_context,
+            cleaning_level=cleaning_level,
+            model_params=model_params,
+            rendered_prompt=None  # Uses hardcoded prompt in Gemini service
+        )
+        gemini_time = (time.time() - gemini_start) * 1000
+        
+        processing_time_ms = (time.time() - process_start) * 1000
+        total_time_ms = (time.time() - start_time) * 1000
+        
+        # Build timing breakdown
+        timing_breakdown = {
+            'context_retrieval_ms': 0,  # No DB access in preview
+            'prompt_preparation_ms': 0,  # No prompt preparation in preview
+            'gemini_api_ms': gemini_time,
+            'database_save_ms': 0,  # No save in preview
+            'prompt_logging_ms': 0,  # No logging in preview
+            'total_ms': total_time_ms
+        }
+        
+        print(f"[ConversationManager] ✅ Preview processed in {total_time_ms:.2f}ms")
+        print(f"[ConversationManager] Cleaning applied: {cleaned_result['metadata']['cleaning_applied']}")
+        print(f"[ConversationManager] Confidence: {cleaned_result['metadata']['confidence_score']}")
+        
+        import uuid
+        from datetime import datetime
+        
+        return {
+            'turn_id': str(uuid.uuid4()),  # Generate preview ID
+            'conversation_id': str(conversation_id),
+            'speaker': speaker,
+            'raw_text': raw_text,
+            'cleaned_text': cleaned_result['cleaned_text'],
+            'metadata': {
+                'confidence_score': cleaned_result['metadata']['confidence_score'],
+                'cleaning_applied': cleaned_result['metadata']['cleaning_applied'],
+                'cleaning_level': cleaned_result['metadata']['cleaning_level'],
+                'processing_time_ms': processing_time_ms,
+                'timing_breakdown': timing_breakdown,
+                'corrections': cleaned_result['metadata']['corrections'],
+                'context_detected': cleaned_result['metadata']['context_detected'],
+                'ai_model_used': cleaned_result['metadata']['ai_model_used'],
+                'gemini_prompt': cleaned_result.get('prompt_used', None),
+                'gemini_response': cleaned_result.get('raw_response', None)
+            },
+            'created_at': datetime.utcnow().isoformat()
+        }
+    
     def _analyze_cleaning_need(self, raw_text: str) -> str:
         """
         Analyze text to determine optimal cleaning level

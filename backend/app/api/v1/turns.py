@@ -24,6 +24,87 @@ logger = logging.getLogger(__name__)
 # Global conversation manager instance
 conversation_manager = ConversationManager()
 
+@router.post("/{conversation_id}/clean-preview", response_model=TurnResponse)
+async def clean_preview(
+    conversation_id: UUID,
+    turn_data: TurnCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> TurnResponse:
+    """
+    Preview cleaning for a conversation turn WITHOUT saving to database.
+    
+    This endpoint:
+    - Processes the turn with CleanerContext intelligence
+    - Returns cleaned results with all metadata
+    - Does NOT save anything to the database
+    - Perfect for preview/draft mode before user decides to save
+    """
+    print(f"\n[TurnsAPI] ===== CLEAN PREVIEW REQUEST =====")
+    print(f"[TurnsAPI] Conversation ID: {conversation_id}")
+    print(f"[TurnsAPI] Speaker: {turn_data.speaker}")
+    print(f"[TurnsAPI] Raw text length: {len(turn_data.raw_text)} chars")
+    print(f"[TurnsAPI] User: {current_user['email']}")
+    print(f"[TurnsAPI] PREVIEW MODE: Results will NOT be saved to database")
+    
+    # Verify conversation exists and belongs to authenticated user
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == current_user["id"]
+    ).first()
+    
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found or access denied"
+        )
+    
+    print(f"[TurnsAPI] ✅ Conversation verified: '{conversation.name}'")
+    
+    try:
+        # Extract parameters from metadata
+        sliding_window_size = turn_data.metadata.get('sliding_window', 10) if turn_data.metadata else 10
+        cleaning_level = turn_data.metadata.get('cleaning_level', 'full') if turn_data.metadata else 'full'
+        model_params = turn_data.metadata.get('model_params') if turn_data.metadata else None
+        skip_transcription_errors = turn_data.metadata.get('skip_transcription_errors', True) if turn_data.metadata else True
+        
+        print(f"[TurnsAPI] Configuration: sliding_window={sliding_window_size}, cleaning_level={cleaning_level}")
+        print(f"[TurnsAPI] Skip transcription errors: {skip_transcription_errors}")
+        if model_params:
+            print(f"[TurnsAPI] Model params: {model_params}")
+        
+        # Get provided context from frontend
+        context = turn_data.context if hasattr(turn_data, 'context') and turn_data.context else []
+        print(f"[TurnsAPI] Provided context: {len(context)} turns")
+        
+        # Process turn through ConversationManager in PREVIEW MODE
+        print(f"[TurnsAPI] 🚀 Processing in preview mode (no database save)...")
+        result = await conversation_manager.process_turn_preview(
+            conversation_id=conversation_id,
+            speaker=turn_data.speaker,
+            raw_text=turn_data.raw_text,
+            context=context,
+            sliding_window_size=sliding_window_size,
+            cleaning_level=cleaning_level,
+            model_params=model_params,
+            skip_transcription_errors=skip_transcription_errors
+        )
+        
+        print(f"[TurnsAPI] ✅ Preview processed successfully")
+        print(f"[TurnsAPI] Processing time: {result['metadata']['processing_time_ms']:.2f}ms")
+        print(f"[TurnsAPI] Cleaning applied: {result['metadata']['cleaning_applied']}")
+        print(f"[TurnsAPI] Preview mode: No database changes made")
+        
+        return TurnResponse(**result)
+        
+    except Exception as e:
+        logger.error(f"Preview processing failed: {str(e)}")
+        print(f"[TurnsAPI] ❌ Preview processing failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Preview processing failed: {str(e)}"
+        )
+
 @router.post("/{conversation_id}/turns", response_model=TurnResponse)
 async def create_turn(
     conversation_id: UUID,

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react'
+import React, { useState } from 'react'
 import { apiClient } from '../lib/api'
 import { GeminiQueryInspector } from '../components/GeminiQueryInspector'
 
@@ -18,6 +18,7 @@ interface CleanedTurn {
   speaker: string
   raw_text: string
   cleaned_text: string
+  processing_state?: 'pending' | 'processing' | 'completed' | 'skipped'
   metadata: {
     confidence_score: string
     cleaning_applied: boolean
@@ -112,10 +113,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   }
   
   // State declarations
-  const [rawTranscript, setRawTranscript] = useState('')
   const [parsedTurns, setParsedTurns] = useState<ParsedTurn[]>([])
   const [cleanedTurns, setCleanedTurns] = useState<CleanedTurn[]>([])
-  const [processingStats, setProcessingStats] = useState<ProcessingStats | null>(null)
+  const [processingStats] = useState<ProcessingStats | null>(null)
   const [apiCalls, setApiCalls] = useState<APICall[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
   const [currentTurnIndex, setCurrentTurnIndex] = useState(0)
@@ -134,6 +134,15 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const [inspectedTurn, setInspectedTurn] = useState<CleanedTurn | null>(null)
   const [showProfileDropdown, setShowProfileDropdown] = useState(false)
+  
+  // Conversations modal state
+  const [showConversationsModal, setShowConversationsModal] = useState(false)
+  const [conversations, setConversations] = useState<any[]>([])
+  const [conversationEvaluations, setConversationEvaluations] = useState<{[key: string]: any[]}>({})
+  const [loadingConversations, setLoadingConversations] = useState(false)
+  const [newConversationName, setNewConversationName] = useState('')
+  const [newConversationDescription, setNewConversationDescription] = useState('')
+  const [newConversationText, setNewConversationText] = useState('')
   
   // Save panel width to localStorage
   React.useEffect(() => {
@@ -213,7 +222,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
 
   const apiCallWithLogging = async (method: string, endpoint: string, data?: any) => {
     const startTime = Date.now()
-    const callId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    const callId = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
     
     try {
       let response
@@ -256,37 +265,14 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     }
   }
 
-  const parseTranscript = async () => {
-    if (!rawTranscript.trim()) return
-
-    addDetailedLog(`Starting transcript parsing - ${rawTranscript.length} characters`)
-    try {
-      setIsProcessing(true)
-      const response = await apiCallWithLogging('POST', '/api/v1/conversations/parse-transcript', {
-        raw_transcript: rawTranscript
-      })
-
-      setParsedTurns(response.parsed_turns)
-      setProcessingStats(response.stats)
-      addDetailedLog(`✅ Transcript parsed successfully: ${response.parsed_turns.length} turns`)
-      
-      if (settings.autoStart) {
-        addDetailedLog('Auto-start enabled, beginning cleaning in 500ms')
-        setTimeout(() => startCleaning(), 500)
-      }
-    } catch (error) {
-      addDetailedLog(`❌ Parse error: ${error}`)
-      console.error('Parse error:', error)
-    } finally {
-      setIsProcessing(false)
-      addDetailedLog('Parse transcript process completed')
-    }
-  }
 
   const startCleaning = async () => {
-    if (parsedTurns.length === 0) return
+    if (!conversationId) {
+      addDetailedLog(`❌ Cannot start cleaning: No conversation selected`)
+      return
+    }
 
-    addDetailedLog(`Starting cleaning process for ${parsedTurns.length} turns`)
+    addDetailedLog(`🧹 Starting evaluation-based cleaning for conversation: ${conversationId}`)
 
     setIsProcessing(true)
     setCleanedTurns([])
@@ -294,12 +280,16 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     setSelectedTab('results')
     
     try {
-      // Create new conversation
-      const convResponse = await apiCallWithLogging('POST', '/api/v1/conversations', {
-        name: `Professional Session ${new Date().toLocaleString()}`,
-        description: `Professional dev tool session - ${parsedTurns.length} turns`,
-        metadata: {
+      // Step 1: Create a new evaluation for this cleaning session
+      addDetailedLog('📋 Creating new evaluation...')
+      const evaluationName = `Evaluation ${new Date().toLocaleString()}`
+      const evaluationData = {
+        name: evaluationName,
+        description: `Auto-created evaluation with ${settings.cleaningLevel} cleaning`,
+        settings: {
           sliding_window: settings.slidingWindow,
+          cleaning_level: settings.cleaningLevel,
+          skip_transcription_errors: settings.skipTranscriptionErrors,
           model_params: {
             temperature: settings.temperature,
             top_p: settings.topP,
@@ -308,107 +298,65 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             model_name: settings.modelName
           }
         }
-      })
-      
-      const newConversationId = convResponse.id || convResponse.conversation?.id
-      if (!newConversationId) {
-        throw new Error('Failed to get conversation ID from response')
       }
-      addDetailedLog(`📝 Conversation created with ID: ${newConversationId}`)
-      setConversationId(newConversationId)
       
-      // Process turns sequentially with real-time display
-      const cleaned: CleanedTurn[] = []
-      addDetailedLog(`🚀 Starting sequential cleaning of ${parsedTurns.length} turns`)
+      const evaluationResponse = await apiCallWithLogging('POST', `/api/v1/evaluations/conversations/${conversationId}/evaluations`, evaluationData) as any
+      const evaluationId = evaluationResponse.id
+      addDetailedLog(`✅ Created evaluation: ${evaluationName} (${evaluationId})`)
+      
+      // Step 2: Get raw turns from the conversation
+      addDetailedLog('🔍 Fetching raw turns from conversation...')
+      const turnsResponse = await apiCallWithLogging('GET', `/api/v1/conversations/${conversationId}/turns`) as any
+      const rawTurns = turnsResponse.turns || []
+      addDetailedLog(`📊 Found ${rawTurns.length} raw turns to process`)
+      
+      // Step 3: Process all turns automatically using the evaluation system
+      addDetailedLog(`🚀 Processing all ${rawTurns.length} turns through evaluation system...`)
       addDetailedLog(`Sliding window: ${settings.slidingWindow} turns | Cleaning level: ${settings.cleaningLevel}`)
+      addDetailedLog(`🔄 EVALUATION MODE: All turns will be processed and saved automatically`)
       
-      for (let i = 0; i < parsedTurns.length; i++) {
-        const turn = parsedTurns[i]
-        setCurrentTurnIndex(i)
-        
-        addDetailedLog(`\n📍 Processing turn ${i + 1}/${parsedTurns.length}: ${turn.speaker}`)
-        addDetailedLog(`Raw text (${turn.raw_text.length} chars): "${turn.raw_text.substring(0, 100)}${turn.raw_text.length > 100 ? '...' : ''}"")`)
-        
-        // Log context being sent
-        if (cleaned.length > 0) {
-          const contextTurns = cleaned.slice(-settings.slidingWindow)
-          addDetailedLog(`📚 Context: Sending ${contextTurns.length} previous cleaned turns as context`)
-          contextTurns.forEach((ctx, idx) => {
-            addDetailedLog(`  Context[${idx + 1}]: ${ctx.speaker} - "${ctx.cleaned_text.substring(0, 50)}...""`)
-          })
-        } else {
-          addDetailedLog(`📚 Context: No previous turns (first turn)`)
-        }
-        
-        try {
-          addDetailedLog(`🤖 Sending to Gemini 2.5 Flash-Lite...`)
-          const turnStartTime = Date.now()
-          
-          // Call the turn processing endpoint - THIS WAS MISSING
-          const cleanResponse = await apiCallWithLogging('POST', `/api/v1/conversations/${newConversationId}/turns`, {
-            speaker: turn.speaker,
-            raw_text: turn.raw_text,
-            metadata: {
-              sliding_window: settings.slidingWindow,
-              cleaning_level: settings.cleaningLevel,
-              skip_transcription_errors: settings.skipTranscriptionErrors,
-              model_params: {
-                temperature: settings.temperature,
-                top_p: settings.topP,
-                top_k: settings.topK,
-                max_tokens: settings.maxTokens,
-                model_name: settings.modelName
-              }
-            }
-          })
-          
-          const turnEndTime = Date.now()
-          const turnProcessingTime = turnEndTime - turnStartTime
-          
-          addDetailedLog(`✅ Turn ${i + 1} processed in ${turnProcessingTime}ms`)
-          addDetailedLog(`Cleaned text (${cleanResponse.cleaned_text.length} chars): "${cleanResponse.cleaned_text.substring(0, 100)}${cleanResponse.cleaned_text.length > 100 ? '...' : ''}"")`)
-          addDetailedLog(`Confidence: ${cleanResponse.metadata.confidence_score} | Cleaning applied: ${cleanResponse.metadata.cleaning_applied}`)
-          
-          if (cleanResponse.metadata.corrections && cleanResponse.metadata.corrections.length > 0) {
-            addDetailedLog(`🔧 Applied ${cleanResponse.metadata.corrections.length} corrections:`)
-            cleanResponse.metadata.corrections.forEach((correction, idx) => {
-              addDetailedLog(`  ${idx + 1}. "${correction.original}" → "${correction.corrected}" (${correction.reason})`)
-            })
-          }
-          
-          cleaned.push(cleanResponse)
-          setCleanedTurns([...cleaned])
-          
-          // Real-time update with progress indicator
-          await new Promise(resolve => setTimeout(resolve, 200))
-          
-        } catch (turnError) {
-          addDetailedLog(`❌ Turn ${i + 1} failed: ${turnError}`)
-          console.error(`Turn ${i + 1} failed:`, turnError)
-          // Create error turn to show in UI
-          const errorTurn: CleanedTurn = {
-            turn_id: `error-${i}`,
-            conversation_id: newConversationId,
-            speaker: turn.speaker,
-            raw_text: turn.raw_text,
-            cleaned_text: turn.raw_text,
-            metadata: {
-              confidence_score: 'LOW',
-              cleaning_applied: false,
-              cleaning_level: 'none',
-              corrections: [],
-              context_detected: 'error',
-              processing_time_ms: 0,
-              ai_model_used: 'error'
-            },
-            created_at: new Date().toISOString()
-          }
-          cleaned.push(errorTurn)
-          setCleanedTurns([...cleaned])
-        }
+      const processAllResponse = await apiCallWithLogging('POST', `/api/v1/evaluations/evaluations/${evaluationId}/process-all`) as any
+      addDetailedLog(`✅ Batch processing completed: ${processAllResponse.processed_successfully}/${processAllResponse.total_turns} turns processed`)
+      
+      if (processAllResponse.failed_turns > 0) {
+        addDetailedLog(`⚠️ ${processAllResponse.failed_turns} turns failed to process`)
+        processAllResponse.failed_details?.forEach((fail: any) => {
+          addDetailedLog(`❌ Failed turn: ${fail.speaker} - ${fail.error}`)
+        })
       }
-    } catch (error) {
-      addDetailedLog(`❌ Cleaning process failed: ${error}`)
+      
+      // Step 4: Load the completed evaluation results for display
+      addDetailedLog('📋 Loading evaluation results for display...')
+      const evaluationDetails = await apiCallWithLogging('GET', `/api/v1/evaluations/evaluations/${evaluationId}`) as any
+      
+      // Convert evaluation results to the format expected by the UI
+      const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any) => ({
+        turn_id: cleanedTurn.turn_id,
+        conversation_id: conversationId,
+        speaker: cleanedTurn.raw_speaker,
+        raw_text: cleanedTurn.raw_text,
+        cleaned_text: cleanedTurn.cleaned_text,
+        processing_state: 'completed',
+        metadata: {
+          confidence_score: cleanedTurn.confidence_score,
+          cleaning_applied: cleanedTurn.cleaning_applied,
+          cleaning_level: cleanedTurn.cleaning_level,
+          corrections: cleanedTurn.corrections,
+          context_detected: cleanedTurn.context_detected,
+          processing_time_ms: cleanedTurn.processing_time_ms,
+          ai_model_used: cleanedTurn.ai_model_used
+        },
+        created_at: cleanedTurn.created_at
+      }))
+      
+      setCleanedTurns(cleaned)
+      addDetailedLog(`🎉 Evaluation completed! ${cleaned.length} turns loaded for display`)
+      
+      // All processing is handled by the evaluation system automatically!
+      
+    
+    } catch (error: any) {
+      addDetailedLog(`❌ Cleaning process failed: ${error.message || error}`)
       console.error('Cleaning error:', error)
       alert(`Cleaning failed: ${error.message || error}`)
     } finally {
@@ -418,17 +366,218 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     }
   }
 
-  const loadExampleScript = async () => {
+
+  // Conversations management functions
+  const loadConversations = async () => {
     try {
-      const response = await fetch('/examplescripts/examplescript2')
-      const content = await response.text()
-      setRawTranscript(content)
+      setLoadingConversations(true)
+      const response = await apiClient.get('/api/v1/conversations') as any
+      const conversationList = response.conversations || []
+      setConversations(conversationList)
       
-      if (settings.autoStart) {
-        setTimeout(() => parseTranscript(), 100)
+      // Load evaluations for each conversation
+      const evaluationData: {[key: string]: any[]} = {}
+      for (const conversation of conversationList) {
+        try {
+          const evaluationsResponse = await apiClient.getEvaluations(conversation.id) as any
+          evaluationData[conversation.id] = evaluationsResponse.evaluations || []
+        } catch (error) {
+          console.error(`Failed to load evaluations for conversation ${conversation.id}:`, error)
+          evaluationData[conversation.id] = []
+        }
+      }
+      setConversationEvaluations(evaluationData)
+    } catch (error) {
+      console.error('Failed to load conversations:', error)
+    } finally {
+      setLoadingConversations(false)
+    }
+  }
+
+  const createConversation = async () => {
+    if (!newConversationName.trim() || !newConversationText.trim()) {
+      alert('Please provide both name and conversation text')
+      return
+    }
+
+    try {
+      setLoadingConversations(true)
+      
+      // Step 1: Create the conversation
+      const convResponse = await apiClient.post('/api/v1/conversations', {
+        name: newConversationName,
+        description: newConversationDescription,
+        metadata: {
+          source: 'manual_input',
+          raw_transcript: newConversationText
+        }
+      })
+      
+      const conversationId = (convResponse as any).id
+      addDetailedLog(`✅ Created conversation: ${newConversationName}`)
+      
+      // Step 2: Parse the transcript and save turns
+      addDetailedLog(`🔄 Parsing transcript and saving turns...`)
+      await apiClient.post(`/api/v1/conversations/${conversationId}/parse-transcript`, {
+        raw_transcript: newConversationText
+      })
+      
+      addDetailedLog(`✅ Transcript parsed and turns saved to database`)
+      
+      // Reset form
+      setNewConversationName('')
+      setNewConversationDescription('')
+      setNewConversationText('')
+      
+      // Reload conversations to show updated turns_count
+      await loadConversations()
+      
+      addDetailedLog(`🎉 Conversation created successfully with turns saved!`)
+    } catch (error) {
+      console.error('Failed to create conversation:', error)
+      alert('Failed to create conversation')
+      addDetailedLog(`❌ Failed to create conversation: ${error}`)
+    } finally {
+      setLoadingConversations(false)
+    }
+  }
+
+  const deleteConversation = async (conversationId: string) => {
+    if (!confirm('Are you sure you want to delete this conversation?')) {
+      return
+    }
+
+    try {
+      setLoadingConversations(true)
+      await apiClient.delete(`/api/v1/conversations/${conversationId}`)
+      await loadConversations()
+    } catch (error) {
+      console.error('Failed to delete conversation:', error)
+      alert('Failed to delete conversation')
+    } finally {
+      setLoadingConversations(false)
+    }
+  }
+
+  const loadConversationToEditor = async (conversation: any) => {
+    try {
+      // Set the conversation ID and load its turns
+      setConversationId(conversation.id)
+      setShowConversationsModal(false)
+      
+      // Load turns from the database
+      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as any
+      
+      if (turnsResponse.turns && turnsResponse.turns.length > 0) {
+        // Convert turns to the format expected by the UI
+        const turns = turnsResponse.turns.map((turn: any) => ({
+          speaker: turn.speaker,
+          raw_text: turn.raw_text,
+          turn_index: turnsResponse.turns.indexOf(turn),
+          original_speaker_label: turn.speaker,
+          vt_tags: [],
+          has_noise: false,
+          has_foreign_text: false
+        }))
+        
+        // Don't pre-populate results - they should only appear during actual cleaning
+        setParsedTurns(turns)
+        setCleanedTurns([])  // Keep results empty until cleaning starts
+        // Don't auto-switch to results tab - let user decide when to start cleaning
+        
+        addDetailedLog(`✅ Loaded conversation: ${conversation.name} with ${turnsResponse.turns.length} turns`)
+      } else {
+        addDetailedLog(`⚠️ Conversation loaded but no turns found. Use the Conversations modal to add transcript content.`)
       }
     } catch (error) {
-      console.error('Failed to load example script:', error)
+      console.error('Failed to load conversation:', error)
+      alert('Failed to load conversation')
+    }
+  }
+
+  const openConversationsModal = () => {
+    setShowConversationsModal(true)
+    loadConversations()
+  }
+
+  // NOTE: Save functions removed - evaluations auto-save during processing
+
+  const loadLatestEvaluation = async (conversation: any) => {
+    try {
+      const evaluations = conversationEvaluations[conversation.id] || []
+      if (evaluations.length === 0) {
+        alert('No evaluations found for this conversation')
+        return
+      }
+      
+      // Get the most recent evaluation
+      const latestEvaluation = evaluations[0] // Evaluations should be sorted by created_at desc
+      addDetailedLog(`📊 Loading latest evaluation: ${latestEvaluation.name}`)
+      
+      // Load evaluation details including cleaned turns
+      const evaluationDetails = await apiClient.getEvaluationDetails(latestEvaluation.id) as any
+      
+      // Set conversation context
+      setConversationId(conversation.id)
+      setShowConversationsModal(false)
+      
+      // Convert evaluation cleaned turns to UI format
+      const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any) => ({
+        turn_id: cleanedTurn.turn_id,
+        conversation_id: conversation.id,
+        speaker: cleanedTurn.raw_speaker,
+        raw_text: cleanedTurn.raw_text,
+        cleaned_text: cleanedTurn.cleaned_text,
+        processing_state: 'completed',
+        metadata: {
+          confidence_score: cleanedTurn.confidence_score,
+          cleaning_applied: cleanedTurn.cleaning_applied,
+          cleaning_level: cleanedTurn.cleaning_level,
+          corrections: cleanedTurn.corrections,
+          context_detected: cleanedTurn.context_detected,
+          processing_time_ms: cleanedTurn.processing_time_ms,
+          ai_model_used: cleanedTurn.ai_model_used
+        },
+        created_at: cleanedTurn.created_at
+      }))
+      
+      setCleanedTurns(cleaned)
+      setSelectedTab('results')
+      addDetailedLog(`✅ Loaded ${cleaned.length} cleaned turns from evaluation: ${latestEvaluation.name}`)
+      
+    } catch (error) {
+      console.error('Failed to load latest evaluation:', error)
+      alert('Failed to load latest evaluation')
+    }
+  }
+  
+  const startNewEvaluation = async (conversation: any) => {
+    try {
+      // Set conversation context and load raw turns
+      setConversationId(conversation.id)
+      setShowConversationsModal(false)
+      
+      // Load raw turns
+      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as any
+      
+      if (turnsResponse.turns && turnsResponse.turns.length > 0) {
+        const turns = turnsResponse.turns.map((turn: any) => ({
+          speaker: turn.speaker,
+          raw_text: turn.raw_text,
+          turn_index: turnsResponse.turns.indexOf(turn),
+          original_speaker_label: turn.speaker,
+          vt_tags: [],
+          has_noise: false,
+          has_foreign_text: false
+        }))
+        
+        setParsedTurns(turns)
+        setCleanedTurns([]) // Clear any existing results
+        addDetailedLog(`✅ Loaded conversation: ${conversation.name} with ${turnsResponse.turns.length} turns - ready for new evaluation`)
+      }
+    } catch (error) {
+      console.error('Failed to start new evaluation:', error)
+      alert('Failed to start new evaluation')
     }
   }
 
@@ -473,7 +622,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
 
   return (
     <div style={{
-      minHeight: '100vh',
+      height: '100vh',
+      maxHeight: '100vh',
+      overflow: 'hidden',
       backgroundColor: theme.bgSecondary,
       display: 'flex',
       flexDirection: 'column'
@@ -697,7 +848,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
               </select>
             </div>
             <button 
-              onClick={loadExampleScript}
+              onClick={openConversationsModal}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -708,17 +859,18 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 fontWeight: '500',
                 color: theme.textSecondary,
                 backgroundColor: theme.bgSecondary,
-                cursor: 'pointer'
+                cursor: 'pointer',
+                gap: '6px'
               }}
             >
-              Load Example
+              💬 Conversations
             </button>
           </div>
         </div>
       </div>
 
       {/* Main Content */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
         {/* Left Panel - Input */}
         <div style={{ 
           width: `${leftPanelWidth}%`, 
@@ -730,45 +882,108 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           maxWidth: '50%'
         }}>
           <div style={{ padding: '24px', borderBottom: `1px solid ${theme.border}` }}>
-            <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>Raw Transcript</h2>
-            <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>Paste your conversation transcript here</p>
+            <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>Conversation</h2>
+            <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>
+              {conversationId && parsedTurns.length > 0 
+                ? `${parsedTurns.length} turns loaded • Ready for cleaning`
+                : 'Load conversations through the Conversations modal'
+              }
+            </p>
           </div>
           
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '12px' }}>
-            <textarea
-              value={rawTranscript}
-              onChange={(e) => setRawTranscript(e.target.value)}
-              onPaste={(e) => {
-                if (settings.autoProcessOnPaste) {
-                  // Wait for paste content to be applied, then auto-process
-                  setTimeout(() => {
-                    parseTranscript()
-                  }, 100)
-                }
-              }}
-              placeholder="Paste your raw transcript here... (AI/User format supported)"
-              style={{
-                width: '100%',
-                height: '100%',
-                resize: 'none',
-                border: 'none',
-                borderRadius: '0px',
+          <div style={{ 
+            flex: 1, 
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}>
+            {conversationId && parsedTurns.length > 0 ? (
+              // Show conversation turns
+              <div style={{ 
+                flex: 1,
+                overflowY: 'auto',
+                overflowX: 'hidden',
                 padding: '16px',
-                fontSize: '14px',
-                fontFamily: 'monospace',
-                outline: 'none',
-                backgroundColor: 'transparent',
-                color: theme.text,
-                cursor: 'text'
-              }}
-            />
+                scrollbarWidth: 'thin',
+                scrollbarColor: `${theme.textMuted} transparent`
+              }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {parsedTurns.map((turn, index) => (
+                      <div key={index} style={{
+                        padding: '10px 12px',
+                        backgroundColor: theme.bgSecondary,
+                        borderRadius: '8px',
+                        fontSize: '12px',
+                        border: `1px solid ${theme.border}`,
+                        transition: 'all 0.2s ease'
+                      }}>
+                        <div style={{ 
+                          fontWeight: '600', 
+                          color: turn.speaker === 'Lumen' ? theme.accent : theme.text,
+                          marginBottom: '6px',
+                          fontSize: '13px'
+                        }}>
+                          #{index + 1} {turn.speaker}:
+                        </div>
+                        <div style={{ 
+                          color: theme.textSecondary,
+                          fontFamily: 'monospace',
+                          lineHeight: '1.4',
+                          fontSize: '11px',
+                          wordBreak: 'break-word'
+                        }}>
+                          {turn.raw_text.substring(0, 200)}{turn.raw_text.length > 200 ? '...' : ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+            
+            ) : (
+              // Show instruction to load conversation
+              <div style={{ 
+                height: '100%', 
+                display: 'flex', 
+                flexDirection: 'column',
+                alignItems: 'center', 
+                justifyContent: 'center',
+                textAlign: 'center',
+                padding: '40px 20px'
+              }}>
+                <div style={{ fontSize: '48px', marginBottom: '16px' }}>💬</div>
+                <h3 style={{ margin: '0 0 8px 0', fontSize: '18px', color: theme.text }}>
+                  No Conversation Loaded
+                </h3>
+                <p style={{ margin: '0 0 20px 0', fontSize: '14px', color: theme.textMuted, lineHeight: '1.5' }}>
+                  Click the "💬 Conversations" button above to create a new conversation or load an existing one.
+                </p>
+                <button
+                  onClick={openConversationsModal}
+                  style={{
+                    padding: '12px 24px',
+                    backgroundColor: theme.accent,
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  💬 Open Conversations
+                </button>
+              </div>
+            )}
           </div>
           
           <div style={{ padding: '24px', borderTop: `1px solid ${theme.border}`, backgroundColor: theme.bgTertiary }}>
             <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
               <button 
-                onClick={parseTranscript}
-                disabled={!rawTranscript.trim() || isProcessing}
+                onClick={openConversationsModal}
+                disabled={isProcessing}
                 style={{
                   flex: 1,
                   display: 'inline-flex',
@@ -780,11 +995,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                   fontSize: '14px',
                   fontWeight: '500',
                   color: 'white',
-                  backgroundColor: isProcessing || !rawTranscript.trim() ? theme.textMuted : theme.accent,
-                  cursor: isProcessing || !rawTranscript.trim() ? 'not-allowed' : 'pointer'
+                  backgroundColor: isProcessing ? theme.textMuted : theme.accent,
+                  cursor: isProcessing ? 'not-allowed' : 'pointer'
                 }}
               >
-                {isProcessing ? 'Parsing...' : 'Parse Transcript'}
+                💬 Load Conversation
               </button>
               <button 
                 onClick={startCleaning}
@@ -810,7 +1025,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             
             <div style={{ fontSize: '14px', color: theme.textMuted }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>{rawTranscript.length.toLocaleString()} characters</span>
+                {conversationId && parsedTurns.length > 0 ? (
+                  <span>{parsedTurns.length} turns loaded</span>
+                ) : (
+                  <span>No conversation loaded</span>
+                )}
                 {processingStats && (
                   <span>{processingStats.total_turns} turns ({processingStats.user_turns} user, {processingStats.lumen_turns} AI)</span>
                 )}
@@ -908,12 +1127,41 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           </div>
 
           {/* Tab Content */}
-          <div style={{ flex: 1, overflow: 'hidden' }}>
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
             {selectedTab === 'results' && (
-              <div style={{ height: '100%', overflowY: 'auto' }}>
-                <div style={{ padding: `${getSpacing(24)}px`, display: 'flex', flexDirection: 'column', gap: `${getSpacing(24)}px`, fontSize: getFontSize() }}>
-                  {/* Filter Controls */}
-                  {cleanedTurns.length > 0 && (
+              <>
+                {/* Filter Controls - Fixed at top */}
+                {cleanedTurns.length > 0 && (
+                  <div style={{ 
+                    padding: `${getSpacing(16)}px ${getSpacing(24)}px`,
+                    borderBottom: `1px solid ${theme.border}`,
+                    backgroundColor: theme.bg,
+                    flexShrink: 0
+                  }}>
+                    {/* Evaluation Status - Show when processing is complete */}
+                    {!isProcessing && cleanedTurns.length > 0 && (
+                      <div style={{ 
+                        display: 'flex', 
+                        gap: '12px', 
+                        marginBottom: '16px',
+                        padding: '16px', 
+                        backgroundColor: '#f0fdf4', 
+                        borderRadius: '8px', 
+                        border: '2px solid #10b981',
+                        alignItems: 'center'
+                      }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: '600', color: '#166534', marginBottom: '4px' }}>
+                            ✅ Evaluation Complete!
+                          </div>
+                          <div style={{ fontSize: '14px', color: '#16a34a' }}>
+                            All cleaned turns have been automatically saved to the evaluation database.
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Filter Controls */}
                     <div style={{ 
                       display: 'flex', 
                       gap: '12px', 
@@ -1000,24 +1248,41 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                         </select>
                       </div>
                     </div>
-                  )}
-                  {/* Explanation Panel */}
-                  <div style={{ 
-                    backgroundColor: theme.bgTertiary, 
-                    borderRadius: '8px', 
-                    padding: '16px', 
-                    border: `1px solid ${theme.border}`,
-                    fontSize: '14px'
-                  }}>
-                    <div style={{ fontWeight: '600', color: theme.text, marginBottom: '8px' }}>Understanding the Results:</div>
-                    <div style={{ color: theme.textSecondary, lineHeight: '1.5' }}>
-                      • <strong>User turns</strong> (light blue background) are processed by AI for cleaning<br/>
-                      • <strong>Lumen turns</strong> (cyan background) pass through without processing<br/>
-                      • <strong>HIGH confidence</strong> (green) = AI is very confident in cleaning quality<br/>
-                      • <strong>MEDIUM confidence</strong> (yellow) = Moderately confident<br/>
-                      • <strong>LOW confidence</strong> (red) = Review recommended, possible transcription errors
-                    </div>
                   </div>
+                )}
+                
+                {/* Scrollable Content Area */}
+                <div style={{ 
+                  flex: 1,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  scrollbarWidth: 'thin',
+                  scrollbarColor: `${theme.textMuted} transparent`
+                }}>
+                  <div style={{ 
+                    padding: `${getSpacing(24)}px`, 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: `${getSpacing(16)}px`, 
+                    fontSize: getFontSize() 
+                  }}>
+                    {/* Explanation Panel */}
+                    <div style={{ 
+                      backgroundColor: theme.bgTertiary, 
+                      borderRadius: '8px', 
+                      padding: '16px', 
+                      border: `1px solid ${theme.border}`,
+                      fontSize: '14px'
+                    }}>
+                      <div style={{ fontWeight: '600', color: theme.text, marginBottom: '8px' }}>Understanding the Results:</div>
+                      <div style={{ color: theme.textSecondary, lineHeight: '1.5' }}>
+                        • <strong>User turns</strong> (light blue background) are processed by AI for cleaning<br/>
+                        • <strong>Lumen turns</strong> (cyan background) pass through without processing<br/>
+                        • <strong>HIGH confidence</strong> (green) = AI is very confident in cleaning quality<br/>
+                        • <strong>MEDIUM confidence</strong> (yellow) = Moderately confident<br/>
+                        • <strong>LOW confidence</strong> (red) = Review recommended, possible transcription errors
+                      </div>
+                    </div>
                   {/* Live Processing Indicator */}
                   {isProcessing && (
                     <div style={{ 
@@ -1061,8 +1326,24 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                   
                   {cleanedTurns.length === 0 && !isProcessing ? (
                     <div style={{ textAlign: 'center', padding: '48px', color: theme.textMuted }}>
-                      <div style={{ fontSize: '18px', fontWeight: '500', marginBottom: '8px' }}>No results yet</div>
-                      <div style={{ fontSize: '14px' }}>Process a transcript to see cleaning results here</div>
+                      {parsedTurns.length > 0 ? (
+                        <>
+                          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🧹</div>
+                          <div style={{ fontSize: '18px', fontWeight: '500', marginBottom: '8px', color: theme.text }}>Ready to clean transcript</div>
+                          <div style={{ fontSize: '14px', marginBottom: '20px' }}>
+                            {parsedTurns.length} turns loaded. Click "Start Cleaning" to begin processing.
+                          </div>
+                          <div style={{ fontSize: '13px', color: theme.textMuted, fontStyle: 'italic' }}>
+                            Results will appear here as each turn gets processed
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: '48px', marginBottom: '16px' }}>📊</div>
+                          <div style={{ fontSize: '18px', fontWeight: '500', marginBottom: '8px' }}>No results yet</div>
+                          <div style={{ fontSize: '14px' }}>Load a conversation and start cleaning to see results here</div>
+                        </>
+                      )}
                     </div>
                   ) : (
                     cleanedTurns
@@ -1074,6 +1355,59 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       .map((turn, index) => {
                       const diff = settings.showDiffs ? calculateDiff(turn.raw_text, turn.cleaned_text) : null
                       
+                      // Render minimal card for skipped turns
+                      if (turn.processing_state === 'skipped') {
+                        return (
+                          <div key={turn.turn_id} style={{ 
+                            backgroundColor: theme.bgSecondary,
+                            borderRadius: '8px', 
+                            padding: `${getSpacing(16)}px`, 
+                            border: `1px solid ${theme.border}`,
+                            marginBottom: `${getSpacing(12)}px`,
+                            opacity: 0.7
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                              <span style={{ fontSize: '14px', fontWeight: '500', color: theme.textMuted }}>
+                                Turn {index + 1}
+                              </span>
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                padding: '3px 8px',
+                                borderRadius: '9999px',
+                                fontSize: '11px',
+                                fontWeight: '500',
+                                backgroundColor: '#f3f4f6',
+                                color: '#6b7280'
+                              }}>
+                                {turn.speaker}
+                              </span>
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                padding: '3px 8px',
+                                borderRadius: '9999px',
+                                fontSize: '11px',
+                                fontWeight: '500',
+                                backgroundColor: '#e0e7ff',
+                                color: '#3730a3'
+                              }}>
+                                ⚡ Skipped
+                              </span>
+                              <span style={{ 
+                                fontSize: '12px', 
+                                color: theme.textMuted, 
+                                fontStyle: 'italic',
+                                flex: 1
+                              }}>
+                                {turn.raw_text.substring(0, 80)}{turn.raw_text.length > 80 ? '...' : ''}
+                              </span>
+                            </div>
+                          </div>
+                        )
+                      }
+                      
+                      // Render full card for processed turns
                       return (
                         <div key={turn.turn_id} style={{ 
                           backgroundColor: turn.speaker === 'User' ? 
@@ -1103,7 +1437,13 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                 {turn.speaker}
                               </span>
                               <span 
-                                title={`AI Confidence: ${turn.metadata.confidence_score === 'HIGH' ? 'Very confident in cleaning quality' : turn.metadata.confidence_score === 'MEDIUM' ? 'Moderately confident' : 'Low confidence - review recommended'}`}
+                                title={
+                                  turn.metadata.confidence_score === 'PENDING' ? 'Processing...' :
+                                  turn.metadata.confidence_score === 'BYPASS' ? 'Lumen response - no processing needed' :
+                                  turn.metadata.confidence_score === 'ERROR' ? 'Processing failed' :
+                                  turn.metadata.confidence_score === 'HIGH' ? 'Very confident in cleaning quality' : 
+                                  turn.metadata.confidence_score === 'MEDIUM' ? 'Moderately confident' : 'Low confidence - review recommended'
+                                }
                                 style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
@@ -1111,12 +1451,23 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                 borderRadius: '9999px',
                                 fontSize: '12px',
                                 fontWeight: '500',
-                                backgroundColor: turn.metadata.confidence_score === 'HIGH' ? '#dcfce7' : 
+                                backgroundColor: 
+                                  turn.metadata.confidence_score === 'PENDING' ? '#f3f4f6' :
+                                  turn.metadata.confidence_score === 'BYPASS' ? '#e0e7ff' :
+                                  turn.metadata.confidence_score === 'ERROR' ? '#fee2e2' :
+                                  turn.metadata.confidence_score === 'HIGH' ? '#dcfce7' : 
                                   turn.metadata.confidence_score === 'MEDIUM' ? '#fef3c7' : '#fee2e2',
-                                color: turn.metadata.confidence_score === 'HIGH' ? '#166534' : 
+                                color: 
+                                  turn.metadata.confidence_score === 'PENDING' ? '#6b7280' :
+                                  turn.metadata.confidence_score === 'BYPASS' ? '#3730a3' :
+                                  turn.metadata.confidence_score === 'ERROR' ? '#dc2626' :
+                                  turn.metadata.confidence_score === 'HIGH' ? '#166534' : 
                                   turn.metadata.confidence_score === 'MEDIUM' ? '#92400e' : '#991b1b',
                                 cursor: 'help'
                               }}>
+                                {turn.processing_state === 'processing' && (
+                                  <span style={{ marginRight: '4px' }}>⏳</span>
+                                )}
                                 {turn.metadata.confidence_score}
                               </span>
                               {turn.metadata.cleaning_applied && (
@@ -1196,108 +1547,153 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                             </div>
                           )}
                           
-                          {/* Side-by-Side Original vs Cleaned */}
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
-                            {/* Original Text */}
-                            <div style={{ 
-                              backgroundColor: theme.bgTertiary, 
-                              borderRadius: '6px', 
-                              padding: '16px',
-                              border: `1px solid ${theme.border}`
-                            }}>
+                          {/* Content Display - varies based on processing state */}
+                          {turn.processing_state === 'processing' ? (
+                            // Show processing state with single panel
+                            <div style={{ marginBottom: '16px' }}>
                               <div style={{ 
-                                fontSize: '12px', 
-                                fontWeight: '600', 
-                                color: theme.textMuted, 
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.05em',
-                                marginBottom: '8px' 
-                              }}>
-                                ORIGINAL → GEMINI
-                              </div>
-                              <div style={{ 
-                                color: theme.textSecondary, 
-                                lineHeight: '1.6', 
-                                fontSize: '14px',
-                                fontFamily: 'monospace',
-                                wordBreak: 'break-word'
-                              }}>
-                                {turn.raw_text}
-                              </div>
-                              <div style={{ 
-                                fontSize: '11px', 
-                                color: theme.textMuted, 
-                                marginTop: '8px',
-                                fontFamily: 'monospace'
-                              }}>
-                                {turn.raw_text.length} chars
-                              </div>
-                            </div>
-                            
-                            {/* Cleaned Text */}
-                            <div style={{ 
-                              backgroundColor: theme.bg, 
-                              borderRadius: '6px', 
-                              padding: '16px',
-                              border: `2px solid ${turn.metadata.cleaning_applied ? '#10b981' : theme.border}`
-                            }}>
-                              <div style={{ 
-                                fontSize: '12px', 
-                                fontWeight: '600', 
-                                color: turn.metadata.cleaning_applied ? '#10b981' : theme.textMuted, 
-                                textTransform: 'uppercase',
-                                letterSpacing: '0.05em',
-                                marginBottom: '8px' 
-                              }}>
-                                GEMINI → CLEANED
-                              </div>
-                              <div style={{ 
-                                color: theme.text, 
-                                lineHeight: '1.6', 
-                                fontSize: '14px',
-                                wordBreak: 'break-word'
-                              }}>
-                                {turn.cleaned_text}
-                              </div>
-                              <div style={{ 
-                                fontSize: '11px', 
-                                color: theme.textMuted, 
-                                marginTop: '8px',
-                                fontFamily: 'monospace',
+                                backgroundColor: theme.bgTertiary, 
+                                borderRadius: '6px', 
+                                padding: '16px',
+                                border: `2px solid ${theme.accent}`,
                                 display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center'
+                                alignItems: 'center',
+                                gap: '16px'
                               }}>
-                                <span>{turn.cleaned_text.length} chars</span>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                  <span style={{ color: turn.metadata.cleaning_applied ? '#10b981' : theme.textMuted }}>
-                                    {turn.metadata.processing_time_ms.toFixed(1)}ms
-                                  </span>
-                                  {turn.speaker === 'User' && turn.metadata.ai_model_used && (
-                                    <button
-                                      onClick={() => {
-                                        setInspectedTurn(turn)
-                                        setInspectorOpen(true)
-                                      }}
-                                      style={{
-                                        padding: '2px 6px',
-                                        fontSize: '11px',
-                                        backgroundColor: theme.bgSecondary,
-                                        border: `1px solid ${theme.border}`,
-                                        borderRadius: '3px',
-                                        color: theme.text,
-                                        cursor: 'pointer',
-                                        transition: 'all 0.15s ease'
-                                      }}
-                                      title="Inspect Gemini Query"
-                                    >
-                                      🔍
-                                    </button>
-                                  )}
+                                <div style={{
+                                  width: '16px',
+                                  height: '16px',
+                                  border: `3px solid ${theme.accent}`,
+                                  borderTopColor: 'transparent',
+                                  borderRadius: '50%',
+                                  animation: 'spin 1s linear infinite'
+                                }}></div>
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ 
+                                    fontSize: '12px', 
+                                    fontWeight: '600', 
+                                    color: theme.accent, 
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.05em',
+                                    marginBottom: '8px' 
+                                  }}>
+                                    PROCESSING WITH GEMINI...
+                                  </div>
+                                  <div style={{ 
+                                    color: theme.textSecondary, 
+                                    lineHeight: '1.6', 
+                                    fontSize: '14px',
+                                    wordBreak: 'break-word'
+                                  }}>
+                                    {turn.raw_text}
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                          </div>
+                          ) : (
+                            // Show side-by-side comparison for completed processing
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+                              {/* Original Text */}
+                              <div style={{ 
+                                backgroundColor: theme.bgTertiary, 
+                                borderRadius: '6px', 
+                                padding: '16px',
+                                border: `1px solid ${theme.border}`
+                              }}>
+                                <div style={{ 
+                                  fontSize: '12px', 
+                                  fontWeight: '600', 
+                                  color: theme.textMuted, 
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.05em',
+                                  marginBottom: '8px' 
+                                }}>
+                                  ORIGINAL TEXT
+                                </div>
+                                <div style={{ 
+                                  color: theme.textSecondary, 
+                                  lineHeight: '1.6', 
+                                  fontSize: '14px',
+                                  fontFamily: 'monospace',
+                                  wordBreak: 'break-word'
+                                }}>
+                                  {turn.raw_text}
+                                </div>
+                                <div style={{ 
+                                  fontSize: '11px', 
+                                  color: theme.textMuted, 
+                                  marginTop: '8px',
+                                  fontFamily: 'monospace'
+                                }}>
+                                  {turn.raw_text.length} chars
+                                </div>
+                              </div>
+                              
+                              {/* Cleaned Text - only show if actually processed */}
+                              <div style={{ 
+                                backgroundColor: theme.bg, 
+                                borderRadius: '6px', 
+                                padding: '16px',
+                                border: `2px solid ${turn.metadata.cleaning_applied ? '#10b981' : theme.border}`
+                              }}>
+                                <div style={{ 
+                                  fontSize: '12px', 
+                                  fontWeight: '600', 
+                                  color: turn.metadata.cleaning_applied ? '#10b981' : theme.textMuted, 
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.05em',
+                                  marginBottom: '8px' 
+                                }}>
+                                  {turn.metadata.cleaning_applied ? 'CLEANED RESULT' : 'NO CLEANING NEEDED'}
+                                </div>
+                                <div style={{ 
+                                  color: theme.text, 
+                                  lineHeight: '1.6', 
+                                  fontSize: '14px',
+                                  wordBreak: 'break-word'
+                                }}>
+                                  {turn.cleaned_text}
+                                </div>
+                                <div style={{ 
+                                  fontSize: '11px', 
+                                  color: theme.textMuted, 
+                                  marginTop: '8px',
+                                  fontFamily: 'monospace',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center'
+                                }}>
+                                  <span>{turn.cleaned_text.length} chars</span>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <span style={{ color: turn.metadata.cleaning_applied ? '#10b981' : theme.textMuted }}>
+                                      {turn.metadata.processing_time_ms.toFixed(1)}ms
+                                    </span>
+                                    {turn.speaker === 'User' && turn.metadata.ai_model_used && (
+                                      <button
+                                        onClick={() => {
+                                          setInspectedTurn(turn)
+                                          setInspectorOpen(true)
+                                        }}
+                                        style={{
+                                          padding: '2px 6px',
+                                          fontSize: '11px',
+                                          backgroundColor: theme.bgSecondary,
+                                          border: `1px solid ${theme.border}`,
+                                          borderRadius: '3px',
+                                          color: theme.text,
+                                          cursor: 'pointer',
+                                          transition: 'all 0.15s ease'
+                                        }}
+                                        title="Inspect Gemini Query"
+                                      >
+                                        🔍
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                           
                           {turn.metadata.corrections.length > 0 && (
                             <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: '16px' }}>
@@ -1348,8 +1744,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       )
                     })
                   )}
+                  </div>
                 </div>
-              </div>
+              </>
             )}
             
             {selectedTab === 'api' && (
@@ -1820,6 +2217,357 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           }}
           darkMode={darkMode}
         />
+      )}
+
+      {/* Conversations Modal */}
+      {showConversationsModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            backgroundColor: theme.bg,
+            borderRadius: '12px',
+            border: `1px solid ${theme.border}`,
+            width: '90%',
+            maxWidth: '1000px',
+            height: '80vh',
+            maxHeight: '80vh',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}>
+            {/* Modal Header */}
+            <div style={{
+              padding: '20px 24px',
+              borderBottom: `1px solid ${theme.border}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}>
+              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '600', color: theme.text }}>
+                💬 Conversations Manager
+              </h2>
+              <button
+                onClick={() => setShowConversationsModal(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: theme.textMuted,
+                  padding: '4px'
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+              {/* Left Panel - Create New */}
+              <div style={{
+                width: '40%',
+                borderRight: `1px solid ${theme.border}`,
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden'
+              }}>
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  padding: '20px',
+                  scrollbarWidth: 'thin',
+                  scrollbarColor: `${theme.textMuted} transparent`
+                }}>
+                <h3 style={{ margin: '0 0 16px 0', fontSize: '16px', fontWeight: '600', color: theme.text }}>
+                  Create New Conversation
+                </h3>
+                
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '6px' }}>
+                    Name *
+                  </label>
+                  <input
+                    type="text"
+                    value={newConversationName}
+                    onChange={(e) => setNewConversationName(e.target.value)}
+                    placeholder="Enter conversation name..."
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '6px',
+                      fontSize: '14px',
+                      backgroundColor: theme.bgSecondary,
+                      color: theme.text
+                    }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '6px' }}>
+                    Description
+                  </label>
+                  <input
+                    type="text"
+                    value={newConversationDescription}
+                    onChange={(e) => setNewConversationDescription(e.target.value)}
+                    placeholder="Optional description..."
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '6px',
+                      fontSize: '14px',
+                      backgroundColor: theme.bgSecondary,
+                      color: theme.text
+                    }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '20px' }}>
+                  <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '6px' }}>
+                    Conversation Text *
+                  </label>
+                  <textarea
+                    value={newConversationText}
+                    onChange={(e) => setNewConversationText(e.target.value)}
+                    placeholder="Paste your conversation transcript here..."
+                    style={{
+                      width: '100%',
+                      height: '200px',
+                      padding: '12px',
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '6px',
+                      fontSize: '14px',
+                      backgroundColor: theme.bgSecondary,
+                      color: theme.text,
+                      fontFamily: 'monospace',
+                      resize: 'vertical'
+                    }}
+                  />
+                </div>
+
+                <button
+                  onClick={createConversation}
+                  disabled={loadingConversations || !newConversationName.trim() || !newConversationText.trim()}
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    backgroundColor: theme.accent,
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    cursor: loadingConversations ? 'not-allowed' : 'pointer',
+                    opacity: (loadingConversations || !newConversationName.trim() || !newConversationText.trim()) ? 0.5 : 1
+                  }}
+                >
+                  {loadingConversations ? 'Creating...' : '💾 Save Conversation'}
+                </button>
+                </div>
+              </div>
+
+              {/* Right Panel - Existing Conversations */}
+              <div style={{
+                width: '60%',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden'
+              }}>
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  padding: '20px',
+                  scrollbarWidth: 'thin',
+                  scrollbarColor: `${theme.textMuted} transparent`
+                }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '16px'
+                }}>
+                  <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600', color: theme.text }}>
+                    Existing Conversations ({conversations.length})
+                  </h3>
+                  <button
+                    onClick={loadConversations}
+                    disabled={loadingConversations}
+                    style={{
+                      padding: '6px 12px',
+                      backgroundColor: theme.bgTertiary,
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      color: theme.textSecondary,
+                      cursor: loadingConversations ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {loadingConversations ? '🔄' : '🔄 Refresh'}
+                  </button>
+                </div>
+
+                {loadingConversations ? (
+                  <div style={{ textAlign: 'center', padding: '40px', color: theme.textMuted }}>
+                    Loading conversations...
+                  </div>
+                ) : conversations.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px', color: theme.textMuted }}>
+                    No conversations found. Create your first one!
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {conversations.map((conversation) => (
+                      <div
+                        key={conversation.id}
+                        style={{
+                          border: `1px solid ${theme.border}`,
+                          borderRadius: '8px',
+                          padding: '16px',
+                          backgroundColor: theme.bgSecondary
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '8px' }}>
+                          <div style={{ flex: 1 }}>
+                            <h4 style={{ margin: '0 0 4px 0', fontSize: '14px', fontWeight: '600', color: theme.text }}>
+                              {conversation.name}
+                            </h4>
+                            {conversation.description && (
+                              <p style={{ margin: '0 0 8px 0', fontSize: '12px', color: theme.textMuted }}>
+                                {conversation.description}
+                              </p>
+                            )}
+                            <div style={{ fontSize: '11px', color: theme.textMuted }}>
+                              Created: {new Date(conversation.created_at).toLocaleDateString()} • 
+                              Turns: {conversation.turns_count || 0}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Evaluation Info and Actions */}
+                        {(() => {
+                          const evaluations = conversationEvaluations[conversation.id] || []
+                          const hasEvaluations = evaluations.length > 0
+                          const latestEvaluation = hasEvaluations ? evaluations[0] : null
+                          
+                          return (
+                            <div>
+                              {/* Evaluation Status */}
+                              <div style={{ 
+                                fontSize: '12px', 
+                                color: theme.textMuted, 
+                                marginBottom: '8px',
+                                fontStyle: 'italic'
+                              }}>
+                                {hasEvaluations ? (
+                                  `${evaluations.length} evaluation${evaluations.length > 1 ? 's' : ''}, last: ${new Date(latestEvaluation.created_at).toLocaleString()}`
+                                ) : (
+                                  'No evaluations'
+                                )}
+                              </div>
+                              
+                              {/* Action Buttons */}
+                              <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                                {hasEvaluations && (
+                                  <button
+                                    onClick={() => loadLatestEvaluation(conversation)}
+                                    style={{
+                                      padding: '6px 12px',
+                                      backgroundColor: theme.accent,
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '4px',
+                                      fontSize: '11px',
+                                      fontWeight: '500',
+                                      cursor: 'pointer',
+                                      flex: 1
+                                    }}
+                                  >
+                                    📊 Load Latest
+                                  </button>
+                                )}
+                                
+                                <button
+                                  onClick={() => startNewEvaluation(conversation)}
+                                  style={{
+                                    padding: '6px 12px',
+                                    backgroundColor: hasEvaluations ? theme.bgTertiary : '#10b981',
+                                    color: hasEvaluations ? theme.text : 'white',
+                                    border: hasEvaluations ? `1px solid ${theme.border}` : 'none',
+                                    borderRadius: '4px',
+                                    fontSize: '11px',
+                                    fontWeight: '500',
+                                    cursor: 'pointer',
+                                    flex: 1
+                                  }}
+                                >
+                                  🧪 Start New
+                                </button>
+                                
+                                {hasEvaluations && (
+                                  <button
+                                    onClick={() => {
+                                      alert(`View all ${evaluations.length} evaluations (coming soon)`)
+                                    }}
+                                    style={{
+                                      padding: '6px 12px',
+                                      backgroundColor: theme.bgTertiary,
+                                      color: theme.text,
+                                      border: `1px solid ${theme.border}`,
+                                      borderRadius: '4px',
+                                      fontSize: '11px',
+                                      fontWeight: '500',
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    📋 View All
+                                  </button>
+                                )}
+                              </div>
+                              
+                              {/* Delete button */}
+                              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                <button
+                                  onClick={() => deleteConversation(conversation.id)}
+                                  style={{
+                                    padding: '4px 8px',
+                                    backgroundColor: 'transparent',
+                                    color: '#ef4444',
+                                    border: '1px solid #ef4444',
+                                    borderRadius: '4px',
+                                    fontSize: '10px',
+                                    fontWeight: '500',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  🗑️ Delete
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })()}
+                        
+                      </div>
+                    ))}
+                  </div>
+                )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

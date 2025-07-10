@@ -9,10 +9,16 @@ from pydantic import BaseModel, Field
 from uuid import UUID
 from datetime import datetime
 
+class ContextTurn(BaseModel):
+    """Context turn for preview processing"""
+    speaker: str = Field(..., description="Speaker name")
+    cleaned_text: str = Field(..., description="Previously cleaned text")
+
 class TurnCreateRequest(BaseModel):
     """Request schema for creating a new turn"""
     speaker: str = Field(..., description="Speaker name (User, Lumen, etc.)")
     raw_text: str = Field(..., description="Original text input")
+    context: Optional[List[ContextTurn]] = Field(default=[], description="Previous cleaned turns for context (preview mode)")
     metadata: Optional[Dict[str, Any]] = Field(default={}, description="Optional metadata including sliding_window and cleaning_level")
 
 class CorrectionItem(BaseModel):

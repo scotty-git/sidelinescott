@@ -408,6 +408,13 @@ async def create_turn(
         )
 
 
+# NOTE: The old clean-preview endpoint has been replaced by the evaluation system.
+# Use /api/v1/evaluations/conversations/{id}/evaluations to create evaluations
+# and /api/v1/evaluations/{evaluation_id}/process-turn to process turns.
+
+# NOTE: The old cleaned-results endpoint has been replaced by the evaluation system.
+# Use /api/v1/evaluations/{evaluation_id}/process-turn to process and save turns.
+
 @router.put("/{conversation_id}/context")
 async def update_conversation_context(
     conversation_id: UUID,

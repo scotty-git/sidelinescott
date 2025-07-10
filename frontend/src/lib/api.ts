@@ -107,14 +107,6 @@ export class APIClient {
   }
 
   // Evaluation endpoints
-  async getEvaluations(conversationId: string) {
-    return this.request(`/api/v1/evaluations/conversations/${conversationId}/evaluations`)
-  }
-
-  async getEvaluationDetails(evaluationId: string) {
-    return this.request(`/api/v1/evaluations/evaluations/${evaluationId}`)
-  }
-
   async createEvaluation(conversationId: string, data: {
     name: string
     description?: string
@@ -127,6 +119,23 @@ export class APIClient {
     })
   }
 
+  async getEvaluations(conversationId: string) {
+    return this.request(`/api/v1/evaluations/conversations/${conversationId}/evaluations`)
+  }
+
+  async getEvaluationDetails(evaluationId: string) {
+    return this.request(`/api/v1/evaluations/evaluations/${evaluationId}`)
+  }
+
+  async processTurn(evaluationId: string, turnId: string, settings?: any) {
+    return this.request(`/api/v1/evaluations/evaluations/${evaluationId}/process-turn`, {
+      method: 'POST',
+      body: JSON.stringify({
+        turn_id: turnId,
+        settings: settings || {}
+      }),
+    })
+  }
   async processAllTurns(evaluationId: string) {
     return this.request(`/api/v1/evaluations/evaluations/${evaluationId}/process-all`, {
       method: 'POST',
