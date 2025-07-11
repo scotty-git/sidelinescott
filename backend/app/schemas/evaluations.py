@@ -50,6 +50,13 @@ class CleanedTurnResponse(BaseModel):
     ai_model_used: Optional[str] = Field(None, description="AI model used")
     created_at: str = Field(..., description="Creation timestamp")
     
+    # Gemini inspection data
+    gemini_prompt: Optional[str] = Field(None, description="Exact prompt sent to Gemini")
+    gemini_response: Optional[str] = Field(None, description="Raw response from Gemini")
+    
+    # Detailed timing breakdown for performance analysis
+    timing_breakdown: Optional[Dict[str, Any]] = Field(None, description="Detailed timing breakdown of processing steps")
+    
     # Raw turn data for reference
     raw_speaker: str = Field(..., description="Original speaker")
     raw_text: str = Field(..., description="Original raw text")

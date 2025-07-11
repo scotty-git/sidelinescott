@@ -316,47 +316,73 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       const rawTurns = turnsResponse.turns || []
       addDetailedLog(`📊 Found ${rawTurns.length} raw turns to process`)
       
-      // Step 3: Process all turns automatically using the evaluation system
-      addDetailedLog(`🚀 Processing all ${rawTurns.length} turns through evaluation system...`)
+      // Set the raw turns for display in the conversation component
+      const parsedRawTurns: ParsedTurn[] = rawTurns.map((turn: any, index: number) => ({
+        speaker: turn.speaker,
+        raw_text: turn.raw_text,
+        turn_index: index,
+        turn_sequence: turn.turn_sequence || index + 1,
+        original_speaker_label: turn.speaker,
+        vt_tags: [],
+        has_noise: false,
+        has_foreign_text: false
+      }))
+      setParsedTurns(parsedRawTurns)
+      addDetailedLog(`✅ Loaded ${parsedRawTurns.length} raw turns for display`)
+      
+      // Step 3: Process turns individually for real-time progress tracking
+      addDetailedLog(`🚀 Processing ${rawTurns.length} turns individually with real-time updates...`)
       addDetailedLog(`Sliding window: ${settings.slidingWindow} turns | Cleaning level: ${settings.cleaningLevel}`)
-      addDetailedLog(`🔄 EVALUATION MODE: All turns will be processed and saved automatically`)
+      addDetailedLog(`🔄 REAL-TIME MODE: Processing each turn individually`)
       
-      const processAllResponse = await apiCallWithLogging('POST', `/api/v1/evaluations/${evaluationId}/process-all`) as any
-      addDetailedLog(`✅ Batch processing completed: ${processAllResponse.processed_successfully}/${processAllResponse.total_turns} turns processed`)
+      const processedTurns: CleanedTurn[] = []
       
-      if (processAllResponse.failed_turns > 0) {
-        addDetailedLog(`⚠️ ${processAllResponse.failed_turns} turns failed to process`)
-        processAllResponse.failed_details?.forEach((fail: any) => {
-          addDetailedLog(`❌ Failed turn: ${fail.speaker} - ${fail.error}`)
-        })
+      for (let i = 0; i < rawTurns.length; i++) {
+        const rawTurn = rawTurns[i]
+        
+        // Update progress UI in real-time
+        setCurrentTurnIndex(i)
+        addDetailedLog(`Processing turn ${i + 1}/${rawTurns.length}: ${rawTurn.speaker}`)
+        
+        // Process individual turn with API call
+        const turnResult = await apiCallWithLogging('POST', `/api/v1/evaluations/${evaluationId}/process-turn`, {
+          turn_id: rawTurn.id
+        }) as any
+        
+        // Convert to UI format
+        const cleanedTurn: CleanedTurn = {
+          turn_id: turnResult.turn_id,
+          conversation_id: conversationId,
+          speaker: turnResult.raw_speaker,
+          raw_text: turnResult.raw_text,
+          cleaned_text: turnResult.cleaned_text,
+          turn_sequence: turnResult.turn_sequence,
+          processing_state: 'completed',
+          metadata: {
+            confidence_score: turnResult.confidence_score,
+            cleaning_applied: turnResult.cleaning_applied,
+            cleaning_level: turnResult.cleaning_level,
+            timing_breakdown: turnResult.timing_breakdown,
+            corrections: turnResult.corrections || [],
+            context_detected: turnResult.context_detected,
+            processing_time_ms: turnResult.processing_time_ms,
+            ai_model_used: turnResult.ai_model_used,
+            gemini_prompt: turnResult.gemini_prompt,
+            gemini_response: turnResult.gemini_response
+          },
+          created_at: turnResult.created_at
+        }
+        
+        processedTurns.push(cleanedTurn)
+        
+        // Update UI immediately with current progress
+        setCleanedTurns([...processedTurns])
+        
+        addDetailedLog(`✅ Turn ${i + 1} completed: ${rawTurn.speaker}`)
       }
       
-      // Step 4: Load the completed evaluation results for display
-      addDetailedLog('📋 Loading evaluation results for display...')
-      const evaluationDetails = await apiCallWithLogging('GET', `/api/v1/evaluations/${evaluationId}`) as any
-      
-      // Convert evaluation results to the format expected by the UI
-      const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any) => ({
-        turn_id: cleanedTurn.turn_id,
-        conversation_id: conversationId,
-        speaker: cleanedTurn.raw_speaker,
-        raw_text: cleanedTurn.raw_text,
-        cleaned_text: cleanedTurn.cleaned_text,
-        processing_state: 'completed',
-        metadata: {
-          confidence_score: cleanedTurn.confidence_score,
-          cleaning_applied: cleanedTurn.cleaning_applied,
-          cleaning_level: cleanedTurn.cleaning_level,
-          corrections: cleanedTurn.corrections,
-          context_detected: cleanedTurn.context_detected,
-          processing_time_ms: cleanedTurn.processing_time_ms,
-          ai_model_used: cleanedTurn.ai_model_used
-        },
-        created_at: cleanedTurn.created_at
-      }))
-      
-      setCleanedTurns(cleaned)
-      addDetailedLog(`🎉 Evaluation completed! ${cleaned.length} turns loaded for display`)
+      // Final update - all turns are already in cleanedTurns from real-time processing
+      addDetailedLog(`🎉 Real-time processing completed! ${processedTurns.length} turns processed and displayed`)
       
       // All processing is handled by the evaluation system automatically!
       
@@ -2254,9 +2280,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           onClose={() => {
             setInspectorOpen(false)
             setInspectedTurn(null)
-          }}
-          darkMode={darkMode}
-        />
+          }}        />
       )}
 
       {/* Conversations Modal */}

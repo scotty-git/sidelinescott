@@ -41,7 +41,6 @@ interface GeminiQueryInspectorProps {
   turnData?: TurnData;
   isOpen: boolean;
   onClose: () => void;
-  darkMode: boolean;
 }
 
 interface GeminiDetails {
@@ -81,24 +80,45 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
   turnId,
   turnData,
   isOpen,
-  onClose,
-  darkMode
+  onClose
 }) => {
   const [details, setDetails] = useState<GeminiDetails | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
 
-  // Theme colors
-  const theme = {
-    bg: darkMode ? '#1a1a1a' : '#ffffff',
-    bgSecondary: darkMode ? '#262626' : '#f9fafb',
-    bgTertiary: darkMode ? '#303030' : '#f3f4f6',
-    text: darkMode ? '#e5e5e5' : '#111827',
-    textSecondary: darkMode ? '#a3a3a3' : '#6b7280',
-    textMuted: darkMode ? '#737373' : '#9ca3af',
-    border: darkMode ? '#404040' : '#e5e7eb',
-    accent: '#3b82f6'
+  const fetchGeminiDetails = async () => {
+    console.log('[GeminiQueryInspector] Starting fetch for:', { conversationId, turnId });
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await apiClient.get(
+        `/api/v1/conversations/${conversationId}/turns/${turnId}/gemini-details`
+      );
+      console.log('[GeminiQueryInspector] Raw response:', response);
+      
+      // The API client returns the data directly, not wrapped in a .data property
+      const data = response as GeminiDetails;
+      console.log('[GeminiQueryInspector] Response data:', data);
+      
+      // Validate the response structure
+      if (!data) {
+        throw new Error('No data in response');
+      }
+      
+      if (!data.gemini_details) {
+        console.warn('[GeminiQueryInspector] Missing gemini_details in response:', data);
+        throw new Error('Missing gemini_details in response');
+      }
+      
+      console.log('[GeminiQueryInspector] Gemini details:', data.gemini_details);
+      setDetails(data);
+    } catch (err: any) {
+      console.error('[GeminiQueryInspector] Failed to fetch Gemini details:', err);
+      setError(`Failed to load Gemini query details: ${err.message}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -142,46 +162,12 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
     }
   }, [isOpen, conversationId, turnId, turnData]);
 
-  const fetchGeminiDetails = async () => {
-    console.log('[GeminiQueryInspector] Starting fetch for:', { conversationId, turnId });
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await apiClient.get(
-        `/api/v1/conversations/${conversationId}/turns/${turnId}/gemini-details`
-      );
-      console.log('[GeminiQueryInspector] Raw response:', response);
-      
-      // The API client returns the data directly, not wrapped in a .data property
-      const data = response;
-      console.log('[GeminiQueryInspector] Response data:', data);
-      
-      // Validate the response structure
-      if (!data) {
-        throw new Error('No data in response');
-      }
-      
-      if (!data.gemini_details) {
-        console.warn('[GeminiQueryInspector] Missing gemini_details in response:', data);
-        throw new Error('Missing gemini_details in response');
-      }
-      
-      console.log('[GeminiQueryInspector] Gemini details:', data.gemini_details);
-      setDetails(data);
-    } catch (err) {
-      console.error('[GeminiQueryInspector] Failed to fetch Gemini details:', err);
-      setError(`Failed to load Gemini query details: ${err.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const copyToClipboard = async (text: string, section: string) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedSection(section);
       setTimeout(() => setCopiedSection(null), 2000);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to copy:', err);
     }
   };
@@ -309,46 +295,90 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                   <Clock className="w-4 h-4" />
                   Latency Breakdown
                 </h3>
-                <div className="space-y-3">
+                <div className="space-y-4">
                   {details.gemini_details.timing_breakdown && typeof details.gemini_details.timing_breakdown === 'object' && Object.keys(details.gemini_details.timing_breakdown).length > 0 ? (
                     <>
-                      <div className="space-y-2">
-                        {Object.entries(details.gemini_details.timing_breakdown)
-                          .filter(([key]) => key !== 'total_ms')
-                          .map(([key, value]) => {
-                            const percentage = getTimingPercentage(
-                              value as number,
-                              details.gemini_details.timing_breakdown.total_ms || 1
-                            );
-                            const label = key.replace(/_/g, ' ').replace(/ms$/, '');
-                            const isGeminiApi = key === 'gemini_api_ms';
-                            
-                            return (
-                              <div key={key} className="relative">
-                                <div className="flex justify-between items-center mb-1">
-                                  <span className="text-sm text-gray-600 dark:text-gray-400 capitalize">
-                                    {label} {isGeminiApi && '⭐'}
-                                  </span>
-                                  <span className={`text-sm font-medium ${
-                                    isGeminiApi 
-                                      ? 'text-blue-600 dark:text-blue-400' 
-                                      : 'text-gray-900 dark:text-white'
-                                  }`}>
-                                    {value}ms ({percentage}%)
-                                  </span>
-                                </div>
-                                <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                                  <div
-                                    className={`h-2 rounded-full ${
-                                      isGeminiApi ? 'bg-blue-500' : 'bg-gray-500'
-                                    }`}
-                                    style={{ width: `${percentage}%` }}
-                                  />
-                                </div>
+                      {/* Infrastructure & Setup */}
+                      <div className="space-y-2 mb-4">
+                        <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Infrastructure & Setup</h4>
+                        {[
+                          { key: 'context_retrieval_ms', label: 'Context Retrieval' },
+                          { key: 'database_query_ms', label: 'Database Query' }, 
+                          { key: 'settings_preparation_ms', label: 'Settings Preparation' },
+                          { key: 'processing_decision_ms', label: 'Processing Decision' }
+                        ].map(({ key, label }) => {
+                          const value = (details.gemini_details.timing_breakdown as any)[key] || 0;
+                          const percentage = getTimingPercentage(
+                            value as number,
+                            details.gemini_details.timing_breakdown.total_ms || 1
+                          );
+                          
+                          return (
+                            <div key={key} className="relative">
+                              <div className="flex justify-between items-center mb-1">
+                                <span className="text-sm text-gray-600 dark:text-gray-400">
+                                  {label}
+                                </span>
+                                <span className="text-sm font-medium text-gray-900 dark:text-white">
+                                  {value}ms ({percentage}%)
+                                </span>
                               </div>
-                            );
-                          })}
+                              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                                <div
+                                  className="h-2 rounded-full bg-gray-500"
+                                  style={{ width: `${percentage}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
+                      
+                      {/* Detailed Cleaning Processing Breakdown */}
+                      <div className="space-y-2">
+                        <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                          Cleaning Processing Details 
+                          <span className="text-xs text-gray-500 ml-2">
+                            ({(details.gemini_details.timing_breakdown as any).cleaning_processing_ms || 'N/A'}ms total)
+                          </span>
+                        </h4>
+                        {[
+                          { key: 'prompt_preparation_ms', label: 'Prompt Preparation', isGeminiApi: false },
+                          { key: 'gemini_api_ms', label: 'Gemini API', isGeminiApi: true },
+                          { key: 'database_save_ms', label: 'Database Save', isGeminiApi: false },
+                          { key: 'context_update_ms', label: 'Context Update', isGeminiApi: false }
+                        ].map(({ key, label, isGeminiApi }) => {
+                          const value = (details.gemini_details.timing_breakdown as any)[key] || 0;
+                          const cleaningTotal = (details.gemini_details.timing_breakdown as any).cleaning_processing_ms || details.gemini_details.timing_breakdown.total_ms || 1;
+                          const percentage = getTimingPercentage(value as number, cleaningTotal);
+                          
+                          return (
+                            <div key={key} className="relative">
+                              <div className="flex justify-between items-center mb-1">
+                                <span className="text-sm text-gray-600 dark:text-gray-400">
+                                  {label} {isGeminiApi && '⭐'}
+                                </span>
+                                <span className={`text-sm font-medium ${
+                                  isGeminiApi 
+                                    ? 'text-blue-600 dark:text-blue-400' 
+                                    : 'text-gray-900 dark:text-white'
+                                }`}>
+                                  {value}ms ({percentage}%)
+                                </span>
+                              </div>
+                              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                                <div
+                                  className={`h-2 rounded-full ${
+                                    isGeminiApi ? 'bg-blue-500' : 'bg-gray-500'
+                                  }`}
+                                  style={{ width: `${percentage}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      
                       <div className="pt-3 border-t border-gray-200 dark:border-gray-700">
                         <div className="flex justify-between items-center">
                           <span className="text-sm font-medium text-gray-900 dark:text-white">

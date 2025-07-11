@@ -215,9 +215,31 @@ class EvaluationManager:
         
         This creates a cleaned turn linked to both the evaluation and the raw turn.
         """
+        # Comprehensive timing breakdown
+        timing = {
+            'request_received_at': time.time(),
+            'database_query_start': 0,
+            'database_query_end': 0,
+            'settings_preparation_start': 0,
+            'settings_preparation_end': 0,
+            'context_retrieval_start': 0,
+            'context_retrieval_end': 0,
+            'processing_decision_start': 0,
+            'processing_decision_end': 0,
+            'cleaning_start': 0,
+            'cleaning_end': 0,
+            'database_save_start': 0,
+            'database_save_end': 0,
+            'context_update_start': 0,
+            'context_update_end': 0,
+            'response_preparation_start': 0,
+            'response_preparation_end': 0
+        }
+        
         start_time = time.time()
         
-        # Get evaluation and turn data
+        # Step 1: Database queries
+        timing['database_query_start'] = time.time()
         evaluation = db.query(Evaluation).filter(Evaluation.id == evaluation_id).first()
         if not evaluation:
             raise ValueError(f"Evaluation {evaluation_id} not found")
@@ -225,12 +247,10 @@ class EvaluationManager:
         raw_turn = db.query(Turn).filter(Turn.id == turn_id).first()
         if not raw_turn:
             raise ValueError(f"Turn {turn_id} not found")
+        timing['database_query_end'] = time.time()
         
-        print(f"\n[EvaluationManager] ===== PROCESSING TURN IN EVALUATION =====")
-        print(f"[EvaluationManager] Evaluation: {evaluation.name} ({evaluation_id})")
-        print(f"[EvaluationManager] Turn: {raw_turn.speaker} - '{raw_turn.raw_text[:100]}...'")
-        
-        # Get evaluation settings
+        # Step 2: Settings preparation
+        timing['settings_preparation_start'] = time.time()
         settings = evaluation.settings.copy() if evaluation.settings else {}
         if override_settings:
             settings.update(override_settings)
@@ -238,22 +258,83 @@ class EvaluationManager:
         sliding_window_size = settings.get('sliding_window', 10)
         cleaning_level = settings.get('cleaning_level', 'full')
         model_params = settings.get('model_params')
+        timing['settings_preparation_end'] = time.time()
         
-        # Get evaluation state with cleaned context
+        print(f"\n🔄 CLEANERCONTEXT PROCESSING: {raw_turn.speaker}")
+        print(f"📝 Raw Text: '{raw_turn.raw_text[:80]}...'")
+        print(f"⚙️ Evaluation: {evaluation.name} | Cleaning Level: {cleaning_level}")
+        
+        # Step 3: Context retrieval
+        timing['context_retrieval_start'] = time.time()
         evaluation_state = self.get_evaluation_state(evaluation_id, sliding_window_size, db)
         cleaned_context = evaluation_state.get_cleaned_sliding_window()
+        timing['context_retrieval_end'] = time.time()
         
-        # Skip processing for Lumen turns (instant bypass)
-        if self._is_lumen_turn(raw_turn.speaker):
-            print(f"[EvaluationManager] 🚀 LUMEN TURN DETECTED - Using instant bypass")
-            result = await self._process_lumen_turn(evaluation, raw_turn, evaluation_state, db)
-        elif self._is_likely_transcription_error(raw_turn.raw_text):
-            print(f"[EvaluationManager] 🚫 TRANSCRIPTION ERROR DETECTED - Skipping processing")
-            result = await self._process_transcription_error(evaluation, raw_turn, evaluation_state, db)
+        print(f"🔍 Context Window: {len(cleaned_context)} turns (window size: {sliding_window_size})")
+        
+        # Step 4: Processing decision (determine which path to take)
+        timing['processing_decision_start'] = time.time()
+        is_lumen = self._is_lumen_turn(raw_turn.speaker)
+        is_transcription_error = self._is_likely_transcription_error(raw_turn.raw_text)
+        timing['processing_decision_end'] = time.time()
+        
+        # Step 5: Actual cleaning/processing
+        timing['cleaning_start'] = time.time()
+        if is_lumen:
+            print(f"🚀 LUMEN BYPASS: Perfect AI response, no cleaning needed")
+            result = await self._process_lumen_turn(evaluation, raw_turn, evaluation_state, db, timing)
+        elif is_transcription_error:
+            print(f"🚫 TRANSCRIPTION ERROR: Skipping garbled/foreign text")
+            result = await self._process_transcription_error(evaluation, raw_turn, evaluation_state, db, timing)
         else:
-            print(f"[EvaluationManager] 👤 USER TURN DETECTED - Using full CleanerContext processing")
+            print(f"👤 USER TURN: Applying full CleanerContext intelligence")
             result = await self._process_user_turn(evaluation, raw_turn, evaluation_state, db, 
-                                                 cleaned_context, cleaning_level, model_params)
+                                                 cleaned_context, cleaning_level, model_params, timing)
+        timing['cleaning_end'] = time.time()
+        
+        # Step 6: Response preparation
+        timing['response_preparation_start'] = time.time()
+        
+        # Calculate comprehensive timing breakdown
+        total_time = (time.time() - start_time) * 1000
+        timing_breakdown = {
+            'database_query_ms': round((timing['database_query_end'] - timing['database_query_start']) * 1000, 2),
+            'settings_preparation_ms': round((timing['settings_preparation_end'] - timing['settings_preparation_start']) * 1000, 2),
+            'context_retrieval_ms': round((timing['context_retrieval_end'] - timing['context_retrieval_start']) * 1000, 2),
+            'processing_decision_ms': round((timing['processing_decision_end'] - timing['processing_decision_start']) * 1000, 2),
+            'cleaning_processing_ms': round((timing['cleaning_end'] - timing['cleaning_start']) * 1000, 2),
+            'total_ms': round(total_time, 2)
+        }
+        
+        # Add cleaning-specific timing from the result if available
+        if 'timing_breakdown' in result and result['timing_breakdown']:
+            # Merge the detailed cleaning timing with our main timing
+            detailed_timing = result['timing_breakdown']
+            
+            # PRESERVE the main total_ms - don't let it get overwritten
+            main_total_ms = timing_breakdown['total_ms']
+            
+            # Merge detailed timing (but not total_ms)
+            for key, value in detailed_timing.items():
+                if key != 'total_ms':  # Don't overwrite the main total
+                    timing_breakdown[key] = value
+            
+            # Keep the main total
+            timing_breakdown['total_ms'] = main_total_ms
+            
+            # For user turns, we want to see the detailed breakdown
+            if 'gemini_api_ms' in detailed_timing:
+                timing_breakdown['step_breakdown'] = {
+                    'prompt_preparation_ms': detailed_timing.get('prompt_preparation_ms', 0),
+                    'gemini_api_ms': detailed_timing.get('gemini_api_ms', 0),
+                    'database_save_ms': detailed_timing.get('database_save_ms', 0),
+                    'context_update_ms': detailed_timing.get('context_update_ms', 0)
+                }
+        
+        # Update result with comprehensive timing
+        result['timing_breakdown'] = timing_breakdown
+        
+        timing['response_preparation_end'] = time.time()
         
         total_time = (time.time() - start_time) * 1000
         
@@ -322,7 +403,7 @@ class EvaluationManager:
         return False
     
     async def _process_transcription_error(self, evaluation: Evaluation, raw_turn: Turn,
-                                         evaluation_state: EvaluationState, db: Session) -> Dict[str, Any]:
+                                         evaluation_state: EvaluationState, db: Session, timing: Dict[str, float] = None) -> Dict[str, Any]:
         """Handle transcription errors by creating cleaned turn with skip metadata"""
         process_start = time.time()
         print(f"[EvaluationManager] 🚫 Processing transcription error with skip")
@@ -405,11 +486,14 @@ class EvaluationManager:
                 'context_detected': 'transcription_error',
                 'ai_model_used': None
             },
-            'created_at': cleaned_turn.created_at.isoformat()
+            'created_at': cleaned_turn.created_at.isoformat(),
+            'gemini_prompt': cleaned_turn.gemini_prompt,
+            'gemini_response': cleaned_turn.gemini_response,
+            'timing_breakdown': cleaned_turn.timing_breakdown
         }
     
     async def _process_lumen_turn(self, evaluation: Evaluation, raw_turn: Turn, 
-                                evaluation_state: EvaluationState, db: Session) -> Dict[str, Any]:
+                                evaluation_state: EvaluationState, db: Session, timing: Dict[str, float] = None) -> Dict[str, Any]:
         """Process Lumen turns with instant bypass"""
         process_start = time.time()
         print(f"[EvaluationManager] 🚀 Processing Lumen turn with instant bypass")
@@ -489,19 +573,35 @@ class EvaluationManager:
                 'context_detected': 'ai_response',
                 'ai_model_used': None
             },
-            'created_at': cleaned_turn.created_at.isoformat()
+            'created_at': cleaned_turn.created_at.isoformat(),
+            'gemini_prompt': cleaned_turn.gemini_prompt,
+            'gemini_response': cleaned_turn.gemini_response,
+            'timing_breakdown': cleaned_turn.timing_breakdown
         }
     
+    def _safe_timing_diff(self, end_key: str, start_key: str, timing_dict: Dict[str, float], fallback_start: float = 0) -> float:
+        """Safely calculate timing differences, ensuring non-negative results"""
+        end_time = timing_dict.get(end_key, 0)
+        start_time = timing_dict.get(start_key, fallback_start)
+        if end_time == 0 or start_time == 0:
+            return 0
+        diff_ms = (end_time - start_time) * 1000
+        return round(max(0, diff_ms), 2)  # Ensure non-negative
+
     async def _process_user_turn(self, evaluation: Evaluation, raw_turn: Turn,
                                evaluation_state: EvaluationState, db: Session,
                                cleaned_context: List[Dict[str, Any]], cleaning_level: str,
-                               model_params: Dict[str, Any] = None) -> Dict[str, Any]:
+                               model_params: Dict[str, Any] = None, timing: Dict[str, float] = None) -> Dict[str, Any]:
         """Process user turns with full CleanerContext intelligence"""
         process_start = time.time()
-        print(f"[EvaluationManager] 👤 Processing user turn with CleanerContext intelligence")
+        user_timing = timing or {}
         
-        # Use Gemini service for cleaning
-        gemini_start = time.time()
+        print(f"🤖 GEMINI PROCESSING: Calling Gemini 2.5 Flash-Lite for cleaning...")
+        
+        # Detailed timing for user turn processing - start before actual work begins
+        user_timing['prompt_preparation_start'] = time.time()
+        
+        # Use Gemini service for cleaning (this includes prompt preparation + API call)
         cleaned_result = await self.gemini_service.clean_conversation_turn(
             raw_text=raw_turn.raw_text,
             speaker=raw_turn.speaker,
@@ -510,11 +610,56 @@ class EvaluationManager:
             model_params=model_params,
             rendered_prompt=evaluation.prompt_template  # Use evaluation's prompt
         )
-        gemini_time = (time.time() - gemini_start) * 1000
         
-        processing_time_ms = (time.time() - process_start) * 1000
+        user_timing['gemini_api_end'] = time.time()
         
-        # Create cleaned turn record
+        # Extract timing from the gemini service if it provides it
+        if 'gemini_api_start' in cleaned_result.get('timing', {}):
+            user_timing['gemini_api_start'] = cleaned_result['timing']['gemini_api_start']
+        else:
+            # Honest fallback: if we don't have separate timing, the whole call was essentially API time
+            user_timing['gemini_api_start'] = user_timing['prompt_preparation_start']
+        
+        gemini_time = (user_timing['gemini_api_end'] - user_timing['gemini_api_start']) * 1000
+        
+        # Log the Gemini interaction for transparency
+        prompt_preview = cleaned_result.get('prompt_used', '')[:100] + '...' if cleaned_result.get('prompt_used') else 'No prompt'
+        response_preview = cleaned_result.get('raw_response', '')[:100] + '...' if cleaned_result.get('raw_response') else 'No response'
+        print(f"📤 PROMPT SENT: {prompt_preview}")
+        print(f"📥 GEMINI RESPONSE: {response_preview}")
+        print(f"⚡ Gemini API: {gemini_time:.2f}ms | Confidence: {cleaned_result['metadata'].get('confidence_score', 'UNKNOWN')}")
+        
+        # Step: Database save timing
+        user_timing['database_save_start'] = time.time()
+        
+        # Debug timing values
+        print(f"[DEBUG] Timing values for calculation:")
+        print(f"  database_query: {timing.get('database_query_end', 0)} - {timing.get('database_query_start', 0)}")
+        print(f"  settings_preparation: {timing.get('settings_preparation_end', 0)} - {timing.get('settings_preparation_start', 0)}")
+        print(f"  context_retrieval: {timing.get('context_retrieval_end', 0)} - {timing.get('context_retrieval_start', 0)}")
+        print(f"  prompt_preparation: {user_timing.get('gemini_api_start', process_start)} - {user_timing.get('prompt_preparation_start', process_start)}")
+        
+        # Create comprehensive timing breakdown for user turns - include infrastructure + cleaning
+        user_timing_breakdown = {
+            # Infrastructure timing from main timing parameter
+            'database_query_ms': self._safe_timing_diff('database_query_end', 'database_query_start', timing),
+            'settings_preparation_ms': self._safe_timing_diff('settings_preparation_end', 'settings_preparation_start', timing),
+            'context_retrieval_ms': self._safe_timing_diff('context_retrieval_end', 'context_retrieval_start', timing),
+            'processing_decision_ms': self._safe_timing_diff('processing_decision_end', 'processing_decision_start', timing),
+            
+            # User turn specific timing (cleaning processing details)  
+            'prompt_preparation_ms': self._safe_timing_diff('gemini_api_start', 'prompt_preparation_start', user_timing, process_start),
+            'gemini_api_ms': self._safe_timing_diff('gemini_api_end', 'gemini_api_start', user_timing),
+            'database_save_ms': 0,  # Will be updated after db save
+            'context_update_ms': 0,  # Will be updated after context update
+            
+            # Derived values for UI organization - calculate sum of cleaning components
+            'cleaning_processing_ms': 0,  # Will be calculated after all components are measured
+            'total_ms': 0  # Will be set to final processing time at the end
+        }
+        
+        # Create cleaned turn record (timing will be updated later)
+        temp_processing_time = (time.time() - process_start) * 1000
         cleaned_turn = CleanedTurn(
             evaluation_id=evaluation.id,
             turn_id=raw_turn.id,
@@ -522,11 +667,11 @@ class EvaluationManager:
             confidence_score=cleaned_result['metadata']['confidence_score'],
             cleaning_applied=str(cleaned_result['metadata']['cleaning_applied']),
             cleaning_level=cleaned_result['metadata']['cleaning_level'],
-            processing_time_ms=processing_time_ms,
+            processing_time_ms=temp_processing_time,
             corrections=cleaned_result['metadata']['corrections'],
             context_detected=cleaned_result['metadata']['context_detected'],
             ai_model_used=cleaned_result['metadata']['ai_model_used'],
-            timing_breakdown={'gemini_api_ms': gemini_time, 'total_ms': processing_time_ms},
+            timing_breakdown=user_timing_breakdown,
             gemini_prompt=cleaned_result.get('prompt_used'),
             gemini_response=cleaned_result.get('raw_response')
         )
@@ -535,7 +680,12 @@ class EvaluationManager:
         db.commit()
         db.refresh(cleaned_turn)
         
-        # Add to evaluation history
+        user_timing['database_save_end'] = time.time()
+        
+        # Step: Context update timing
+        user_timing['context_update_start'] = time.time()
+        
+        # Add to evaluation history - will update with final timing later
         turn_data = {
             'evaluation_id': evaluation.id,
             'speaker': raw_turn.speaker,
@@ -544,7 +694,7 @@ class EvaluationManager:
             'confidence_score': cleaned_result['metadata']['confidence_score'],
             'cleaning_applied': cleaned_result['metadata']['cleaning_applied'],
             'cleaning_level': cleaned_result['metadata']['cleaning_level'],
-            'processing_time_ms': processing_time_ms,
+            'processing_time_ms': 0,  # Will be updated with final timing
             'corrections': cleaned_result['metadata']['corrections'],
             'context_detected': cleaned_result['metadata']['context_detected'],
             'ai_model_used': cleaned_result['metadata']['ai_model_used']
@@ -552,16 +702,48 @@ class EvaluationManager:
         
         evaluation_state.add_to_history(turn_data)
         
+        user_timing['context_update_end'] = time.time()
+        
+        # Update the timing breakdown with final measurements
+        user_timing_breakdown['database_save_ms'] = self._safe_timing_diff('database_save_end', 'database_save_start', user_timing)
+        user_timing_breakdown['context_update_ms'] = self._safe_timing_diff('context_update_end', 'context_update_start', user_timing)
+        
+        # Calculate the total cleaning processing time (sum of all cleaning components)
+        cleaning_components = [
+            user_timing_breakdown['prompt_preparation_ms'],
+            user_timing_breakdown['gemini_api_ms'], 
+            user_timing_breakdown['database_save_ms'],
+            user_timing_breakdown['context_update_ms']
+        ]
+        user_timing_breakdown['cleaning_processing_ms'] = round(sum(cleaning_components), 2)
+        
+        print(f"[DEBUG] Final timing breakdown:")
+        for key, value in user_timing_breakdown.items():
+            print(f"  {key}: {value}ms")
+        
+        # Calculate final processing time AFTER all operations
+        final_processing_time_ms = (time.time() - process_start) * 1000
+        
+        # Update timing breakdown with the final total
+        user_timing_breakdown['total_ms'] = round(final_processing_time_ms, 2)
+        
+        # Update the CleanedTurn record with final timing
+        cleaned_turn.processing_time_ms = final_processing_time_ms
+        cleaned_turn.timing_breakdown = user_timing_breakdown
+        
+        # Update the evaluation history data with final timing
+        turn_data['processing_time_ms'] = final_processing_time_ms
+        
         # Update evaluation turns count
         evaluation.turns_processed += 1
         db.commit()
         
-        self.performance_metrics['user_processing_times'].append(processing_time_ms)
+        self.performance_metrics['user_processing_times'].append(final_processing_time_ms)
         self.performance_metrics['total_user_turns'] += 1
         
-        print(f"[EvaluationManager] ✅ User turn processed in {processing_time_ms:.2f}ms")
-        print(f"[EvaluationManager] Cleaning applied: {cleaned_result['metadata']['cleaning_applied']}")
-        print(f"[EvaluationManager] Confidence: {cleaned_result['metadata']['confidence_score']}")
+        print(f"✅ User turn processed in {final_processing_time_ms:.2f}ms")
+        print(f"   🧠 Confidence: {cleaned_result['metadata']['confidence_score']} | Cleaning: {cleaned_result['metadata']['cleaning_applied']}")
+        print(f"   ⏱️ Gemini: {user_timing_breakdown['gemini_api_ms']}ms | DB: {user_timing_breakdown['database_save_ms']}ms")
         
         return {
             'cleaned_turn_id': str(cleaned_turn.id),
@@ -575,12 +757,15 @@ class EvaluationManager:
                 'confidence_score': cleaned_result['metadata']['confidence_score'],
                 'cleaning_applied': cleaned_result['metadata']['cleaning_applied'],
                 'cleaning_level': cleaned_result['metadata']['cleaning_level'],
-                'processing_time_ms': processing_time_ms,
+                'processing_time_ms': final_processing_time_ms,
                 'corrections': cleaned_result['metadata']['corrections'],
                 'context_detected': cleaned_result['metadata']['context_detected'],
                 'ai_model_used': cleaned_result['metadata']['ai_model_used']
             },
-            'created_at': cleaned_turn.created_at.isoformat()
+            'created_at': cleaned_turn.created_at.isoformat(),
+            'gemini_prompt': cleaned_turn.gemini_prompt,
+            'gemini_response': cleaned_turn.gemini_response,
+            'timing_breakdown': user_timing_breakdown
         }
     
     def get_performance_metrics(self) -> Dict[str, Any]:

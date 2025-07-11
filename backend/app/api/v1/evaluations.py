@@ -226,7 +226,10 @@ async def get_evaluation_details(
             created_at=ct.created_at.isoformat(),
             raw_speaker=ct.turn.speaker,
             raw_text=ct.turn.raw_text,
-            turn_sequence=ct.turn.turn_sequence
+            turn_sequence=ct.turn.turn_sequence,
+            gemini_prompt=ct.gemini_prompt,
+            gemini_response=ct.gemini_response,
+            timing_breakdown=ct.timing_breakdown
         )
         for ct in cleaned_turns
     ]
@@ -321,7 +324,10 @@ async def process_turn(
             created_at=result['created_at'],
             raw_speaker=result['speaker'],
             raw_text=result['raw_text'],
-            turn_sequence=result['turn_sequence']
+            turn_sequence=result['turn_sequence'],
+            gemini_prompt=result.get('gemini_prompt'),
+            gemini_response=result.get('gemini_response'),
+            timing_breakdown=result.get('timing_breakdown')
         )
         
     except Exception as e:
