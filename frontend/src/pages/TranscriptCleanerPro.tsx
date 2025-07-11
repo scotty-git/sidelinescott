@@ -143,6 +143,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [newConversationName, setNewConversationName] = useState('')
   const [newConversationDescription, setNewConversationDescription] = useState('')
   const [newConversationText, setNewConversationText] = useState('')
+
+  // Evaluations modal state
+  const [showEvaluationsModal, setShowEvaluationsModal] = useState(false)
+  const [selectedConversationForEvaluations, setSelectedConversationForEvaluations] = useState<any>(null)
   
   // Save panel width to localStorage
   React.useEffect(() => {
@@ -466,6 +470,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     loadConversations()
   }
 
+  const openEvaluationsModal = (conversation: any) => {
+    setSelectedConversationForEvaluations(conversation)
+    setShowEvaluationsModal(true)
+  }
+
   // NOTE: Save functions removed - evaluations auto-save during processing
 
   const loadLatestEvaluation = async (conversation: any) => {
@@ -514,6 +523,65 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     } catch (error) {
       console.error('Failed to load latest evaluation:', error)
       alert('Failed to load latest evaluation')
+    }
+  }
+  
+  const loadSpecificEvaluation = async (evaluation: any, conversation: any) => {
+    try {
+      addDetailedLog(`📊 Loading specific evaluation: ${evaluation.name}`)
+      
+      // Load evaluation details including cleaned turns
+      const evaluationDetails = await apiClient.getEvaluationDetails(evaluation.id) as any
+      
+      // Set conversation context
+      setConversationId(conversation.id)
+      setShowEvaluationsModal(false)
+      
+      // Load raw turns for the conversation component
+      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as any
+      
+      if (turnsResponse.turns && turnsResponse.turns.length > 0) {
+        const turns = turnsResponse.turns.map((turn: any) => ({
+          speaker: turn.speaker,
+          raw_text: turn.raw_text,
+          turn_index: turnsResponse.turns.indexOf(turn),
+          original_speaker_label: turn.speaker,
+          vt_tags: [],
+          has_noise: false,
+          has_foreign_text: false
+        }))
+        
+        setParsedTurns(turns)
+        addDetailedLog(`✅ Loaded ${turns.length} raw turns for conversation display`)
+      }
+      
+      // Convert evaluation cleaned turns to UI format
+      const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any) => ({
+        turn_id: cleanedTurn.turn_id,
+        conversation_id: conversation.id,
+        speaker: cleanedTurn.raw_speaker,
+        raw_text: cleanedTurn.raw_text,
+        cleaned_text: cleanedTurn.cleaned_text,
+        processing_state: 'completed',
+        metadata: {
+          confidence_score: cleanedTurn.confidence_score,
+          cleaning_applied: cleanedTurn.cleaning_applied,
+          cleaning_level: cleanedTurn.cleaning_level,
+          corrections: cleanedTurn.corrections,
+          context_detected: cleanedTurn.context_detected,
+          processing_time_ms: cleanedTurn.processing_time_ms,
+          ai_model_used: cleanedTurn.ai_model_used
+        },
+        created_at: cleanedTurn.created_at
+      }))
+      
+      setCleanedTurns(cleaned)
+      setSelectedTab('results')
+      addDetailedLog(`✅ Loaded ${cleaned.length} cleaned turns from evaluation: ${evaluation.name}`)
+      
+    } catch (error) {
+      console.error('Failed to load specific evaluation:', error)
+      alert('Failed to load evaluation')
     }
   }
   
@@ -2481,12 +2549,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                 >
                                   🧪 Start New
                                 </button>
-                                
+
                                 {hasEvaluations && (
                                   <button
-                                    onClick={() => {
-                                      alert(`View all ${evaluations.length} evaluations (coming soon)`)
-                                    }}
+                                    onClick={() => openEvaluationsModal(conversation)}
                                     style={{
                                       padding: '6px 12px',
                                       backgroundColor: theme.bgTertiary,
@@ -2501,6 +2567,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                     📋 View All
                                   </button>
                                 )}
+
                               </div>
                               
                               {/* Delete button */}
@@ -2531,6 +2598,162 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 )}
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Evaluations Modal */}
+      {showEvaluationsModal && selectedConversationForEvaluations && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            backgroundColor: theme.bg,
+            borderRadius: '12px',
+            padding: '32px',
+            maxWidth: '800px',
+            width: '90%',
+            maxHeight: '80vh',
+            overflow: 'auto',
+            border: `1px solid ${theme.border}`,
+            boxShadow: darkMode
+              ? '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.3)'
+              : '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+              <h2 style={{ fontSize: '24px', fontWeight: '600', color: theme.text, margin: 0 }}>
+                Evaluations for "{selectedConversationForEvaluations.name}"
+              </h2>
+              <button
+                onClick={() => setShowEvaluationsModal(false)}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: 'transparent',
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: '6px',
+                  color: theme.text,
+                  cursor: 'pointer',
+                  fontSize: '14px'
+                }}
+              >
+                Close
+              </button>
+            </div>
+
+            <div style={{ marginBottom: '16px', fontSize: '14px', color: theme.textMuted }}>
+              {conversationEvaluations[selectedConversationForEvaluations.id]?.length || 0} evaluations found
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {(conversationEvaluations[selectedConversationForEvaluations.id] || []).map((evaluation: any) => (
+                <div key={evaluation.id} style={{
+                  padding: '20px',
+                  backgroundColor: theme.bgSecondary,
+                  borderRadius: '8px',
+                  border: `1px solid ${theme.border}`
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                    <div>
+                      <h3 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: '0 0 8px 0' }}>
+                        {evaluation.name}
+                      </h3>
+                      <p style={{ fontSize: '14px', color: theme.textMuted, margin: 0 }}>
+                        {evaluation.description || 'No description'}
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await loadSpecificEvaluation(evaluation, selectedConversationForEvaluations)
+                          } catch (error) {
+                            console.error('Failed to load evaluation:', error)
+                          }
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          backgroundColor: theme.accent,
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          fontWeight: '500',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        📊 Load
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (confirm(`Delete evaluation "${evaluation.name}"?`)) {
+                            try {
+                              await apiClient.deleteEvaluation(evaluation.id)
+                              // Refresh evaluations
+                              const evaluationsResponse = await apiClient.getEvaluations(selectedConversationForEvaluations.id) as any
+                              setConversationEvaluations(prev => ({
+                                ...prev,
+                                [selectedConversationForEvaluations.id]: evaluationsResponse.evaluations || []
+                              }))
+                              addDetailedLog(`🗑️ Deleted evaluation: ${evaluation.name}`)
+                            } catch (error) {
+                              console.error('Failed to delete evaluation:', error)
+                              alert('Failed to delete evaluation')
+                            }
+                          }
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          backgroundColor: 'transparent',
+                          color: '#ef4444',
+                          border: '1px solid #ef4444',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          fontWeight: '500',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        🗑️ Delete
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: theme.textMuted }}>
+                    <span>Created: {new Date(evaluation.created_at).toLocaleString()}</span>
+                    <span>•</span>
+                    <span>Settings: {evaluation.settings?.cleaning_level || 'unknown'} cleaning</span>
+                    {evaluation.settings?.model_params?.model_name && (
+                      <>
+                        <span>•</span>
+                        <span>Model: {evaluation.settings.model_params.model_name}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+
+              {(!conversationEvaluations[selectedConversationForEvaluations.id] || conversationEvaluations[selectedConversationForEvaluations.id].length === 0) && (
+                <div style={{
+                  textAlign: 'center',
+                  padding: '48px',
+                  color: theme.textMuted,
+                  backgroundColor: theme.bgSecondary,
+                  borderRadius: '8px',
+                  border: `1px solid ${theme.border}`
+                }}>
+                  <div style={{ fontSize: '18px', fontWeight: '500', marginBottom: '8px' }}>No evaluations yet</div>
+                  <div style={{ fontSize: '14px' }}>Create your first evaluation by clicking "Start New"</div>
+                </div>
+              )}
             </div>
           </div>
         </div>

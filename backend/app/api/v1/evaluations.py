@@ -155,33 +155,44 @@ async def list_evaluations(
         per_page=20
     )
 
-@router.get("/evaluations/{evaluation_id}", response_model=EvaluationDetailsResponse)
+@router.get("/{evaluation_id}", response_model=EvaluationDetailsResponse)
 async def get_evaluation_details(
     evaluation_id: str,
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get detailed evaluation information with cleaned turns"""
+    print(f"[DEBUG] get_evaluation_details called with evaluation_id: {evaluation_id}")
+    print(f"[DEBUG] current_user: {current_user}")
+    
     try:
         evaluation_uuid = UUID(evaluation_id)
         user_uuid = UUID(current_user["id"])
-    except ValueError:
+        print(f"[DEBUG] Parsed UUIDs - evaluation_uuid: {evaluation_uuid}, user_uuid: {user_uuid}")
+    except ValueError as e:
+        print(f"[DEBUG] UUID parsing failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid UUID format"
         )
     
     # Get evaluation and verify access
+    print(f"[DEBUG] Querying database for evaluation...")
     evaluation = db.query(Evaluation).filter(
         Evaluation.id == evaluation_uuid,
         Evaluation.user_id == user_uuid
     ).first()
     
+    print(f"[DEBUG] Database query result: {evaluation}")
+    
     if not evaluation:
+        print(f"[DEBUG] Evaluation not found - returning 404")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Evaluation not found or access denied"
         )
+    
+    print(f"[DEBUG] Evaluation found: {evaluation.id}, proceeding with cleaned turns...")
     
     # Get cleaned turns with raw turn data
     cleaned_turns = db.query(CleanedTurn).join(Turn).filter(
@@ -239,7 +250,7 @@ async def get_evaluation_details(
         total_raw_turns=total_raw_turns
     )
 
-@router.post("/evaluations/{evaluation_id}/process-turn", response_model=CleanedTurnResponse)
+@router.post("/{evaluation_id}/process-turn", response_model=CleanedTurnResponse)
 async def process_turn(
     evaluation_id: str,
     turn_data: ProcessTurnRequest,
@@ -317,7 +328,7 @@ async def process_turn(
             detail=f"Failed to process turn: {str(e)}"
         )
 
-@router.post("/evaluations/{evaluation_id}/process-all")
+@router.post("/{evaluation_id}/process-all")
 async def process_all_turns(
     evaluation_id: str,
     current_user: dict = Depends(get_current_user),
@@ -405,7 +416,7 @@ async def process_all_turns(
             detail=f"Batch processing failed: {str(e)}"
         )
 
-@router.delete("/evaluations/{evaluation_id}")
+@router.delete("/{evaluation_id}")
 async def delete_evaluation(
     evaluation_id: str,
     current_user: dict = Depends(get_current_user),

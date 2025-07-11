@@ -128,11 +128,11 @@ export class APIClient {
   }
 
   async getEvaluationDetails(evaluationId: string) {
-    return this.request(`/api/v1/evaluations/evaluations/${evaluationId}`)
+    return this.request(`/api/v1/evaluations/${evaluationId}`)
   }
 
   async processTurn(evaluationId: string, turnId: string, settings?: any) {
-    return this.request(`/api/v1/evaluations/evaluations/${evaluationId}/process-turn`, {
+    return this.request(`/api/v1/evaluations/${evaluationId}/process-turn`, {
       method: 'POST',
       body: JSON.stringify({
         turn_id: turnId,
@@ -141,13 +141,13 @@ export class APIClient {
     })
   }
   async processAllTurns(evaluationId: string) {
-    return this.request(`/api/v1/evaluations/evaluations/${evaluationId}/process-all`, {
+    return this.request(`/api/v1/evaluations/${evaluationId}/process-all`, {
       method: 'POST',
     })
   }
 
   async deleteEvaluation(evaluationId: string) {
-    return this.request(`/api/v1/evaluations/evaluations/${evaluationId}`, {
+    return this.request(`/api/v1/evaluations/${evaluationId}`, {
       method: 'DELETE',
     })
   }
