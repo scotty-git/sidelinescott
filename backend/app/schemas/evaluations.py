@@ -53,6 +53,7 @@ class CleanedTurnResponse(BaseModel):
     # Raw turn data for reference
     raw_speaker: str = Field(..., description="Original speaker")
     raw_text: str = Field(..., description="Original raw text")
+    turn_sequence: int = Field(..., description="Sequential turn number (1, 2, 3, ...)")
 
 class EvaluationDetailsResponse(BaseModel):
     """Detailed evaluation response with cleaned turns"""

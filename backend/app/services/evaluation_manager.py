@@ -78,10 +78,18 @@ class EvaluationManager:
         self.active_evaluations: Dict[UUID, EvaluationState] = {}
         self.gemini_service = GeminiService()
         self.prompt_service = PromptEngineeringService()
-        self.performance_metrics: Dict[str, List[float]] = {
+        self.performance_metrics = {
             'lumen_processing_times': [],
             'user_processing_times': [],
-            'context_retrieval_times': []
+            'transcription_error_processing_times': [],
+            'context_retrieval_times': [],
+            'gemini_api_times': [],
+            'total_turns_processed': 0,
+            'total_lumen_turns': 0,
+            'total_user_turns': 0,
+            'total_transcription_errors': 0,
+            'average_context_size': [],
+            'sliding_window_sizes': []
         }
         
         print("[EvaluationManager] Initialized with evaluation-based processing")
@@ -149,10 +157,10 @@ class EvaluationManager:
             return
         
         try:
-            # Query existing cleaned turns for this evaluation, ordered chronologically
+            # Query existing cleaned turns for this evaluation, ordered by turn sequence
             existing_cleaned_turns = db.query(CleanedTurn).join(Turn).filter(
                 CleanedTurn.evaluation_id == evaluation_id
-            ).order_by(Turn.created_at.asc()).all()
+            ).order_by(Turn.turn_sequence.asc()).all()
             
             print(f"[EvaluationManager] 📊 CONTEXT DEBUG: Found {len(existing_cleaned_turns)} existing cleaned turns")
             
@@ -239,13 +247,25 @@ class EvaluationManager:
         if self._is_lumen_turn(raw_turn.speaker):
             print(f"[EvaluationManager] 🚀 LUMEN TURN DETECTED - Using instant bypass")
             result = await self._process_lumen_turn(evaluation, raw_turn, evaluation_state, db)
+        elif self._is_likely_transcription_error(raw_turn.raw_text):
+            print(f"[EvaluationManager] 🚫 TRANSCRIPTION ERROR DETECTED - Skipping processing")
+            result = await self._process_transcription_error(evaluation, raw_turn, evaluation_state, db)
         else:
             print(f"[EvaluationManager] 👤 USER TURN DETECTED - Using full CleanerContext processing")
             result = await self._process_user_turn(evaluation, raw_turn, evaluation_state, db, 
                                                  cleaned_context, cleaning_level, model_params)
         
         total_time = (time.time() - start_time) * 1000
+        
+        # Track performance metrics
+        self.performance_metrics['total_turns_processed'] += 1
+        context_size = len(cleaned_context)
+        self.performance_metrics['average_context_size'].append(context_size)
+        self.performance_metrics['sliding_window_sizes'].append(sliding_window_size)
+        
         print(f"[EvaluationManager] ===== TURN COMPLETE in {total_time:.2f}ms =====\n")
+        print(f"[EvaluationManager] Performance: Total processed: {self.performance_metrics['total_turns_processed']}")
+        print(f"[EvaluationManager] Performance: Context size: {context_size} turns")
         
         return result
     
@@ -256,6 +276,137 @@ class EvaluationManager:
         
         print(f"[EvaluationManager] Turn classification: {speaker} -> {'LUMEN' if is_lumen else 'USER'}")
         return is_lumen
+    
+    def _is_likely_transcription_error(self, text: str) -> bool:
+        """Detect if text is likely a transcription error (garbled/foreign text)"""
+        # Copy exact logic from ConversationManager
+        
+        # Check for excessive non-ASCII characters (foreign text)
+        non_ascii_chars = sum(1 for char in text if ord(char) > 127)
+        non_ascii_ratio = non_ascii_chars / len(text) if len(text) > 0 else 0
+        
+        # Check for excessive repetition
+        words = text.split()
+        if len(words) > 0:
+            word_counts = {}
+            for word in words:
+                word_counts[word] = word_counts.get(word, 0) + 1
+            
+            # If any word appears more than 50% of the time, it's likely an error
+            max_word_frequency = max(word_counts.values()) / len(words)
+            if max_word_frequency > 0.5:
+                return True
+        
+        # Check for very short gibberish
+        if len(text.strip()) < 3:
+            return True
+        
+        # Check for high ratio of non-ASCII characters
+        if non_ascii_ratio > 0.7:
+            return True
+        
+        # Check for specific transcription error patterns
+        error_patterns = [
+            'uh uh uh uh',
+            'mm mm mm',
+            'ah ah ah',
+            '....',
+            '????'
+        ]
+        
+        text_lower = text.lower()
+        for pattern in error_patterns:
+            if pattern in text_lower:
+                return True
+        
+        return False
+    
+    async def _process_transcription_error(self, evaluation: Evaluation, raw_turn: Turn,
+                                         evaluation_state: EvaluationState, db: Session) -> Dict[str, Any]:
+        """Handle transcription errors by creating cleaned turn with skip metadata"""
+        process_start = time.time()
+        print(f"[EvaluationManager] 🚫 Processing transcription error with skip")
+        
+        # Skip cleaning - create cleaned turn with empty text and error metadata
+        cleaned_text = ""  # Empty indicates skipped
+        processing_time_ms = 0
+        
+        # Create cleaned turn record with error metadata
+        cleaned_turn = CleanedTurn(
+            evaluation_id=evaluation.id,
+            turn_id=raw_turn.id,
+            cleaned_text=cleaned_text,
+            confidence_score='LOW',
+            cleaning_applied='true',  # We did apply "cleaning" by removing gibberish
+            cleaning_level='skip',
+            processing_time_ms=processing_time_ms,
+            corrections=[{
+                'original': raw_turn.raw_text,
+                'corrected': '',
+                'confidence': 'HIGH',
+                'reason': 'Detected as transcription error - likely foreign characters or gibberish'
+            }],
+            context_detected='transcription_error',
+            ai_model_used=None,
+            timing_breakdown={
+                'context_retrieval_ms': 0,
+                'prompt_preparation_ms': 0,
+                'gemini_api_ms': 0,
+                'database_save_ms': 0,
+                'total_ms': 0
+            },
+            gemini_prompt=None,
+            gemini_response=None
+        )
+        
+        # Save to database
+        db.add(cleaned_turn)
+        db.commit()
+        db.refresh(cleaned_turn)
+        
+        # Add to evaluation history (with empty cleaned text to not pollute context)
+        context_data = {
+            'evaluation_id': evaluation.id,
+            'speaker': raw_turn.speaker,
+            'raw_text': raw_turn.raw_text,
+            'cleaned_text': cleaned_text,
+            'confidence_score': 'LOW',
+            'cleaning_applied': True,
+            'cleaning_level': 'skip',
+            'processing_time_ms': processing_time_ms,
+            'corrections': cleaned_turn.corrections,
+            'context_detected': 'transcription_error',
+            'ai_model_used': None
+        }
+        evaluation_state.add_to_history(context_data)
+        
+        actual_processing_time = (time.time() - process_start) * 1000
+        self.performance_metrics['transcription_error_processing_times'].append(actual_processing_time)
+        self.performance_metrics['total_transcription_errors'] += 1
+        
+        print(f"[EvaluationManager] ✅ Transcription error processed in {actual_processing_time:.2f}ms")
+        print(f"[EvaluationManager] Raw text skipped: '{raw_turn.raw_text}'")
+        print(f"[EvaluationManager] Cleaned text (empty): '{cleaned_text}'")
+        
+        return {
+            'cleaned_turn_id': str(cleaned_turn.id),
+            'evaluation_id': str(evaluation.id),
+            'turn_id': str(raw_turn.id),
+            'speaker': raw_turn.speaker,
+            'raw_text': raw_turn.raw_text,
+            'cleaned_text': cleaned_text,
+            'turn_sequence': raw_turn.turn_sequence,
+            'metadata': {
+                'confidence_score': 'LOW',
+                'cleaning_applied': True,
+                'cleaning_level': 'skip',
+                'processing_time_ms': actual_processing_time,
+                'corrections': cleaned_turn.corrections,
+                'context_detected': 'transcription_error',
+                'ai_model_used': None
+            },
+            'created_at': cleaned_turn.created_at.isoformat()
+        }
     
     async def _process_lumen_turn(self, evaluation: Evaluation, raw_turn: Turn, 
                                 evaluation_state: EvaluationState, db: Session) -> Dict[str, Any]:
@@ -317,6 +468,7 @@ class EvaluationManager:
         
         actual_processing_time = (time.time() - process_start) * 1000
         self.performance_metrics['lumen_processing_times'].append(actual_processing_time)
+        self.performance_metrics['total_lumen_turns'] += 1
         
         print(f"[EvaluationManager] ✅ Lumen turn processed in {actual_processing_time:.2f}ms")
         
@@ -327,6 +479,7 @@ class EvaluationManager:
             'speaker': raw_turn.speaker,
             'raw_text': raw_turn.raw_text,
             'cleaned_text': cleaned_text,
+            'turn_sequence': raw_turn.turn_sequence,
             'metadata': {
                 'confidence_score': 'HIGH',
                 'cleaning_applied': False,
@@ -404,6 +557,7 @@ class EvaluationManager:
         db.commit()
         
         self.performance_metrics['user_processing_times'].append(processing_time_ms)
+        self.performance_metrics['total_user_turns'] += 1
         
         print(f"[EvaluationManager] ✅ User turn processed in {processing_time_ms:.2f}ms")
         print(f"[EvaluationManager] Cleaning applied: {cleaned_result['metadata']['cleaning_applied']}")
@@ -416,6 +570,7 @@ class EvaluationManager:
             'speaker': raw_turn.speaker,
             'raw_text': raw_turn.raw_text,
             'cleaned_text': cleaned_result['cleaned_text'],
+            'turn_sequence': raw_turn.turn_sequence,
             'metadata': {
                 'confidence_score': cleaned_result['metadata']['confidence_score'],
                 'cleaning_applied': cleaned_result['metadata']['cleaning_applied'],
@@ -430,22 +585,46 @@ class EvaluationManager:
     
     def get_performance_metrics(self) -> Dict[str, Any]:
         """Get performance metrics for monitoring"""
-        metrics = {}
+        timing_metrics = {}
         
-        for metric_name, times in self.performance_metrics.items():
+        # Process timing metrics (lists of times)
+        timing_keys = ['lumen_processing_times', 'user_processing_times', 'transcription_error_processing_times', 
+                      'context_retrieval_times', 'gemini_api_times', 'average_context_size', 'sliding_window_sizes']
+        
+        for metric_name in timing_keys:
+            times = self.performance_metrics.get(metric_name, [])
             if times:
-                metrics[metric_name] = {
-                    'avg_ms': sum(times) / len(times),
-                    'max_ms': max(times),
-                    'min_ms': min(times),
+                timing_metrics[metric_name] = {
+                    'avg': round(sum(times) / len(times), 2),
+                    'max': round(max(times), 2),
+                    'min': round(min(times), 2),
                     'count': len(times)
                 }
             else:
-                metrics[metric_name] = {
-                    'avg_ms': 0,
-                    'max_ms': 0,
-                    'min_ms': 0,
+                timing_metrics[metric_name] = {
+                    'avg': 0,
+                    'max': 0,
+                    'min': 0,
                     'count': 0
                 }
         
-        return metrics
+        # Process counter metrics (integers)
+        total_turns = self.performance_metrics['total_turns_processed']
+        
+        return {
+            'summary': {
+                'total_turns_processed': total_turns,
+                'total_lumen_turns': self.performance_metrics['total_lumen_turns'],
+                'total_user_turns': self.performance_metrics['total_user_turns'],
+                'total_transcription_errors': self.performance_metrics['total_transcription_errors'],
+                'lumen_percentage': round((self.performance_metrics['total_lumen_turns'] / total_turns * 100), 1) if total_turns > 0 else 0,
+                'user_percentage': round((self.performance_metrics['total_user_turns'] / total_turns * 100), 1) if total_turns > 0 else 0,
+                'error_percentage': round((self.performance_metrics['total_transcription_errors'] / total_turns * 100), 1) if total_turns > 0 else 0
+            },
+            'timing_metrics': timing_metrics,
+            'performance_targets': {
+                'lumen_target_ms': 10,
+                'user_target_ms': 500,
+                'context_retrieval_target_ms': 100
+            }
+        }

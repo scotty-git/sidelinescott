@@ -197,19 +197,12 @@ async def parse_transcript(
         turn_responses = []
         
         for turn in parsed_turns:
-            # Create turn in database with cleaned_text initially set to raw_text
+            # Create raw turn in database (cleaning data goes to cleaned_turns table)
             db_turn = Turn(
                 conversation_id=conversation_uuid,
+                turn_sequence=turn.turn_index + 1,  # Convert 0-based index to 1-based sequence
                 speaker=turn.speaker,
-                raw_text=turn.raw_text,
-                cleaned_text=turn.raw_text,  # Will be updated during cleaning
-                confidence_score="PENDING",  # Will be updated during cleaning
-                cleaning_applied="false",    # Will be updated during cleaning
-                cleaning_level="none",       # Will be updated during cleaning
-                processing_time_ms=0.0,      # Will be updated during cleaning
-                corrections=[],              # Will be updated during cleaning
-                context_detected="unknown",  # Will be updated during cleaning
-                ai_model_used="none"         # Will be updated during cleaning
+                raw_text=turn.raw_text
             )
             
             db.add(db_turn)
@@ -287,7 +280,7 @@ async def get_conversation_turns(
         from app.models.turn import Turn
         turns = db.query(Turn).filter(
             Turn.conversation_id == conversation_uuid
-        ).order_by(Turn.created_at).all()
+        ).order_by(Turn.turn_sequence).all()
         
         # Convert to response format
         turn_responses = []
@@ -295,20 +288,21 @@ async def get_conversation_turns(
             turn_responses.append({
                 "id": str(turn.id),
                 "conversation_id": str(turn.conversation_id),
+                "turn_sequence": turn.turn_sequence,
                 "speaker": turn.speaker,
                 "raw_text": turn.raw_text,
-                "cleaned_text": turn.cleaned_text,
+                "cleaned_text": turn.raw_text,  # Fallback to raw text (cleaning data in evaluation system)
                 "metadata": {
-                    "confidence_score": turn.confidence_score,
-                    "cleaning_applied": turn.cleaning_applied == "true",
-                    "cleaning_level": turn.cleaning_level,
-                    "processing_time_ms": turn.processing_time_ms,
-                    "corrections": turn.corrections or [],
-                    "context_detected": turn.context_detected,
-                    "ai_model_used": turn.ai_model_used,
-                    "timing_breakdown": turn.timing_breakdown or {},
-                    "gemini_prompt": turn.gemini_prompt,
-                    "gemini_response": turn.gemini_response
+                    "confidence_score": "UNKNOWN",  # Not available in raw turns
+                    "cleaning_applied": False,  # Not available in raw turns
+                    "cleaning_level": "none",  # Not available in raw turns
+                    "processing_time_ms": 0.0,  # Not available in raw turns
+                    "corrections": [],  # Not available in raw turns
+                    "context_detected": "raw_turn",  # Indicates this is raw data
+                    "ai_model_used": None,  # Not available in raw turns
+                    "timing_breakdown": {},  # Not available in raw turns
+                    "gemini_prompt": None,  # Not available in raw turns
+                    "gemini_response": None  # Not available in raw turns
                 },
                 "created_at": turn.created_at.isoformat() if turn.created_at else None
             })

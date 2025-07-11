@@ -220,25 +220,26 @@ async def get_turn_gemini_details(
             detail="Turn not found"
         )
     
-    # Format response with all Gemini details
+    # Format response - NOTE: Gemini details moved to evaluation system
     return {
         'turn_id': str(turn.id),
         'conversation_id': str(turn.conversation_id),
         'speaker': turn.speaker,
         'raw_text': turn.raw_text,
-        'cleaned_text': turn.cleaned_text,
+        'cleaned_text': turn.raw_text,  # Fallback to raw text
         'gemini_details': {
-            'prompt_sent': turn.gemini_prompt,
-            'response_received': turn.gemini_response,
-            'model_used': turn.ai_model_used,
-            'processing_time_ms': turn.processing_time_ms,
-            'timing_breakdown': turn.timing_breakdown or {},
-            'confidence_score': turn.confidence_score,
-            'cleaning_level': turn.cleaning_level,
-            'corrections': turn.corrections or [],
-            'context_detected': turn.context_detected
+            'prompt_sent': None,  # Not available in raw turns
+            'response_received': None,  # Not available in raw turns
+            'model_used': None,  # Not available in raw turns
+            'processing_time_ms': 0.0,  # Not available in raw turns
+            'timing_breakdown': {},  # Not available in raw turns
+            'confidence_score': 'UNKNOWN',  # Not available in raw turns
+            'cleaning_level': 'none',  # Not available in raw turns
+            'corrections': [],  # Not available in raw turns
+            'context_detected': 'raw_turn'  # Indicates this is raw data
         },
-        'created_at': turn.created_at.isoformat()
+        'created_at': turn.created_at.isoformat(),
+        'note': 'Gemini details now available in evaluation system'
     }
 
 @router.get("/{conversation_id}/turns")
@@ -274,7 +275,7 @@ async def get_conversation_turns(
     
     print(f"[TurnsAPI] Found {len(turns)} turns")
     
-    # Format response
+    # Format response - NOTE: Cleaning metadata moved to evaluation system
     formatted_turns = []
     for turn in turns:
         formatted_turns.append({
@@ -282,18 +283,20 @@ async def get_conversation_turns(
             'conversation_id': str(turn.conversation_id),
             'speaker': turn.speaker,
             'raw_text': turn.raw_text,
-            'cleaned_text': turn.cleaned_text,
+            'cleaned_text': turn.raw_text,  # Fallback to raw text
+            'turn_sequence': turn.turn_sequence,  # New sequential numbering
             'metadata': {
-                'confidence_score': turn.confidence_score,
-                'cleaning_applied': turn.cleaning_applied,
-                'cleaning_level': turn.cleaning_level,
-                'processing_time_ms': turn.processing_time_ms,
-                'timing_breakdown': turn.timing_breakdown or {},
-                'corrections': turn.corrections or [],
-                'context_detected': turn.context_detected,
-                'ai_model_used': turn.ai_model_used
+                'confidence_score': 'UNKNOWN',  # Not available in raw turns
+                'cleaning_applied': False,  # Not available in raw turns
+                'cleaning_level': 'none',  # Not available in raw turns
+                'processing_time_ms': 0.0,  # Not available in raw turns
+                'timing_breakdown': {},  # Not available in raw turns
+                'corrections': [],  # Not available in raw turns
+                'context_detected': 'raw_turn',  # Indicates this is raw data
+                'ai_model_used': None  # Not available in raw turns
             },
-            'created_at': turn.created_at.isoformat()
+            'created_at': turn.created_at.isoformat(),
+            'note': 'Cleaning metadata now available in evaluation system'
         })
     
     return {

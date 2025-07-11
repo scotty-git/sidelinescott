@@ -5,7 +5,8 @@ import { GeminiQueryInspector } from '../components/GeminiQueryInspector'
 interface ParsedTurn {
   speaker: string
   raw_text: string
-  turn_index: number
+  turn_index: number  // Keep for compatibility, but will use turn_sequence for display
+  turn_sequence: number  // Actual sequence number from backend (1, 2, 3, ...)
   original_speaker_label: string
   vt_tags: string[]
   has_noise: boolean
@@ -18,6 +19,7 @@ interface CleanedTurn {
   speaker: string
   raw_text: string
   cleaned_text: string
+  turn_sequence?: number  // Actual sequence number from backend (1, 2, 3, ...)
   processing_state?: 'pending' | 'processing' | 'completed' | 'skipped'
   metadata: {
     confidence_score: string
@@ -319,7 +321,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       addDetailedLog(`Sliding window: ${settings.slidingWindow} turns | Cleaning level: ${settings.cleaningLevel}`)
       addDetailedLog(`🔄 EVALUATION MODE: All turns will be processed and saved automatically`)
       
-      const processAllResponse = await apiCallWithLogging('POST', `/api/v1/evaluations/evaluations/${evaluationId}/process-all`) as any
+      const processAllResponse = await apiCallWithLogging('POST', `/api/v1/evaluations/${evaluationId}/process-all`) as any
       addDetailedLog(`✅ Batch processing completed: ${processAllResponse.processed_successfully}/${processAllResponse.total_turns} turns processed`)
       
       if (processAllResponse.failed_turns > 0) {
@@ -331,7 +333,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       
       // Step 4: Load the completed evaluation results for display
       addDetailedLog('📋 Loading evaluation results for display...')
-      const evaluationDetails = await apiCallWithLogging('GET', `/api/v1/evaluations/evaluations/${evaluationId}`) as any
+      const evaluationDetails = await apiCallWithLogging('GET', `/api/v1/evaluations/${evaluationId}`) as any
       
       // Convert evaluation results to the format expected by the UI
       const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any) => ({
@@ -503,6 +505,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         speaker: cleanedTurn.raw_speaker,
         raw_text: cleanedTurn.raw_text,
         cleaned_text: cleanedTurn.cleaned_text,
+        turn_sequence: cleanedTurn.turn_sequence,  // Use actual sequence from backend
         processing_state: 'completed',
         metadata: {
           confidence_score: cleanedTurn.confidence_score,
@@ -544,7 +547,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         const turns = turnsResponse.turns.map((turn: any) => ({
           speaker: turn.speaker,
           raw_text: turn.raw_text,
-          turn_index: turnsResponse.turns.indexOf(turn),
+          turn_index: turnsResponse.turns.indexOf(turn),  // Keep for compatibility
+          turn_sequence: turn.turn_sequence,  // Use actual sequence from backend
           original_speaker_label: turn.speaker,
           vt_tags: [],
           has_noise: false,
@@ -562,6 +566,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         speaker: cleanedTurn.raw_speaker,
         raw_text: cleanedTurn.raw_text,
         cleaned_text: cleanedTurn.cleaned_text,
+        turn_sequence: cleanedTurn.turn_sequence,  // Use actual sequence from backend
         processing_state: 'completed',
         metadata: {
           confidence_score: cleanedTurn.confidence_score,
@@ -598,7 +603,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         const turns = turnsResponse.turns.map((turn: any) => ({
           speaker: turn.speaker,
           raw_text: turn.raw_text,
-          turn_index: turnsResponse.turns.indexOf(turn),
+          turn_index: turnsResponse.turns.indexOf(turn),  // Keep for compatibility
+          turn_sequence: turn.turn_sequence,  // Use actual sequence from backend
           original_speaker_label: turn.speaker,
           vt_tags: [],
           has_noise: false,
@@ -957,7 +963,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                           marginBottom: '6px',
                           fontSize: '13px'
                         }}>
-                          #{index + 1} {turn.speaker}:
+                          #{turn.turn_sequence} {turn.speaker}:
                         </div>
                         <div style={{ 
                           color: theme.textSecondary,
@@ -1339,7 +1345,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       }}></div>
                       <div style={{ flex: 1 }}>
                         <div style={{ color: theme.text, fontSize: '16px', fontWeight: '600', marginBottom: '4px' }}>
-                          Processing Turn {currentTurnIndex + 1} of {parsedTurns.length}
+                          Processing Turn {parsedTurns[currentTurnIndex]?.turn_sequence || currentTurnIndex + 1} of {parsedTurns.length}
                         </div>
                         <div style={{ color: theme.textMuted, fontSize: '14px' }}>
                           {parsedTurns[currentTurnIndex]?.speaker}: {parsedTurns[currentTurnIndex]?.raw_text.substring(0, 60)}...
@@ -1402,7 +1408,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                           }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                               <span style={{ fontSize: '14px', fontWeight: '500', color: theme.textMuted }}>
-                                Turn {index + 1}
+                                Turn {turn.turn_sequence || index + 1}
                               </span>
                               <span style={{
                                 display: 'inline-flex',
@@ -1456,7 +1462,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: `${getSpacing(20)}px` }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                               <span style={{ fontSize: '16px', fontWeight: '600', color: theme.text }}>
-                                Turn {index + 1}
+                                Turn {turn.turn_sequence || index + 1}
                               </span>
                               <span style={{
                                 display: 'inline-flex',

@@ -6,6 +6,7 @@ on the same conversation with different prompts and settings.
 """
 
 import logging
+import time
 from typing import List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -194,10 +195,10 @@ async def get_evaluation_details(
     
     print(f"[DEBUG] Evaluation found: {evaluation.id}, proceeding with cleaned turns...")
     
-    # Get cleaned turns with raw turn data
+    # Get cleaned turns with raw turn data ordered by original turn sequence
     cleaned_turns = db.query(CleanedTurn).join(Turn).filter(
         CleanedTurn.evaluation_id == evaluation_uuid
-    ).order_by(Turn.created_at.asc()).all()
+    ).order_by(Turn.turn_sequence.asc()).all()
     
     # Get conversation info
     conversation = db.query(Conversation).filter(
@@ -224,7 +225,8 @@ async def get_evaluation_details(
             ai_model_used=ct.ai_model_used,
             created_at=ct.created_at.isoformat(),
             raw_speaker=ct.turn.speaker,
-            raw_text=ct.turn.raw_text
+            raw_text=ct.turn.raw_text,
+            turn_sequence=ct.turn.turn_sequence
         )
         for ct in cleaned_turns
     ]
@@ -318,7 +320,8 @@ async def process_turn(
             ai_model_used=result['metadata']['ai_model_used'],
             created_at=result['created_at'],
             raw_speaker=result['speaker'],
-            raw_text=result['raw_text']
+            raw_text=result['raw_text'],
+            turn_sequence=result['turn_sequence']
         )
         
     except Exception as e:
@@ -326,6 +329,36 @@ async def process_turn(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process turn: {str(e)}"
+        )
+
+@router.get("/performance")
+async def get_evaluation_performance_metrics():
+    """
+    Get performance metrics for the evaluation system.
+    
+    Returns timing statistics, processing counts, and performance targets.
+    """
+    print(f"[EvaluationsAPI] Getting evaluation performance metrics")
+    
+    try:
+        metrics = evaluation_manager.get_performance_metrics()
+        
+        print(f"[EvaluationsAPI] Performance metrics retrieved")
+        print(f"[EvaluationsAPI] Total turns processed: {metrics['summary']['total_turns_processed']}")
+        print(f"[EvaluationsAPI] Lumen turns: {metrics['summary']['total_lumen_turns']}")
+        print(f"[EvaluationsAPI] User turns: {metrics['summary']['total_user_turns']}")
+        
+        return {
+            'success': True,
+            'performance_metrics': metrics,
+            'timestamp': time.time()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get performance metrics: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get performance metrics: {str(e)}"
         )
 
 @router.post("/{evaluation_id}/process-all")
@@ -358,10 +391,10 @@ async def process_all_turns(
             detail="Evaluation not found or access denied"
         )
     
-    # Get all raw turns for this conversation
+    # Get all raw turns for this conversation ordered by sequence
     raw_turns = db.query(Turn).filter(
         Turn.conversation_id == evaluation.conversation_id
-    ).order_by(Turn.created_at.asc()).all()
+    ).order_by(Turn.turn_sequence.asc()).all()
     
     if not raw_turns:
         raise HTTPException(

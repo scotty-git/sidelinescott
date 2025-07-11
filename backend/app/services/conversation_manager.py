@@ -148,34 +148,41 @@ class ConversationManager:
             
             print(f"[ConversationManager] 🔍 CONTEXT DEBUG: Starting to load {len(existing_turns)} turns into context...")
             
-            # Convert database turns to conversation state format
+            # TEMPORARY: Context loading disabled since cleaning data moved to evaluation system
+            # In the new architecture, turns table only has raw data
+            # Context will be rebuilt from evaluation system in Phase 2
+            print(f"[ConversationManager] ⚠️ CONTEXT LOADING TEMPORARILY DISABLED")
+            print(f"[ConversationManager] ℹ️ Raw turns found: {len(existing_turns)}")
+            print(f"[ConversationManager] ℹ️ Context loading will be reimplemented via evaluation system")
+            print(f"[ConversationManager] ℹ️ Current conversation will start with fresh context")
+            
+            # For now, just create minimal context entries with raw data
             for i, turn in enumerate(existing_turns):
-                turn_data = {
+                # Create minimal context entry (no cleaning metadata available)
+                context_entry = {
                     'conversation_id': conversation_id,
                     'speaker': turn.speaker,
                     'raw_text': turn.raw_text,
-                    'cleaned_text': turn.cleaned_text,
-                    'confidence_score': turn.confidence_score,
-                    'cleaning_applied': turn.cleaning_applied,
-                    'cleaning_level': turn.cleaning_level,
-                    'processing_time_ms': turn.processing_time_ms,
-                    'corrections': turn.corrections or [],
-                    'context_detected': turn.context_detected,
-                    'ai_model_used': turn.ai_model_used
+                    'cleaned_text': turn.raw_text,  # Use raw text as fallback
+                    'confidence_score': 'UNKNOWN',
+                    'cleaning_applied': False,
+                    'cleaning_level': 'none',
+                    'processing_time_ms': 0.0,
+                    'corrections': [],
+                    'context_detected': 'unknown',
+                    'ai_model_used': None
                 }
                 
                 # Add to conversation state history
-                conversation_state.cleaned_history.append(turn_data)
+                conversation_state.cleaned_history.append(context_entry)
                 
-                # Enhanced logging for each turn
-                print(f"[ConversationManager] 📝 CONTEXT DEBUG: Loaded Turn {i+1}: {turn.speaker}")
+                print(f"[ConversationManager] 📝 CONTEXT DEBUG: Loaded raw turn {i+1}: {turn.speaker}")
                 print(f"[ConversationManager]   ↳ Raw: '{turn.raw_text[:60]}...'")
-                print(f"[ConversationManager]   ↳ Cleaned: '{turn.cleaned_text[:60]}...'")
-                print(f"[ConversationManager]   ↳ Added to history (total: {len(conversation_state.cleaned_history)})")
+                print(f"[ConversationManager]   ↳ Using raw text as cleaned (no cleaning metadata available)")
             
-            print(f"[ConversationManager] ✅ CONTEXT DEBUG: Successfully loaded {len(existing_turns)} turns into conversation context")
+            print(f"[ConversationManager] ✅ CONTEXT DEBUG: Loaded {len(existing_turns)} raw turns with fallback context")
             print(f"[ConversationManager] 📈 CONTEXT DEBUG: Total history length: {len(conversation_state.cleaned_history)}")
-            print(f"[ConversationManager] 🎯 CONTEXT DEBUG: Context spans from turn 1 to turn {len(existing_turns)}")
+            print(f"[ConversationManager] 🎯 CONTEXT DEBUG: Using raw text as cleaned context until evaluation integration")
             
             # Log ALL turns for debugging
             if len(conversation_state.cleaned_history) > 0:
@@ -266,6 +273,22 @@ class ConversationManager:
         print(f"[ConversationManager] Turn classification: {speaker} -> {'LUMEN' if is_lumen else 'USER'}")
         return is_lumen
     
+    def _get_next_turn_sequence(self, conversation_id: UUID, db: Session) -> int:
+        """Get the next turn sequence number for a conversation"""
+        try:
+            # Get the highest turn_sequence for this conversation
+            max_sequence = db.query(Turn.turn_sequence).filter(
+                Turn.conversation_id == conversation_id
+            ).order_by(Turn.turn_sequence.desc()).first()
+            
+            if max_sequence:
+                return max_sequence[0] + 1
+            else:
+                return 1  # First turn in conversation
+        except Exception as e:
+            print(f"[ConversationManager] Error getting next sequence: {e}")
+            return 1  # Fallback to 1
+    
     def _is_likely_transcription_error(self, text: str) -> bool:
         """Detect likely transcription errors like foreign chars, gibberish, single symbols"""
         import re
@@ -315,13 +338,21 @@ class ConversationManager:
         cleaned_text = ""  # Empty - indicates skipped
         processing_time_ms = 0  # Minimal processing time
         
+        # Get next turn sequence number for this conversation
+        next_sequence = self._get_next_turn_sequence(conversation_id, db)
+        
+        # Create basic turn data (raw only - no cleaning in turns table anymore)
         turn_data = {
             'conversation_id': conversation_id,
             'speaker': speaker,
             'raw_text': raw_text,
-            'cleaned_text': cleaned_text,
-            'confidence_score': 'LOW',  # Low confidence for transcription errors
-            'cleaning_applied': True,   # We did apply "cleaning" by removing gibberish
+            'turn_sequence': next_sequence
+        }
+        
+        # Store cleaning metadata separately for return (not in Turn model)
+        cleaning_metadata = {
+            'confidence_score': 'LOW',
+            'cleaning_applied': True,
             'cleaning_level': 'skip',
             'processing_time_ms': processing_time_ms,
             'corrections': [{
@@ -371,13 +402,13 @@ class ConversationManager:
             'raw_text': raw_text,
             'cleaned_text': cleaned_text,
             'metadata': {
-                'confidence_score': turn_data['confidence_score'],
-                'cleaning_applied': turn_data['cleaning_applied'],
-                'cleaning_level': turn_data['cleaning_level'],
+                'confidence_score': cleaning_metadata['confidence_score'],
+                'cleaning_applied': cleaning_metadata['cleaning_applied'],
+                'cleaning_level': cleaning_metadata['cleaning_level'],
                 'processing_time_ms': actual_processing_time,
-                'corrections': turn_data['corrections'],
-                'context_detected': turn_data['context_detected'],
-                'ai_model_used': turn_data['ai_model_used']
+                'corrections': cleaning_metadata['corrections'],
+                'context_detected': cleaning_metadata['context_detected'],
+                'ai_model_used': cleaning_metadata['ai_model_used']
             },
             'created_at': db_turn.created_at.isoformat()
         }
@@ -395,11 +426,19 @@ class ConversationManager:
         cleaned_text = raw_text
         processing_time_ms = 0  # Conceptually zero processing time
         
+        # Get next turn sequence number for this conversation
+        next_sequence = self._get_next_turn_sequence(conversation_id, db)
+        
+        # Create basic turn data (raw only - no cleaning in turns table anymore)
         turn_data = {
             'conversation_id': conversation_id,
             'speaker': speaker,
             'raw_text': raw_text,
-            'cleaned_text': cleaned_text,
+            'turn_sequence': next_sequence
+        }
+        
+        # Store cleaning metadata separately for return and context (not in Turn model)
+        cleaning_metadata = {
             'confidence_score': 'HIGH',
             'cleaning_applied': False,
             'cleaning_level': 'none',
@@ -419,8 +458,17 @@ class ConversationManager:
             'gemini_response': None  # No Gemini processing for Lumen turns
         }
         
-        # Add to conversation history
-        conversation_state.add_to_history(turn_data)
+        # Create context data for conversation history (includes cleaning metadata)
+        context_data = {
+            'conversation_id': conversation_id,
+            'speaker': speaker,
+            'raw_text': raw_text,
+            'cleaned_text': cleaned_text,
+            **cleaning_metadata
+        }
+        
+        # Add to conversation history (with cleaning metadata for context)
+        conversation_state.add_to_history(context_data)
         
         # Save to database (with error handling for testing)
         try:
@@ -447,7 +495,7 @@ class ConversationManager:
         self.performance_metrics['lumen_processing_times'].append(actual_processing_time)
         
         print(f"[ConversationManager] ✅ Lumen turn processed in {actual_processing_time:.2f}ms")
-        print(f"[ConversationManager] Cleaning applied: {turn_data['cleaning_applied']}")
+        print(f"[ConversationManager] Cleaning applied: {cleaning_metadata['cleaning_applied']}")
         print(f"[ConversationManager] Added to cleaned history for future context")
         
         return {
@@ -457,13 +505,13 @@ class ConversationManager:
             'raw_text': raw_text,
             'cleaned_text': cleaned_text,
             'metadata': {
-                'confidence_score': turn_data['confidence_score'],
-                'cleaning_applied': turn_data['cleaning_applied'],
-                'cleaning_level': turn_data['cleaning_level'],
+                'confidence_score': cleaning_metadata['confidence_score'],
+                'cleaning_applied': cleaning_metadata['cleaning_applied'],
+                'cleaning_level': cleaning_metadata['cleaning_level'],
                 'processing_time_ms': actual_processing_time,
-                'corrections': turn_data['corrections'],
-                'context_detected': turn_data['context_detected'],
-                'ai_model_used': turn_data['ai_model_used']
+                'corrections': cleaning_metadata['corrections'],
+                'context_detected': cleaning_metadata['context_detected'],
+                'ai_model_used': cleaning_metadata['ai_model_used']
             },
             'created_at': db_turn.created_at.isoformat()
         }
@@ -677,10 +725,19 @@ class ConversationManager:
         # Create a copy of timing_breakdown to avoid reference issues
         timing_breakdown_copy = timing_breakdown.copy()
         
+        # Get next turn sequence number for this conversation
+        next_sequence = self._get_next_turn_sequence(conversation_id, db)
+        
+        # Create basic turn data (raw only - no cleaning in turns table anymore)
         turn_data = {
             'conversation_id': conversation_id,
             'speaker': speaker,
             'raw_text': raw_text,
+            'turn_sequence': next_sequence
+        }
+        
+        # Store cleaning metadata separately for return and context (not in Turn model)
+        cleaning_metadata = {
             'cleaned_text': cleaned_result['cleaned_text'],
             'confidence_score': cleaned_result['metadata']['confidence_score'],
             'cleaning_applied': str(cleaned_result['metadata']['cleaning_applied']),
@@ -694,8 +751,16 @@ class ConversationManager:
             'gemini_response': cleaned_result.get('raw_response', None)
         }
         
+        # Create context data for conversation history (includes cleaning metadata)
+        context_data = {
+            'conversation_id': conversation_id,
+            'speaker': speaker,
+            'raw_text': raw_text,
+            **cleaning_metadata
+        }
+        
         # Add to conversation history (THIS IS THE KEY - cleaned version goes to history)
-        conversation_state.add_to_history(turn_data)
+        conversation_state.add_to_history(context_data)
         
         # Save to database (with error handling for testing)
         print(f"[ConversationManager] 🔍 DB SAVE DEBUG: Preparing to save turn to database...")
@@ -806,27 +871,27 @@ class ConversationManager:
 
         print(f"[ConversationManager] ✅ User turn processed in {processing_time_ms:.2f}ms")
         print(f"[ConversationManager] 📊 Final timing breakdown: {timing_breakdown}")
-        print(f"[ConversationManager] Cleaning applied: {turn_data['cleaning_applied']}")
-        print(f"[ConversationManager] Confidence: {turn_data['confidence_score']}")
-        print(f"[ConversationManager] Corrections made: {len(turn_data['corrections'])}")
+        print(f"[ConversationManager] Cleaning applied: {cleaning_metadata['cleaning_applied']}")
+        print(f"[ConversationManager] Confidence: {cleaning_metadata['confidence_score']}")
+        print(f"[ConversationManager] Corrections made: {len(cleaning_metadata['corrections'])}")
         
         return {
             'turn_id': str(db_turn.id),
             'conversation_id': str(conversation_id),
             'speaker': speaker,
             'raw_text': raw_text,
-            'cleaned_text': turn_data['cleaned_text'],
+            'cleaned_text': cleaning_metadata['cleaned_text'],
             'metadata': {
-                'confidence_score': turn_data['confidence_score'],
-                'cleaning_applied': turn_data['cleaning_applied'],
-                'cleaning_level': turn_data['cleaning_level'],
+                'confidence_score': cleaning_metadata['confidence_score'],
+                'cleaning_applied': cleaning_metadata['cleaning_applied'],
+                'cleaning_level': cleaning_metadata['cleaning_level'],
                 'processing_time_ms': processing_time_ms,
                 'timing_breakdown': timing_breakdown,
-                'corrections': turn_data['corrections'],
-                'context_detected': turn_data['context_detected'],
-                'ai_model_used': turn_data['ai_model_used'],
-                'gemini_prompt': turn_data.get('gemini_prompt', None),
-                'gemini_response': turn_data.get('gemini_response', None)
+                'corrections': cleaning_metadata['corrections'],
+                'context_detected': cleaning_metadata['context_detected'],
+                'ai_model_used': cleaning_metadata['ai_model_used'],
+                'gemini_prompt': cleaning_metadata.get('gemini_prompt', None),
+                'gemini_response': cleaning_metadata.get('gemini_response', None)
             },
             'created_at': db_turn.created_at.isoformat()
         }
