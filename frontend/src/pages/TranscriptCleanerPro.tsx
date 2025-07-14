@@ -150,6 +150,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [showEvaluationsModal, setShowEvaluationsModal] = useState(false)
   const [selectedConversationForEvaluations, setSelectedConversationForEvaluations] = useState<any>(null)
   
+  // Prompt template state
+  const [promptTemplates, setPromptTemplates] = useState<any[]>([])
+  const [selectedTemplatePreview, setSelectedTemplatePreview] = useState('')
+  const [loadingTemplates, setLoadingTemplates] = useState(false)
+
   // Save panel width to localStorage
   React.useEffect(() => {
     localStorage.setItem('transcript-cleaner-panel-width', leftPanelWidth.toString())
@@ -205,7 +210,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       topK: 40,
       maxTokens: 65535,
       // Sliding Window Configuration
-      slidingWindow: 5
+      slidingWindow: 5,
+      // Prompt Template
+      promptTemplate: null
     }
   })
   
@@ -271,6 +278,52 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     }
   }
 
+  // Load prompt templates from backend
+  const loadPromptTemplates = async () => {
+    try {
+      setLoadingTemplates(true)
+      addDetailedLog('📜 Loading prompt templates...')
+      
+      const response = await apiCallWithLogging('GET', '/api/v1/prompt-engineering/templates') as any
+      const templates = Array.isArray(response) ? response : []
+      setPromptTemplates(templates)
+      
+      addDetailedLog(`✅ Loaded ${templates.length} prompt templates`)
+    } catch (error: any) {
+      addDetailedLog(`❌ Failed to load templates: ${error.message}`)
+      // Fallback templates for demo
+      setPromptTemplates([
+        {
+          id: 'default',
+          name: 'Default CleanerContext Template',
+          description: 'The original system prompt for conversation cleaning',
+          template: 'You are an expert conversation cleaner...',
+          variables: ['conversation_context', 'raw_text', 'cleaning_level']
+        }
+      ])
+    } finally {
+      setLoadingTemplates(false)
+    }
+  }
+
+  // Handle template selection
+  const handleTemplateChange = (templateId: string) => {
+    const template = promptTemplates.find(t => t.id === templateId)
+    if (template) {
+      setSettings({...settings, promptTemplate: template})
+      setSelectedTemplatePreview(template.template)
+      addDetailedLog(`🎯 Selected template: ${template.name}`)
+    } else {
+      setSettings({...settings, promptTemplate: null})
+      setSelectedTemplatePreview('')
+    }
+  }
+
+  // Load templates on component mount
+  React.useEffect(() => {
+    loadPromptTemplates()
+  }, [])
+
 
   const startCleaning = async () => {
     if (!conversationId) {
@@ -288,10 +341,16 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     try {
       // Step 1: Create a new evaluation for this cleaning session
       addDetailedLog('📋 Creating new evaluation...')
+      if (settings.promptTemplate) {
+        addDetailedLog(`🎯 Using prompt template: ${settings.promptTemplate.name}`)
+      } else {
+        addDetailedLog('📝 Using default system prompt')
+      }
       const evaluationName = `Evaluation ${new Date().toLocaleString()}`
       const evaluationData = {
         name: evaluationName,
         description: `Auto-created evaluation with ${settings.cleaningLevel} cleaning`,
+        prompt_template_id: settings.promptTemplate?.id || null,
         settings: {
           sliding_window: settings.slidingWindow,
           cleaning_level: settings.cleaningLevel,
@@ -2169,6 +2228,65 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                 backgroundColor: theme.bg
                               }}
                             />
+                          </div>
+                          <div>
+                            <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
+                              Prompt Template
+                            </label>
+                            <select 
+                              value={settings.promptTemplate?.id || ''}
+                              onChange={(e) => handleTemplateChange(e.target.value)}
+                              disabled={loadingTemplates}
+                              style={{ 
+                                display: 'block', 
+                                width: '100%', 
+                                borderRadius: '6px', 
+                                border: `1px solid ${theme.border}`, 
+                                padding: '8px 12px',
+                                backgroundColor: theme.bg,
+                                color: theme.text,
+                                fontSize: '14px'
+                              }}
+                            >
+                              <option value="">Default System Prompt</option>
+                              {promptTemplates.map(template => (
+                                <option key={template.id} value={template.id}>
+                                  {template.name} ({template.variables?.length || 0} variables)
+                                </option>
+                              ))}
+                            </select>
+                            {loadingTemplates && (
+                              <div style={{ fontSize: '12px', color: theme.textMuted, marginTop: '4px' }}>
+                                Loading templates...
+                              </div>
+                            )}
+                            {settings.promptTemplate && (
+                              <div style={{ marginTop: '8px' }}>
+                                <div style={{ fontSize: '12px', fontWeight: '500', color: theme.textSecondary, marginBottom: '4px' }}>
+                                  Template Preview:
+                                </div>
+                                <textarea
+                                  value={selectedTemplatePreview}
+                                  readOnly
+                                  style={{
+                                    width: '100%',
+                                    height: '120px',
+                                    borderRadius: '6px',
+                                    border: `1px solid ${theme.border}`,
+                                    padding: '8px 12px',
+                                    backgroundColor: theme.bgSecondary,
+                                    color: theme.text,
+                                    fontSize: '12px',
+                                    fontFamily: 'monospace',
+                                    resize: 'vertical',
+                                    lineHeight: '1.4'
+                                  }}
+                                />
+                                <div style={{ fontSize: '11px', color: theme.textMuted, marginTop: '4px' }}>
+                                  Variables: {settings.promptTemplate.variables?.join(', ') || 'None'}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
