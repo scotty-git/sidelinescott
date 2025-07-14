@@ -79,8 +79,7 @@ IMPORTANT:
                 template=self.default_template,
                 description="The original system prompt for conversation cleaning",
                 variables=["conversation_context", "raw_text", "cleaning_level"],
-                version="1.0.0",
-                is_active=True
+                version="1.0.0"
             )
             db.add(template)
             db.commit()
@@ -150,14 +149,10 @@ IMPORTANT:
             "detected_variables": detected_vars
         }
 
-    async def get_templates(self, db: Session, include_inactive: bool = False) -> List[PromptTemplate]:
+    async def get_templates(self, db: Session) -> List[PromptTemplate]:
         """Get all prompt templates"""
         try:
-            query = db.query(PromptTemplate)
-            if not include_inactive:
-                query = query.filter(PromptTemplate.is_active == True)
-            
-            return query.order_by(desc(PromptTemplate.updated_at)).all()
+            return db.query(PromptTemplate).order_by(desc(PromptTemplate.updated_at)).all()
         except Exception as e:
             logger.warning(f"Database query failed: {str(e)}")
             # Return empty list if database is unavailable
@@ -188,21 +183,6 @@ IMPORTANT:
         logger.info(f"Updated template: {template.name}")
         return template
 
-    async def set_active_template(self, db: Session, template_id: UUID) -> bool:
-        """Set a template as the active one (deactivate others)"""
-        # Deactivate all templates
-        db.query(PromptTemplate).update({PromptTemplate.is_active: False})
-        
-        # Activate the selected template
-        template = await self.get_template(db, template_id)
-        if not template:
-            return False
-        
-        template.is_active = True
-        db.commit()
-        
-        logger.info(f"Set active template: {template.name}")
-        return True
 
     async def render_prompt(self, db: Session, template_id: UUID, 
                           variables: Dict[str, Any]) -> Optional[RenderedPrompt]:

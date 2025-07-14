@@ -36,11 +36,10 @@ prompt_service = PromptEngineeringService()
 
 @router.get("/templates", response_model=List[PromptTemplate])
 async def get_prompt_templates(
-    include_inactive: bool = Query(False, description="Include inactive templates"),
     db: Session = Depends(get_db)
 ):
     """Get all prompt templates"""
-    templates = await prompt_service.get_templates(db, include_inactive=include_inactive)
+    templates = await prompt_service.get_templates(db)
     
     # If no templates found (DB unavailable or empty), return default template
     if not templates:
@@ -54,7 +53,6 @@ async def get_prompt_templates(
                 description="Default prompt template for CleanerContext cleaning",
                 variables=["conversation_context", "raw_text", "cleaning_level"],
                 version="1.0.0",
-                is_active=True,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
@@ -68,7 +66,6 @@ async def get_prompt_templates(
             description=t.description,
             variables=t.variables,
             version=t.version,
-            is_active=t.is_active,
             created_at=t.created_at,
             updated_at=t.updated_at
         )
@@ -92,7 +89,6 @@ async def get_prompt_template(
             description="Default prompt template for CleanerContext cleaning",
             variables=["conversation_context", "raw_text", "cleaning_level"],
             version="1.0.0",
-            is_active=True,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         )
@@ -108,7 +104,6 @@ async def get_prompt_template(
         description=template.description,
         variables=template.variables,
         version=str(template.version),
-        is_active=template.is_active,
         created_at=template.created_at,
         updated_at=template.updated_at
     )
@@ -136,7 +131,6 @@ async def create_prompt_template(
             description=template.description,
             variables=template.variables,
             version=template.version,
-            is_active=template.is_active,
             created_at=template.created_at,
             updated_at=template.updated_at
         )
@@ -164,23 +158,26 @@ async def update_prompt_template(
         description=template.description,
         variables=template.variables,
         version=template.version,
-        is_active=template.is_active,
         created_at=template.created_at,
         updated_at=template.updated_at
     )
 
 
-@router.post("/templates/{template_id}/activate")
-async def activate_template(
+@router.delete("/templates/{template_id}")
+async def delete_template(
     template_id: UUID,
     db: Session = Depends(get_db)
 ):
-    """Set a template as the active one"""
-    success = await prompt_service.set_active_template(db, template_id)
-    if not success:
+    """Delete a template"""
+    template = await prompt_service.get_template(db, template_id)
+    if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     
-    return {"message": "Template activated successfully"}
+    # Delete the template
+    db.delete(template)
+    db.commit()
+    
+    return {"message": "Template deleted successfully"}
 
 
 @router.post("/templates/{template_id}/render", response_model=RenderedPrompt)
@@ -336,7 +333,6 @@ async def get_or_create_default_template(
         "description": template.description,
         "variables": template.variables,
         "version": template.version,
-        "is_active": template.is_active,
         "created_at": template.created_at
     }
 

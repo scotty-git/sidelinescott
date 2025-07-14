@@ -1,8 +1,14 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { apiClient } from '../lib/api'
 
 // Monaco Editor for code editing
 import Editor from '@monaco-editor/react'
+
+// New components
+import { TemplateLibraryModal } from '../components/TemplateLibraryModal'
+import { ToastProvider, useTemplateToasts } from '../components/ToastNotification'
+import { createTemplateValidator, formatValidationMessage } from '../utils/templateValidation'
+import type { ValidationError, ValidationWarning } from '../utils/templateValidation'
 
 interface PromptTemplate {
   id: string
@@ -11,7 +17,6 @@ interface PromptTemplate {
   description?: string
   variables: string[]
   version: string
-  is_active: boolean
   created_at: string
   updated_at: string
 }
@@ -46,7 +51,7 @@ interface TurnAnalysis {
   corrections: any[]
 }
 
-export function PromptEngineeringDashboard() {
+function PromptEngineeringDashboardInner() {
   const [activeTab, setActiveTab] = useState<'inspector' | 'master' | 'versions' | 'ab-test' | 'analytics'>('master')
   const [templates, setTemplates] = useState<PromptTemplate[]>([])
   const [activeTemplate, setActiveTemplate] = useState<PromptTemplate | null>(null)
@@ -82,11 +87,26 @@ export function PromptEngineeringDashboard() {
   const [selectedTestConversationId, setSelectedTestConversationId] = useState('')
   const [conversationSimulationResult, setConversationSimulationResult] = useState<any>(null)
 
+  // Template Library Modal State
+  const [showTemplateLibrary, setShowTemplateLibrary] = useState(false)
+
+  // Smart Template Management State
+  const [currentTemplateId, setCurrentTemplateId] = useState<string | null>(null)
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+
+  // Validation State
+  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([])
+  const [validationWarnings, setValidationWarnings] = useState<ValidationWarning[]>([])
+  const [validator, setValidator] = useState<ReturnType<typeof createTemplateValidator> | null>(null)
+
   // Theme
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem('prompt-dashboard-dark-mode')
     return saved ? JSON.parse(saved) : true
   })
+
+  // Toast notifications
+  const templateToasts = useTemplateToasts()
 
   const theme = {
     bg: darkMode ? '#1f2937' : '#ffffff',
@@ -105,6 +125,12 @@ export function PromptEngineeringDashboard() {
   useEffect(() => {
     loadTemplates()
   }, [])
+
+  // Initialize validator when templates change
+  useEffect(() => {
+    const templateNames = templates.map(t => ({ id: t.id, name: t.name }))
+    setValidator(createTemplateValidator(templateNames))
+  }, [templates])
 
   useEffect(() => {
     if (dataSource === 'real') {
@@ -127,21 +153,105 @@ export function PromptEngineeringDashboard() {
   const loadTemplates = async () => {
     try {
       setLoading(true)
-      const response = await apiClient.get('/api/v1/prompt-engineering/templates')
+      const response = await apiClient.get('/api/v1/prompt-engineering/templates') as PromptTemplate[]
+      console.log('✅ Templates loaded successfully:', response.length, 'templates')
       setTemplates(response)
       
-      // Find active template
-      const active = response.find((t: PromptTemplate) => t.is_active)
-      if (active) {
-        setActiveTemplate(active)
-        setEditingTemplate(active.template)
-        setTemplateName(active.name)
-        setTemplateDescription(active.description || '')
+      // Load the first template if available (or user can select one)
+      if (response.length > 0) {
+        const firstTemplate = response[0]
+        setActiveTemplate(firstTemplate)
+        setEditingTemplate(firstTemplate.template)
+        setTemplateName(firstTemplate.name)
+        setTemplateDescription(firstTemplate.description || '')
       }
+      
+      // Templates loaded successfully - don't show toast for this common operation
     } catch (err) {
-      setError(`Failed to load templates: ${err}`)
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      templateToasts.showApiError('Load Templates', errorMessage)
+      setError(`Failed to load templates: ${errorMessage}`)
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Real-time validation function
+  const validateCurrentTemplate = () => {
+    if (!validator) return
+
+    const validation = validator.validateTemplate(
+      templateName,
+      editingTemplate,
+      templateDescription,
+      activeTemplate?.id
+    )
+    
+    setValidationErrors(validation.errors)
+    setValidationWarnings(validation.warnings)
+    
+    return validation.isValid
+  }
+
+  // Helper function to extract variables from template
+  const extractVariablesFromTemplate = (template: string): string[] => {
+    const variableRegex = /{(\w+)}/g
+    const variables: string[] = []
+    let match
+    
+    while ((match = variableRegex.exec(template)) !== null) {
+      if (!variables.includes(match[1])) {
+        variables.push(match[1])
+      }
+    }
+    
+    return variables
+  }
+
+  // Track unsaved changes
+  useEffect(() => {
+    setHasUnsavedChanges(
+      currentTemplateId ? (
+        templates.find(t => t.id === currentTemplateId)?.name !== templateName ||
+        templates.find(t => t.id === currentTemplateId)?.template !== editingTemplate ||
+        templates.find(t => t.id === currentTemplateId)?.description !== templateDescription
+      ) : (
+        templateName.trim() !== '' || editingTemplate.trim() !== '' || templateDescription.trim() !== ''
+      )
+    )
+  }, [templateName, editingTemplate, templateDescription, currentTemplateId, templates])
+
+  // Template CRUD operations with validation
+  const handleTemplateNameChange = (name: string) => {
+    setTemplateName(name)
+    if (validator) {
+      const fieldValidation = validator.validateField('name', name, currentTemplateId || undefined)
+      setValidationErrors(prev => [
+        ...prev.filter(e => e.field !== 'name'),
+        ...fieldValidation.errors
+      ])
+    }
+  }
+
+  const handleTemplateContentChange = (content: string) => {
+    setEditingTemplate(content)
+    if (validator) {
+      const fieldValidation = validator.validateField('template', content)
+      setValidationErrors(prev => [
+        ...prev.filter(e => e.field !== 'template'),
+        ...fieldValidation.errors
+      ])
+    }
+  }
+
+  const handleTemplateDescriptionChange = (description: string) => {
+    setTemplateDescription(description)
+    if (validator) {
+      const fieldValidation = validator.validateField('description', description)
+      setValidationWarnings(prev => [
+        ...prev.filter(w => w.field !== 'description'),
+        ...fieldValidation.warnings
+      ])
     }
   }
 
@@ -152,58 +262,192 @@ export function PromptEngineeringDashboard() {
       const response = await apiClient.post(`/api/v1/prompt-engineering/templates/${activeTemplate.id}/render`, {
         template_id: activeTemplate.id,
         variables: previewVariables
-      })
+      }) as RenderedPrompt
       setRenderedPreview(response)
     } catch (err) {
       setError(`Failed to render preview: ${err}`)
     }
   }
 
-  const saveTemplate = async () => {
-    if (!activeTemplate) return
+  // Smart Save System - handles both create and update
+  const handleSave = async () => {
+    // Validate before saving
+    const isValid = validateCurrentTemplate()
+    if (!isValid) {
+      const errorMessages = validationErrors.map(formatValidationMessage)
+      templateToasts.showValidationError(errorMessages)
+      return
+    }
+
+    // Check if template name is provided
+    if (!templateName.trim()) {
+      templateToasts.showValidationError(['Template name is required'])
+      return
+    }
 
     try {
       setLoading(true)
-      await apiClient.put(`/api/v1/prompt-engineering/templates/${activeTemplate.id}`, {
-        name: templateName,
-        template: editingTemplate,
-        description: templateDescription
-      })
+      
+      if (currentTemplateId) {
+        // UPDATE existing template
+        await apiClient.put(`/api/v1/prompt-engineering/templates/${currentTemplateId}`, {
+          name: templateName,
+          template: editingTemplate,
+          description: templateDescription
+        })
+        templateToasts.showSaveSuccess(`Updated "${templateName}"`)
+      } else {
+        // CREATE new template
+        const detectedVariables = extractVariablesFromTemplate(editingTemplate)
+        const response = await apiClient.post('/api/v1/prompt-engineering/templates', {
+          name: templateName,
+          template: editingTemplate,
+          description: templateDescription || 'Custom prompt template',
+          variables: detectedVariables
+        }) as PromptTemplate
+        
+        // Set the new template as current
+        setCurrentTemplateId(response.id)
+        templateToasts.showSaveSuccess(`Created "${templateName}"`)
+      }
       
       await loadTemplates()
       setError(null)
     } catch (err) {
-      setError(`Failed to save template: ${err}`)
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      const action = currentTemplateId ? 'Update Template' : 'Create Template'
+      templateToasts.showApiError(action, errorMessage)
+      setError(`Failed to ${action.toLowerCase()}: ${errorMessage}`)
     } finally {
       setLoading(false)
     }
+  }
+
+  // Save As - always creates new template
+  const handleSaveAs = async () => {
+    // Validate before saving
+    const isValid = validateCurrentTemplate()
+    if (!isValid) {
+      const errorMessages = validationErrors.map(formatValidationMessage)
+      templateToasts.showValidationError(errorMessages)
+      return
+    }
+
+    // Prompt user for new name
+    const newName = window.prompt('Enter name for the new template:', `${templateName} (Copy)`)
+    if (!newName?.trim()) return
+
+    try {
+      setLoading(true)
+      const detectedVariables = extractVariablesFromTemplate(editingTemplate)
+      const response = await apiClient.post('/api/v1/prompt-engineering/templates', {
+        name: newName,
+        template: editingTemplate,
+        description: templateDescription || 'Forked template',
+        variables: detectedVariables
+      }) as PromptTemplate
+      
+      // Switch to the new template
+      setCurrentTemplateId(response.id)
+      setTemplateName(newName)
+      
+      await loadTemplates()
+      templateToasts.showSaveSuccess(`Created "${newName}" from "${templateName}"`)
+      setError(null)
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      templateToasts.showApiError('Save As Template', errorMessage)
+      setError(`Failed to create template: ${errorMessage}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // New Template - clears everything
+  const handleNewTemplate = () => {
+    setCurrentTemplateId(null)
+    setTemplateName('')
+    setEditingTemplate('')
+    setTemplateDescription('')
+    setValidationErrors([])
+    setValidationWarnings([])
   }
 
   const createNewTemplate = async () => {
     try {
       setLoading(true)
-      const response = await apiClient.post('/api/v1/prompt-engineering/templates', {
-        name: `New Template ${Date.now()}`,
-        template: 'Your prompt template here with {variables}',
+      const newTemplateName = `New Template ${Date.now()}`
+      await apiClient.post('/api/v1/prompt-engineering/templates', {
+        name: newTemplateName,
+        template: 'Your prompt template here with {raw_text}, {conversation_context}, and {cleaning_level}',
         description: 'New template description',
-        variables: ['variables']
+        variables: ['raw_text', 'conversation_context', 'cleaning_level']
       })
       
       await loadTemplates()
+      templateToasts.showSaveSuccess(newTemplateName)
       setError(null)
     } catch (err) {
-      setError(`Failed to create template: ${err}`)
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      templateToasts.showApiError('Create Template', errorMessage)
+      setError(`Failed to create template: ${errorMessage}`)
     } finally {
       setLoading(false)
     }
   }
 
-  const activateTemplate = async (templateId: string) => {
+  // Template Library Modal Handlers
+  const handleEditTemplate = (template: PromptTemplate) => {
+    setCurrentTemplateId(template.id)
+    setActiveTemplate(template)
+    setEditingTemplate(template.template)
+    setTemplateName(template.name)
+    setTemplateDescription(template.description || '')
+    setActiveTab('master')
+    setShowTemplateLibrary(false)
+  }
+
+  const handleDeleteTemplate = async (templateId: string) => {
+    const template = templates.find(t => t.id === templateId)
+    if (!template) return
+
     try {
-      await apiClient.post(`/api/v1/prompt-engineering/templates/${templateId}/activate`)
+      await apiClient.delete(`/api/v1/prompt-engineering/templates/${templateId}`)
       await loadTemplates()
+      templateToasts.showDeleteSuccess(template.name)
     } catch (err) {
-      setError(`Failed to activate template: ${err}`)
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      templateToasts.showApiError('Delete Template', errorMessage)
+    }
+  }
+
+  const handleDuplicateTemplate = async (template: PromptTemplate) => {
+    try {
+      const newName = `${template.name} (Copy)`
+      await apiClient.post('/api/v1/prompt-engineering/templates', {
+        name: newName,
+        template: template.template,
+        description: template.description,
+        variables: template.variables
+      })
+      
+      await loadTemplates()
+      templateToasts.showDuplicateSuccess(template.name, newName)
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      templateToasts.showApiError('Duplicate Template', errorMessage)
+    }
+  }
+
+  const handleBulkAction = async (action: string, templateIds: string[]) => {
+    try {
+      if (action === 'delete') {
+        // Delete all selected templates
+        await Promise.all(templateIds.map(id => handleDeleteTemplate(id)))
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      templateToasts.showApiError('Bulk Action', errorMessage)
     }
   }
 
@@ -212,7 +456,7 @@ export function PromptEngineeringDashboard() {
 
     try {
       setLoading(true)
-      const response = await apiClient.get(`/api/v1/prompt-engineering/turns/${selectedTurnId}/prompt-analysis`)
+      const response = await apiClient.get(`/api/v1/prompt-engineering/turns/${selectedTurnId}/prompt-analysis`) as TurnAnalysis
       setTurnAnalysis(response)
     } catch (err) {
       setError(`Failed to analyze turn: ${err}`)
@@ -223,7 +467,7 @@ export function PromptEngineeringDashboard() {
 
   const loadConversations = async () => {
     try {
-      const response = await apiClient.get('/api/v1/conversations')
+      const response = await apiClient.get('/api/v1/conversations') as { conversations: any[] }
       setConversations(response.conversations || [])
     } catch (err) {
       setError(`Failed to load conversations: ${err}`)
@@ -232,7 +476,7 @@ export function PromptEngineeringDashboard() {
 
   const loadConversationTurns = async (conversationId: string) => {
     try {
-      const response = await apiClient.get(`/api/v1/conversations/${conversationId}/turns`)
+      const response = await apiClient.get(`/api/v1/conversations/${conversationId}/turns`) as { turns: any[] }
       setConversationTurns(response.turns || [])
     } catch (err) {
       setError(`Failed to load conversation turns: ${err}`)
@@ -241,7 +485,7 @@ export function PromptEngineeringDashboard() {
 
   const loadTestConversations = async () => {
     try {
-      const response = await apiClient.get('/api/v1/prompt-engineering/test-conversations')
+      const response = await apiClient.get('/api/v1/prompt-engineering/test-conversations') as any[]
       setTestConversations(response || [])
     } catch (err) {
       setError(`Failed to load test conversations: ${err}`)
@@ -335,6 +579,24 @@ export function PromptEngineeringDashboard() {
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <button
+              onClick={() => setShowTemplateLibrary(true)}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: theme.accent,
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '500',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}
+            >
+              📚 Template Library ({templates.length})
+            </button>
             <button
               onClick={() => setDarkMode(!darkMode)}
               style={{
@@ -436,8 +698,29 @@ export function PromptEngineeringDashboard() {
                 alignItems: 'center',
                 justifyContent: 'space-between'
               }}>
-                <h3 style={{ margin: 0 }}>Prompt Template Editor</h3>
+                <h3 style={{ margin: 0 }}>
+                  Prompt Template Editor
+                  {currentTemplateId && (
+                    <span style={{ fontSize: '12px', color: theme.textMuted, fontWeight: 'normal', marginLeft: '8px' }}>
+                      (Editing: {templateName})
+                    </span>
+                  )}
+                </h3>
                 <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={handleNewTemplate}
+                    style={{
+                      padding: '6px 12px',
+                      backgroundColor: theme.bgTertiary,
+                      color: theme.text,
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '12px'
+                    }}
+                  >
+                    ✨ New
+                  </button>
                   <button
                     onClick={renderPreview}
                     style={{
@@ -453,21 +736,39 @@ export function PromptEngineeringDashboard() {
                     🔄 Preview
                   </button>
                   <button
-                    onClick={saveTemplate}
-                    disabled={loading}
+                    onClick={handleSave}
+                    disabled={loading || !hasUnsavedChanges}
                     style={{
                       padding: '6px 12px',
-                      backgroundColor: theme.success,
-                      color: 'white',
+                      backgroundColor: hasUnsavedChanges ? theme.success : theme.bgTertiary,
+                      color: hasUnsavedChanges ? 'white' : theme.textMuted,
                       border: 'none',
                       borderRadius: '4px',
-                      cursor: loading ? 'not-allowed' : 'pointer',
+                      cursor: loading || !hasUnsavedChanges ? 'not-allowed' : 'pointer',
                       fontSize: '12px',
                       opacity: loading ? 0.6 : 1
                     }}
                   >
-                    💾 Save
+                    {currentTemplateId ? '💾 Save' : '✅ Create'}
                   </button>
+                  {currentTemplateId && (
+                    <button
+                      onClick={handleSaveAs}
+                      disabled={loading}
+                      style={{
+                        padding: '6px 12px',
+                        backgroundColor: theme.warning,
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: loading ? 'not-allowed' : 'pointer',
+                        fontSize: '12px',
+                        opacity: loading ? 0.6 : 1
+                      }}
+                    >
+                      📋 Save As
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -480,7 +781,7 @@ export function PromptEngineeringDashboard() {
                   <input
                     type="text"
                     value={templateName}
-                    onChange={(e) => setTemplateName(e.target.value)}
+                    onChange={(e) => handleTemplateNameChange(e.target.value)}
                     style={{
                       width: '100%',
                       padding: '8px',
@@ -499,7 +800,7 @@ export function PromptEngineeringDashboard() {
                   <input
                     type="text"
                     value={templateDescription}
-                    onChange={(e) => setTemplateDescription(e.target.value)}
+                    onChange={(e) => handleTemplateDescriptionChange(e.target.value)}
                     style={{
                       width: '100%',
                       padding: '8px',
@@ -519,7 +820,7 @@ export function PromptEngineeringDashboard() {
                   height="100%"
                   defaultLanguage="text"
                   value={editingTemplate}
-                  onChange={(value) => setEditingTemplate(value || '')}
+                  onChange={(value) => handleTemplateContentChange(value || '')}
                   theme={darkMode ? 'vs-dark' : 'light'}
                   options={{
                     wordWrap: 'on',
@@ -527,11 +828,47 @@ export function PromptEngineeringDashboard() {
                     scrollBeyondLastLine: false,
                     fontSize: 14,
                     lineNumbers: 'on',
-                    folding: true,
-                    bracketMatching: 'always'
+                    folding: true
                   }}
                 />
               </div>
+
+              {/* Validation Feedback */}
+              {(validationErrors.length > 0 || validationWarnings.length > 0) && (
+                <div style={{ 
+                  padding: '12px 16px',
+                  borderTop: `1px solid ${theme.border}`,
+                  maxHeight: '120px',
+                  overflowY: 'auto'
+                }}>
+                  {validationErrors.map((error, index) => (
+                    <div key={`error-${index}`} style={{
+                      color: theme.error,
+                      fontSize: '11px',
+                      marginBottom: '4px',
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '6px'
+                    }}>
+                      <span>❌</span>
+                      <span>{formatValidationMessage(error)}</span>
+                    </div>
+                  ))}
+                  {validationWarnings.map((warning, index) => (
+                    <div key={`warning-${index}`} style={{
+                      color: theme.warning,
+                      fontSize: '11px',
+                      marginBottom: '4px',
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '6px'
+                    }}>
+                      <span>⚠️</span>
+                      <span>{formatValidationMessage(warning)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* Variables Detection */}
               <div style={{ 
@@ -1183,8 +1520,8 @@ export function PromptEngineeringDashboard() {
                   <div
                     key={template.id}
                     style={{
-                      backgroundColor: template.is_active ? theme.accent + '20' : theme.bg,
-                      border: `1px solid ${template.is_active ? theme.accent : theme.border}`,
+                      backgroundColor: theme.bg,
+                      border: `1px solid ${theme.border}`,
                       borderRadius: '6px',
                       padding: '16px',
                       display: 'flex',
@@ -1195,18 +1532,6 @@ export function PromptEngineeringDashboard() {
                     <div>
                       <div style={{ fontWeight: '600', marginBottom: '4px' }}>
                         {template.name}
-                        {template.is_active && (
-                          <span style={{ 
-                            marginLeft: '8px',
-                            padding: '2px 8px',
-                            backgroundColor: theme.success,
-                            color: 'white',
-                            borderRadius: '12px',
-                            fontSize: '10px'
-                          }}>
-                            ACTIVE
-                          </span>
-                        )}
                       </div>
                       <div style={{ fontSize: '12px', color: theme.textMuted }}>
                         v{template.version} | {template.variables.length} variables | 
@@ -1239,22 +1564,6 @@ export function PromptEngineeringDashboard() {
                       >
                         ✏️ Edit
                       </button>
-                      {!template.is_active && (
-                        <button
-                          onClick={() => activateTemplate(template.id)}
-                          style={{
-                            padding: '6px 12px',
-                            backgroundColor: theme.accent,
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            fontSize: '12px'
-                          }}
-                        >
-                          ⚡ Activate
-                        </button>
-                      )}
                     </div>
                   </div>
                 ))}
@@ -1320,6 +1629,28 @@ export function PromptEngineeringDashboard() {
         )}
 
       </div>
+
+      {/* Template Library Modal */}
+      <TemplateLibraryModal
+        isOpen={showTemplateLibrary}
+        onClose={() => setShowTemplateLibrary(false)}
+        templates={templates}
+        onEdit={handleEditTemplate}
+        onDelete={handleDeleteTemplate}
+        onDuplicate={handleDuplicateTemplate}
+        onBulkAction={handleBulkAction}
+        loading={loading}
+        theme={theme}
+      />
     </div>
+  )
+}
+
+// Wrap the main component with ToastProvider
+export function PromptEngineeringDashboard() {
+  return (
+    <ToastProvider>
+      <PromptEngineeringDashboardInner />
+    </ToastProvider>
   )
 }

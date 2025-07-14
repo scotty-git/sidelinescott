@@ -16,7 +16,6 @@ class PromptTemplate(BaseModel):
     description: Optional[str] = None
     variables: List[str]  # List of variable names used in template
     version: str = "1.0.0"
-    is_active: bool = False
     created_at: datetime
     updated_at: datetime
 
