@@ -66,6 +66,7 @@ async def get_prompt_templates(
             description=t.description,
             variables=t.variables,
             version=t.version,
+            is_default=t.is_default,
             created_at=t.created_at,
             updated_at=t.updated_at
         )
@@ -104,6 +105,7 @@ async def get_prompt_template(
         description=template.description,
         variables=template.variables,
         version=str(template.version),
+        is_default=template.is_default,
         created_at=template.created_at,
         updated_at=template.updated_at
     )
@@ -131,6 +133,7 @@ async def create_prompt_template(
             description=template.description,
             variables=template.variables,
             version=template.version,
+            is_default=template.is_default,
             created_at=template.created_at,
             updated_at=template.updated_at
         )
@@ -145,22 +148,28 @@ async def update_prompt_template(
     db: Session = Depends(get_db)
 ):
     """Update an existing prompt template"""
-    updates = {k: v for k, v in request.dict().items() if v is not None}
-    
-    template = await prompt_service.update_template(db, template_id, **updates)
-    if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
-    
-    return PromptTemplate(
-        id=str(template.id),
-        name=template.name,
-        template=template.template,
-        description=template.description,
-        variables=template.variables,
-        version=template.version,
-        created_at=template.created_at,
-        updated_at=template.updated_at
-    )
+    try:
+        updates = {k: v for k, v in request.dict().items() if v is not None}
+        
+        template = await prompt_service.update_template(db, template_id, **updates)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        return PromptTemplate(
+            id=str(template.id),
+            name=template.name,
+            template=template.template,
+            description=template.description,
+            variables=template.variables,
+            version=template.version,
+            is_default=template.is_default,
+            created_at=template.created_at,
+            updated_at=template.updated_at
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update template: {str(e)}")
 
 
 @router.delete("/templates/{template_id}")
@@ -168,16 +177,16 @@ async def delete_template(
     template_id: UUID,
     db: Session = Depends(get_db)
 ):
-    """Delete a template"""
-    template = await prompt_service.get_template(db, template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
-    
-    # Delete the template
-    db.delete(template)
-    db.commit()
-    
-    return {"message": "Template deleted successfully"}
+    """Delete a template with constraint enforcement"""
+    try:
+        success = await prompt_service.delete_template(db, template_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Template not found")
+        return {"message": "Template deleted successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete template: {str(e)}")
 
 
 @router.post("/templates/{template_id}/render", response_model=RenderedPrompt)
@@ -333,8 +342,59 @@ async def get_or_create_default_template(
         "description": template.description,
         "variables": template.variables,
         "version": template.version,
+        "is_default": template.is_default,
         "created_at": template.created_at
     }
+
+
+@router.get("/templates/default/current", response_model=PromptTemplate)
+async def get_current_default_template(
+    db: Session = Depends(get_db)
+):
+    """Get the current default template"""
+    template = await prompt_service.get_default_template(db)
+    if not template:
+        raise HTTPException(status_code=404, detail="No default template found")
+    
+    return PromptTemplate(
+        id=str(template.id),
+        name=template.name,
+        template=template.template,
+        description=template.description,
+        variables=template.variables,
+        version=template.version,
+        is_default=template.is_default,
+        created_at=template.created_at,
+        updated_at=template.updated_at
+    )
+
+
+@router.post("/templates/{template_id}/set-default", response_model=PromptTemplate)
+async def set_template_as_default(
+    template_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Set a template as the default (and unset all others)"""
+    try:
+        template = await prompt_service.set_default_template(db, template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        return PromptTemplate(
+            id=str(template.id),
+            name=template.name,
+            template=template.template,
+            description=template.description,
+            variables=template.variables,
+            version=template.version,
+            is_default=template.is_default,
+            created_at=template.created_at,
+            updated_at=template.updated_at
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to set default template: {str(e)}")
 
 
 # Test Conversation Management Endpoints

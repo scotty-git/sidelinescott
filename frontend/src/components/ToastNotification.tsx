@@ -168,6 +168,7 @@ interface ToastItemProps {
 function ToastItem({ toast, onDismiss, theme }: ToastItemProps) {
   const [isVisible, setIsVisible] = useState(false)
   const [isLeaving, setIsLeaving] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(false)
 
   useEffect(() => {
     // Trigger enter animation
@@ -181,59 +182,76 @@ function ToastItem({ toast, onDismiss, theme }: ToastItemProps) {
   }
 
   const getToastColors = (type: Toast['type']) => {
+    // Determine if we're in dark mode based on theme background
+    const isDarkMode = theme.bg === '#1f2937' || theme.bg.includes('1f2937')
+    
     switch (type) {
       case 'success':
         return {
-          bg: theme.success + '20',
+          bg: isDarkMode ? '#065f46' : '#d1fae5', // Solid dark green or light green
           border: theme.success,
           icon: '✅',
-          iconColor: theme.success
+          iconColor: theme.success,
+          textColor: isDarkMode ? '#ecfdf5' : '#065f46' // Light text on dark, dark text on light
         }
       case 'error':
         return {
-          bg: theme.error + '20',
+          bg: isDarkMode ? '#7f1d1d' : '#fee2e2', // Solid dark red or light red
           border: theme.error,
           icon: '❌',
-          iconColor: theme.error
+          iconColor: theme.error,
+          textColor: isDarkMode ? '#fef2f2' : '#7f1d1d'
         }
       case 'warning':
         return {
-          bg: theme.warning + '20',
+          bg: isDarkMode ? '#78350f' : '#fef3c7', // Solid dark amber or light amber
           border: theme.warning,
           icon: '⚠️',
-          iconColor: theme.warning
+          iconColor: theme.warning,
+          textColor: isDarkMode ? '#fffbeb' : '#78350f'
         }
       case 'info':
         return {
-          bg: theme.info + '20',
+          bg: isDarkMode ? '#1e3a8a' : '#dbeafe', // Solid dark blue or light blue
           border: theme.info,
           icon: 'ℹ️',
-          iconColor: theme.info
+          iconColor: theme.info,
+          textColor: isDarkMode ? '#eff6ff' : '#1e3a8a'
         }
       default:
         return {
-          bg: theme.bg,
+          bg: isDarkMode ? '#374151' : '#f9fafb', // Solid gray
           border: theme.border,
           icon: 'ℹ️',
-          iconColor: theme.textSecondary
+          iconColor: theme.textSecondary,
+          textColor: isDarkMode ? '#f9fafb' : '#111827'
         }
     }
   }
 
   const colors = getToastColors(toast.type)
+  
+  // Check if message is long and needs truncation
+  const isLongMessage = toast.message && toast.message.length > 120
+  const shouldTruncate = isLongMessage && !isExpanded
+  const displayMessage = shouldTruncate 
+    ? toast.message!.substring(0, 120) + '...' 
+    : toast.message
 
   return (
     <div
       style={{
         backgroundColor: colors.bg,
-        border: `1px solid ${colors.border}`,
+        border: `2px solid ${colors.border}`,
         borderRadius: '8px',
         padding: '16px',
-        boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
+        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.1)',
         transform: isLeaving ? 'translateX(100%)' : (isVisible ? 'translateX(0)' : 'translateX(100%)'),
         opacity: isLeaving ? 0 : (isVisible ? 1 : 0),
         transition: 'all 0.3s ease-in-out',
-        minWidth: '300px'
+        minWidth: '320px',
+        maxWidth: '400px',
+        backdropFilter: 'blur(8px)'
       }}
     >
       <div style={{
@@ -255,20 +273,43 @@ function ToastItem({ toast, onDismiss, theme }: ToastItemProps) {
           <div style={{
             fontSize: '14px',
             fontWeight: '600',
-            color: theme.text,
+            color: colors.textColor,
             marginBottom: toast.message ? '4px' : '0'
           }}>
             {toast.title}
           </div>
           
           {toast.message && (
-            <div style={{
-              fontSize: '13px',
-              color: theme.textSecondary,
-              lineHeight: '1.4',
-              marginBottom: toast.actions ? '12px' : '0'
-            }}>
-              {toast.message}
+            <div>
+              <div style={{
+                fontSize: '13px',
+                color: colors.textColor,
+                lineHeight: '1.4',
+                marginBottom: (toast.actions || isLongMessage) ? '8px' : '0',
+                opacity: 0.9,
+                whiteSpace: 'pre-line'
+              }}>
+                {displayMessage}
+              </div>
+              
+              {isLongMessage && (
+                <button
+                  onClick={() => setIsExpanded(!isExpanded)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: colors.iconColor,
+                    fontSize: '12px',
+                    fontWeight: '500',
+                    cursor: 'pointer',
+                    padding: '0',
+                    textDecoration: 'underline',
+                    marginBottom: toast.actions ? '8px' : '0'
+                  }}
+                >
+                  {isExpanded ? 'Show less' : 'Show more...'}
+                </button>
+              )}
             </div>
           )}
 
@@ -287,14 +328,29 @@ function ToastItem({ toast, onDismiss, theme }: ToastItemProps) {
                     handleDismiss()
                   }}
                   style={{
-                    padding: '4px 12px',
+                    padding: '6px 12px',
                     backgroundColor: action.style === 'primary' ? colors.iconColor : 'transparent',
                     color: action.style === 'primary' ? 'white' : colors.iconColor,
                     border: `1px solid ${colors.iconColor}`,
                     borderRadius: '4px',
                     cursor: 'pointer',
                     fontSize: '12px',
-                    fontWeight: '500'
+                    fontWeight: '500',
+                    transition: 'all 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    if (action.style === 'primary') {
+                      e.currentTarget.style.backgroundColor = colors.iconColor + 'dd'
+                    } else {
+                      e.currentTarget.style.backgroundColor = colors.iconColor + '20'
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (action.style === 'primary') {
+                      e.currentTarget.style.backgroundColor = colors.iconColor
+                    } else {
+                      e.currentTarget.style.backgroundColor = 'transparent'
+                    }
                   }}
                 >
                   {action.label}
@@ -310,17 +366,27 @@ function ToastItem({ toast, onDismiss, theme }: ToastItemProps) {
           style={{
             backgroundColor: 'transparent',
             border: 'none',
-            color: theme.textSecondary,
+            color: colors.textColor,
             cursor: 'pointer',
             fontSize: '16px',
-            padding: '0',
-            width: '20px',
-            height: '20px',
+            padding: '4px',
+            width: '24px',
+            height: '24px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             borderRadius: '4px',
-            flexShrink: 0
+            flexShrink: 0,
+            opacity: 0.7,
+            transition: 'opacity 0.2s ease'
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.opacity = '1'
+            e.currentTarget.style.backgroundColor = colors.iconColor + '20'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.opacity = '0.7'
+            e.currentTarget.style.backgroundColor = 'transparent'
           }}
           aria-label="Dismiss notification"
         >
@@ -368,10 +434,22 @@ export function useTemplateToasts() {
   const toast = useToast()
 
   const showValidationError = useCallback((errors: string[]) => {
-    toast.showError(
-      'Validation Failed',
-      errors.length === 1 ? errors[0] : `${errors.length} validation errors found`
-    )
+    // Filter out empty or invalid errors
+    const validErrors = errors.filter(error => error && typeof error === 'string' && error.trim().length > 0)
+    
+    if (validErrors.length === 0) {
+      toast.showError('Validation Failed', 'Validation failed but no specific errors were provided')
+      return
+    }
+    
+    if (validErrors.length === 1) {
+      toast.showError('Validation Failed', validErrors[0])
+    } else {
+      toast.showError(
+        'Validation Failed',
+        `Found ${validErrors.length} validation errors:\n• ${validErrors.join('\n• ')}`
+      )
+    }
   }, [toast])
 
   const showSaveSuccess = useCallback((templateName: string) => {
@@ -387,7 +465,7 @@ export function useTemplateToasts() {
   }, [toast])
 
   const showActivateSuccess = useCallback((templateName: string) => {
-    toast.showSuccess('Template Activated', `"${templateName}" is now the active template`)
+    toast.showSuccess('Default Template Set', `"${templateName}" is now the default template`)
   }, [toast])
 
   const showApiError = useCallback((operation: string, error: string) => {

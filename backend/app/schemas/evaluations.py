@@ -13,7 +13,8 @@ class CreateEvaluationRequest(BaseModel):
     """Request schema for creating a new evaluation"""
     name: str = Field(..., description="Human-readable name for this evaluation")
     description: Optional[str] = Field(None, description="Optional description of the evaluation approach")
-    prompt_template: Optional[str] = Field(None, description="Custom prompt template for this evaluation")
+    prompt_template: Optional[str] = Field(None, description="Custom prompt template for this evaluation (deprecated)")
+    prompt_template_id: Optional[str] = Field(None, description="ID of the prompt template to use")
     settings: Optional[Dict[str, Any]] = Field(default={}, description="Evaluation settings (cleaning_level, model_params, etc.)")
 
 class EvaluationResponse(BaseModel):

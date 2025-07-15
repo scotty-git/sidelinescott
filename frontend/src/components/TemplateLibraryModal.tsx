@@ -7,6 +7,7 @@ interface PromptTemplate {
   description?: string
   variables: string[]
   version: string
+  is_default: boolean
   created_at: string
   updated_at: string
 }
@@ -18,6 +19,7 @@ interface TemplateLibraryModalProps {
   onEdit: (template: PromptTemplate) => void
   onDelete: (templateId: string) => void
   onDuplicate: (template: PromptTemplate) => void
+  onSetAsDefault: (templateId: string) => void
   onBulkAction: (action: string, templateIds: string[]) => void
   loading?: boolean
   theme: any
@@ -30,6 +32,7 @@ export function TemplateLibraryModal({
   onEdit,
   onDelete,
   onDuplicate,
+  onSetAsDefault,
   onBulkAction,
   loading = false,
   theme
@@ -446,6 +449,18 @@ export function TemplateLibraryModal({
                       <span>📄 v{template.version}</span>
                       <span>🔧 {template.variables.length} vars</span>
                       <span>📅 {new Date(template.updated_at).toLocaleDateString()}</span>
+                      {template.is_default && (
+                        <span style={{
+                          backgroundColor: theme.success,
+                          color: 'white',
+                          padding: '2px 6px',
+                          borderRadius: '3px',
+                          fontSize: '10px',
+                          fontWeight: '600'
+                        }}>
+                          ⭐ DEFAULT
+                        </span>
+                      )}
                     </div>
 
                     {/* Variables Preview */}
@@ -491,6 +506,22 @@ export function TemplateLibraryModal({
                       >
                         📄 Duplicate
                       </button>
+                      {!template.is_default && (
+                        <button
+                          onClick={() => onSetAsDefault(template.id)}
+                          style={{
+                            padding: '4px 8px',
+                            backgroundColor: theme.warning,
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '11px'
+                          }}
+                        >
+                          ⭐ Set Default
+                        </button>
+                      )}
                       <button
                         onClick={() => handleDeleteTemplate(template.id)}
                         style={{

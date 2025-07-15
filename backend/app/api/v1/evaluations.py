@@ -66,12 +66,24 @@ async def create_evaluation(
         )
     
     try:
+        # Convert prompt_template_id to UUID if provided
+        prompt_template_id = None
+        if evaluation_data.prompt_template_id:
+            try:
+                prompt_template_id = UUID(evaluation_data.prompt_template_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid prompt_template_id format"
+                )
+        
         evaluation = await evaluation_manager.create_evaluation(
             conversation_id=conversation_uuid,
             name=evaluation_data.name,
             user_id=user_uuid,
             description=evaluation_data.description,
             prompt_template=evaluation_data.prompt_template,
+            prompt_template_id=prompt_template_id,
             settings=evaluation_data.settings,
             db=db
         )

@@ -17,6 +17,7 @@ interface PromptTemplate {
   description?: string
   variables: string[]
   version: string
+  is_default: boolean
   created_at: string
   updated_at: string
 }
@@ -52,7 +53,7 @@ interface TurnAnalysis {
 }
 
 function PromptEngineeringDashboardInner() {
-  const [activeTab, setActiveTab] = useState<'inspector' | 'master' | 'versions' | 'ab-test' | 'analytics'>('master')
+  const [activeTab, setActiveTab] = useState<'inspector' | 'master' | 'ab-test' | 'analytics'>('master')
   const [templates, setTemplates] = useState<PromptTemplate[]>([])
   const [activeTemplate, setActiveTemplate] = useState<PromptTemplate | null>(null)
   const [loading, setLoading] = useState(false)
@@ -98,6 +99,7 @@ function PromptEngineeringDashboardInner() {
   const [validationErrors, setValidationErrors] = useState<ValidationError[]>([])
   const [validationWarnings, setValidationWarnings] = useState<ValidationWarning[]>([])
   const [validator, setValidator] = useState<ReturnType<typeof createTemplateValidator> | null>(null)
+  const [validationTimeoutId, setValidationTimeoutId] = useState<NodeJS.Timeout | null>(null)
 
   // Theme
   const [darkMode, setDarkMode] = useState(() => {
@@ -150,6 +152,15 @@ function PromptEngineeringDashboardInner() {
     localStorage.setItem('prompt-dashboard-dark-mode', JSON.stringify(darkMode))
   }, [darkMode])
 
+  // Cleanup validation timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (validationTimeoutId) {
+        clearTimeout(validationTimeoutId)
+      }
+    }
+  }, [validationTimeoutId])
+
   const loadTemplates = async () => {
     try {
       setLoading(true)
@@ -178,7 +189,10 @@ function PromptEngineeringDashboardInner() {
 
   // Real-time validation function
   const validateCurrentTemplate = () => {
-    if (!validator) return
+    if (!validator) {
+      console.warn('Validator not initialized')
+      return false
+    }
 
     const validation = validator.validateTemplate(
       templateName,
@@ -187,10 +201,41 @@ function PromptEngineeringDashboardInner() {
       activeTemplate?.id
     )
     
+    console.log('Validation result:', {
+      isValid: validation.isValid,
+      errors: validation.errors,
+      warnings: validation.warnings,
+      templateName,
+      templateLength: editingTemplate.length
+    })
+    
     setValidationErrors(validation.errors)
     setValidationWarnings(validation.warnings)
     
     return validation.isValid
+  }
+
+  // Debounced validation for real-time typing
+  const debouncedValidation = (name: string, content: string, description: string) => {
+    if (validationTimeoutId) {
+      clearTimeout(validationTimeoutId)
+    }
+    
+    const timeoutId = setTimeout(() => {
+      if (validator) {
+        const validation = validator.validateTemplate(
+          name,
+          content,
+          description,
+          activeTemplate?.id
+        )
+        
+        setValidationErrors(validation.errors)
+        setValidationWarnings(validation.warnings)
+      }
+    }, 300) // 300ms debounce delay
+    
+    setValidationTimeoutId(timeoutId)
   }
 
   // Helper function to extract variables from template
@@ -224,35 +269,26 @@ function PromptEngineeringDashboardInner() {
   // Template CRUD operations with validation
   const handleTemplateNameChange = (name: string) => {
     setTemplateName(name)
-    if (validator) {
-      const fieldValidation = validator.validateField('name', name, currentTemplateId || undefined)
-      setValidationErrors(prev => [
-        ...prev.filter(e => e.field !== 'name'),
-        ...fieldValidation.errors
-      ])
-    }
+    setHasUnsavedChanges(true)
+    
+    // Run debounced validation for real-time feedback
+    debouncedValidation(name, editingTemplate, templateDescription)
   }
 
   const handleTemplateContentChange = (content: string) => {
     setEditingTemplate(content)
-    if (validator) {
-      const fieldValidation = validator.validateField('template', content)
-      setValidationErrors(prev => [
-        ...prev.filter(e => e.field !== 'template'),
-        ...fieldValidation.errors
-      ])
-    }
+    setHasUnsavedChanges(true)
+    
+    // Run debounced validation for real-time feedback
+    debouncedValidation(templateName, content, templateDescription)
   }
 
   const handleTemplateDescriptionChange = (description: string) => {
     setTemplateDescription(description)
-    if (validator) {
-      const fieldValidation = validator.validateField('description', description)
-      setValidationWarnings(prev => [
-        ...prev.filter(w => w.field !== 'description'),
-        ...fieldValidation.warnings
-      ])
-    }
+    setHasUnsavedChanges(true)
+    
+    // Run debounced validation for real-time feedback
+    debouncedValidation(templateName, editingTemplate, description)
   }
 
   const renderPreview = async () => {
@@ -273,15 +309,28 @@ function PromptEngineeringDashboardInner() {
   const handleSave = async () => {
     // Validate before saving
     const isValid = validateCurrentTemplate()
-    if (!isValid) {
-      const errorMessages = validationErrors.map(formatValidationMessage)
-      templateToasts.showValidationError(errorMessages)
+    
+    // Check if template name is provided first (basic validation)
+    if (!templateName.trim()) {
+      templateToasts.showValidationError(['Template name is required'])
       return
     }
 
-    // Check if template name is provided
-    if (!templateName.trim()) {
-      templateToasts.showValidationError(['Template name is required'])
+    if (!isValid) {
+      console.log('Validation failed. Current state:', {
+        validationErrors,
+        validationWarnings,
+        templateName: templateName.trim(),
+        templateContent: editingTemplate.substring(0, 100) + '...',
+        isValid
+      })
+      
+      const errorMessages = validationErrors.length > 0 
+        ? validationErrors.map(formatValidationMessage)
+        : ['Template validation failed. Please check your template for errors.']
+      
+      console.log('Formatted error messages:', errorMessages)
+      templateToasts.showValidationError(errorMessages)
       return
     }
 
@@ -328,7 +377,10 @@ function PromptEngineeringDashboardInner() {
     // Validate before saving
     const isValid = validateCurrentTemplate()
     if (!isValid) {
-      const errorMessages = validationErrors.map(formatValidationMessage)
+      const errorMessages = validationErrors.length > 0 
+        ? validationErrors.map(formatValidationMessage)
+        : ['Template validation failed. Please check your template for errors.']
+      
       templateToasts.showValidationError(errorMessages)
       return
     }
@@ -373,28 +425,6 @@ function PromptEngineeringDashboardInner() {
     setValidationWarnings([])
   }
 
-  const createNewTemplate = async () => {
-    try {
-      setLoading(true)
-      const newTemplateName = `New Template ${Date.now()}`
-      await apiClient.post('/api/v1/prompt-engineering/templates', {
-        name: newTemplateName,
-        template: 'Your prompt template here with {raw_text}, {conversation_context}, and {cleaning_level}',
-        description: 'New template description',
-        variables: ['raw_text', 'conversation_context', 'cleaning_level']
-      })
-      
-      await loadTemplates()
-      templateToasts.showSaveSuccess(newTemplateName)
-      setError(null)
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
-      templateToasts.showApiError('Create Template', errorMessage)
-      setError(`Failed to create template: ${errorMessage}`)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   // Template Library Modal Handlers
   const handleEditTemplate = (template: PromptTemplate) => {
@@ -417,7 +447,13 @@ function PromptEngineeringDashboardInner() {
       templateToasts.showDeleteSuccess(template.name)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error'
-      templateToasts.showApiError('Delete Template', errorMessage)
+      
+      // Handle constraint-specific errors
+      if (errorMessage.includes('Cannot delete the last remaining')) {
+        templateToasts.showApiError('Cannot Delete Template', 'Cannot delete the last remaining prompt template. At least one template must exist.')
+      } else {
+        templateToasts.showApiError('Delete Template', errorMessage)
+      }
     }
   }
 
@@ -448,6 +484,20 @@ function PromptEngineeringDashboardInner() {
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error'
       templateToasts.showApiError('Bulk Action', errorMessage)
+    }
+  }
+
+  const handleSetAsDefault = async (templateId: string) => {
+    const template = templates.find(t => t.id === templateId)
+    if (!template) return
+
+    try {
+      await apiClient.post(`/api/v1/prompt-engineering/templates/${templateId}/set-default`)
+      await loadTemplates()
+      templateToasts.showActivateSuccess(template.name)
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      templateToasts.showApiError('Set Default Template', errorMessage)
     }
   }
 
@@ -516,38 +566,51 @@ function PromptEngineeringDashboardInner() {
 
   const simulatePrompt = async () => {
     if (!activeTemplate) return
-
-    try {
-      const response = await apiClient.post(`/api/v1/prompt-engineering/templates/${activeTemplate.id}/simulate`, {
-        template_id: activeTemplate.id,
-        sample_raw_text: previewVariables.raw_text,
-        sample_speaker: 'User',
-        sample_context: [
-          { speaker: 'User', cleaned_text: 'Hey there' },
-          { speaker: 'Lumen', cleaned_text: 'Hello! How can I help you today?' }
-        ],
-        cleaning_level: previewVariables.cleaning_level
-      })
-      
-      console.log('Simulation result:', response)
-      alert('Simulation complete! Check console for details.')
-    } catch (err) {
-      setError(`Failed to simulate prompt: ${err}`)
+    
+    if (dataSource === 'test') {
+      // Test data simulation
+      try {
+        const response = await apiClient.post(`/api/v1/prompt-engineering/templates/${activeTemplate.id}/simulate`, {
+          template_id: activeTemplate.id,
+          sample_raw_text: previewVariables.raw_text,
+          sample_speaker: 'User',
+          sample_context: [
+            { speaker: 'User', cleaned_text: 'Hey there' },
+            { speaker: 'Lumen', cleaned_text: 'Hello! How can I help you today?' }
+          ],
+          cleaning_level: previewVariables.cleaning_level
+        })
+        
+        console.log('Test simulation result:', response)
+        templateToasts.showSaveSuccess('Test Simulation Complete')
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+        templateToasts.showApiError('Test Simulation', errorMessage)
+      }
+    } else if (dataSource === 'real' && selectedConversationId) {
+      // Real conversation simulation
+      await simulateWithConversation()
+    } else {
+      templateToasts.showApiError('Invalid Configuration', 'Please select a conversation or configure test data.')
     }
   }
 
   return (
     <div style={{ 
-      minHeight: '100vh', 
+      height: '100vh', 
       backgroundColor: theme.bg, 
       color: theme.text,
-      fontFamily: 'system-ui, -apple-system, sans-serif'
+      fontFamily: 'system-ui, -apple-system, sans-serif',
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden'
     }}>
       {/* Header */}
       <div style={{ 
         backgroundColor: theme.bgSecondary, 
         borderBottom: `1px solid ${theme.border}`,
-        padding: '16px 24px'
+        padding: '12px 24px',
+        flexShrink: 0
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -621,13 +684,13 @@ function PromptEngineeringDashboardInner() {
       <div style={{ 
         backgroundColor: theme.bgSecondary, 
         borderBottom: `1px solid ${theme.border}`,
-        padding: '0 24px'
+        padding: '0 24px',
+        flexShrink: 0
       }}>
         <div style={{ display: 'flex', gap: '0' }}>
           {[
             { id: 'master', label: '⚙️ Master Editor', desc: 'Edit core prompt template' },
             { id: 'inspector', label: '🔍 Turn Inspector', desc: 'Analyze individual prompts' },
-            { id: 'versions', label: '📋 Version Manager', desc: 'Save and compare versions' },
             { id: 'ab-test', label: '🧪 A/B Testing', desc: 'Compare prompt performance' },
             { id: 'analytics', label: '📊 Analytics', desc: 'Performance insights' }
           ].map(tab => (
@@ -635,13 +698,13 @@ function PromptEngineeringDashboardInner() {
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
               style={{
-                padding: '12px 20px',
+                padding: '10px 16px',
                 backgroundColor: activeTab === tab.id ? theme.bg : 'transparent',
                 border: 'none',
                 borderBottom: activeTab === tab.id ? `2px solid ${theme.accent}` : '2px solid transparent',
                 color: activeTab === tab.id ? theme.text : theme.textMuted,
                 cursor: 'pointer',
-                fontSize: '14px',
+                fontSize: '13px',
                 fontWeight: activeTab === tab.id ? '600' : '400',
                 transition: 'all 0.15s ease'
               }}
@@ -678,18 +741,32 @@ function PromptEngineeringDashboardInner() {
       )}
 
       {/* Main Content */}
-      <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
+      <div style={{ 
+        flex: 1,
+        padding: '16px', 
+        maxWidth: '1400px', 
+        margin: '0 auto',
+        overflow: 'hidden',
+        width: '100%'
+      }}>
         
         {/* Master Editor Tab */}
         {activeTab === 'master' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', height: '800px' }}>
+          <div style={{ 
+            display: 'grid', 
+            gridTemplateColumns: '1fr 1fr', 
+            gap: '16px', 
+            height: '100%',
+            overflow: 'hidden'
+          }}>
             {/* Left Panel - Template Editor */}
             <div style={{ 
               backgroundColor: theme.bgSecondary,
               borderRadius: '8px',
               border: `1px solid ${theme.border}`,
               display: 'flex',
-              flexDirection: 'column'
+              flexDirection: 'column',
+              overflow: 'hidden'
             }}>
               <div style={{ 
                 padding: '16px',
@@ -772,8 +849,15 @@ function PromptEngineeringDashboardInner() {
                 </div>
               </div>
 
-              {/* Template Metadata */}
-              <div style={{ padding: '16px', borderBottom: `1px solid ${theme.border}` }}>
+              {/* Scrollable Form Content */}
+              <div style={{ 
+                flex: 1,
+                overflow: 'auto',
+                display: 'flex',
+                flexDirection: 'column'
+              }}>
+                {/* Template Metadata */}
+                <div style={{ padding: '16px', borderBottom: `1px solid ${theme.border}`, flexShrink: 0 }}>
                 <div style={{ marginBottom: '12px' }}>
                   <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
                     Template Name
@@ -814,8 +898,8 @@ function PromptEngineeringDashboardInner() {
                 </div>
               </div>
 
-              {/* Monaco Editor */}
-              <div style={{ flex: 1, minHeight: '400px' }}>
+              {/* Monaco Editor Container */}
+              <div style={{ flex: 1, position: 'relative', minHeight: '300px' }}>
                 <Editor
                   height="100%"
                   defaultLanguage="text"
@@ -831,62 +915,106 @@ function PromptEngineeringDashboardInner() {
                     folding: true
                   }}
                 />
+                
+                
+                {/* Validation Feedback Overlay */}
+                {(validationErrors.length > 0 || validationWarnings.length > 0) && (
+                  <div style={{ 
+                    position: 'absolute',
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    backgroundColor: darkMode ? '#1e1e1e' : '#f8f9fa',
+                    borderTop: `1px solid ${theme.border}`,
+                    padding: '8px 12px',
+                    maxHeight: '120px',
+                    overflowY: 'auto',
+                    zIndex: 10,
+                    boxShadow: '0 -2px 8px rgba(0, 0, 0, 0.1)'
+                  }}>
+                    {validationErrors.map((error, index) => (
+                      <div key={`error-${index}`} style={{
+                        color: theme.error,
+                        fontSize: '11px',
+                        marginBottom: '4px',
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '6px'
+                      }}>
+                        <span>❌</span>
+                        <span>{formatValidationMessage(error)}</span>
+                      </div>
+                    ))}
+                    {validationWarnings.map((warning, index) => (
+                      <div key={`warning-${index}`} style={{
+                        color: theme.warning,
+                        fontSize: '11px',
+                        marginBottom: '4px',
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '6px'
+                      }}>
+                        <span>⚠️</span>
+                        <span>{formatValidationMessage(warning)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-
-              {/* Validation Feedback */}
-              {(validationErrors.length > 0 || validationWarnings.length > 0) && (
-                <div style={{ 
-                  padding: '12px 16px',
-                  borderTop: `1px solid ${theme.border}`,
-                  maxHeight: '120px',
-                  overflowY: 'auto'
-                }}>
-                  {validationErrors.map((error, index) => (
-                    <div key={`error-${index}`} style={{
-                      color: theme.error,
-                      fontSize: '11px',
-                      marginBottom: '4px',
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '6px'
-                    }}>
-                      <span>❌</span>
-                      <span>{formatValidationMessage(error)}</span>
-                    </div>
-                  ))}
-                  {validationWarnings.map((warning, index) => (
-                    <div key={`warning-${index}`} style={{
-                      color: theme.warning,
-                      fontSize: '11px',
-                      marginBottom: '4px',
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '6px'
-                    }}>
-                      <span>⚠️</span>
-                      <span>{formatValidationMessage(warning)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Variables Detection */}
-              <div style={{ 
-                padding: '12px 16px',
-                borderTop: `1px solid ${theme.border}`,
-                fontSize: '12px',
-                color: theme.textMuted
-              }}>
-                Variables detected: {activeTemplate?.variables.join(', ') || 'None'}
-              </div>
+              </div> {/* Close scrollable form content */}
             </div>
 
             {/* Right Panel - Preview & Variables */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              
-              {/* Data Source Selection */}
+            <div style={{ 
+              backgroundColor: theme.bgSecondary,
+              borderRadius: '8px',
+              border: `1px solid ${theme.border}`,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden'
+            }}>
+              {/* Right Panel Header */}
               <div style={{ 
-                backgroundColor: theme.bgSecondary,
+                padding: '16px',
+                borderBottom: `1px solid ${theme.border}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexShrink: 0
+              }}>
+                <h3 style={{ margin: 0 }}>Testing & Preview</h3>
+                <button
+                  onClick={simulatePrompt}
+                  disabled={loading}
+                  style={{
+                    padding: '8px 16px',
+                    backgroundColor: theme.accent,
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: loading ? 'not-allowed' : 'pointer',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    opacity: loading ? 0.6 : 1
+                  }}
+                >
+                  🚀 Test Prompt
+                </button>
+              </div>
+              
+              {/* Scrollable Content */}
+              <div style={{ 
+                flex: 1,
+                overflow: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+                padding: '16px'
+              }}>
+              
+                {/* Data Source Selection */}
+                <div style={{ 
+                  backgroundColor: theme.bg,
                 borderRadius: '8px',
                 border: `1px solid ${theme.border}`,
                 padding: '16px'
@@ -1043,22 +1171,16 @@ function PromptEngineeringDashboardInner() {
                   />
                 </div>
 
-                    <button
-                      onClick={simulatePrompt}
-                      style={{
-                        width: '100%',
-                        padding: '10px',
-                        backgroundColor: theme.warning,
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '600'
-                      }}
-                    >
-                      🧪 Test Prompt (Simulation)
-                    </button>
+                    <div style={{
+                      padding: '12px',
+                      backgroundColor: theme.bgTertiary,
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      color: theme.textMuted,
+                      textAlign: 'center'
+                    }}>
+                      Click "🚀 Test Prompt" in the header to run simulation
+                    </div>
                   </>
                 )}
 
@@ -1195,24 +1317,16 @@ function PromptEngineeringDashboardInner() {
                           </div>
                         )}
 
-                        <button
-                          onClick={simulateWithConversation}
-                          disabled={loading}
-                          style={{
-                            width: '100%',
-                            padding: '10px',
-                            backgroundColor: theme.accent,
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: loading ? 'not-allowed' : 'pointer',
-                            fontSize: '14px',
-                            fontWeight: '600',
-                            opacity: loading ? 0.6 : 1
-                          }}
-                        >
-                          🚀 Test with {testingMode === 'single_turn' ? 'Single Turn' : 'Full Conversation'}
-                        </button>
+                        <div style={{
+                          padding: '12px',
+                          backgroundColor: theme.bgTertiary,
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          color: theme.textMuted,
+                          textAlign: 'center'
+                        }}>
+                          Click "🚀 Test Prompt" in the header to run with {testingMode === 'single_turn' ? 'Single Turn' : 'Full Conversation'}
+                        </div>
                       </>
                     )}
                   </>
@@ -1369,6 +1483,7 @@ function PromptEngineeringDashboardInner() {
                   </div>
                 </div>
               )}
+              </div>
             </div>
           </div>
         )}
@@ -1488,90 +1603,6 @@ function PromptEngineeringDashboardInner() {
           </div>
         )}
 
-        {/* Version Manager Tab */}
-        {activeTab === 'versions' && (
-          <div>
-            <div style={{ 
-              backgroundColor: theme.bgSecondary,
-              borderRadius: '8px',
-              border: `1px solid ${theme.border}`,
-              padding: '24px'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
-                <h3 style={{ margin: 0 }}>📋 Version Manager</h3>
-                <button
-                  onClick={createNewTemplate}
-                  style={{
-                    padding: '8px 16px',
-                    backgroundColor: theme.success,
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    fontSize: '14px'
-                  }}
-                >
-                  ➕ New Template
-                </button>
-              </div>
-
-              <div style={{ display: 'grid', gap: '12px' }}>
-                {templates.map(template => (
-                  <div
-                    key={template.id}
-                    style={{
-                      backgroundColor: theme.bg,
-                      border: `1px solid ${theme.border}`,
-                      borderRadius: '6px',
-                      padding: '16px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between'
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: '600', marginBottom: '4px' }}>
-                        {template.name}
-                      </div>
-                      <div style={{ fontSize: '12px', color: theme.textMuted }}>
-                        v{template.version} | {template.variables.length} variables | 
-                        Updated {new Date(template.updated_at).toLocaleDateString()}
-                      </div>
-                      {template.description && (
-                        <div style={{ fontSize: '12px', color: theme.textMuted, marginTop: '4px' }}>
-                          {template.description}
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <button
-                        onClick={() => {
-                          setActiveTemplate(template)
-                          setEditingTemplate(template.template)
-                          setTemplateName(template.name)
-                          setTemplateDescription(template.description || '')
-                          setActiveTab('master')
-                        }}
-                        style={{
-                          padding: '6px 12px',
-                          backgroundColor: theme.bgTertiary,
-                          border: `1px solid ${theme.border}`,
-                          borderRadius: '4px',
-                          color: theme.text,
-                          cursor: 'pointer',
-                          fontSize: '12px'
-                        }}
-                      >
-                        ✏️ Edit
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* A/B Testing Tab */}
         {activeTab === 'ab-test' && (
           <div style={{ 
@@ -1638,6 +1669,7 @@ function PromptEngineeringDashboardInner() {
         onEdit={handleEditTemplate}
         onDelete={handleDeleteTemplate}
         onDuplicate={handleDuplicateTemplate}
+        onSetAsDefault={handleSetAsDefault}
         onBulkAction={handleBulkAction}
         loading={loading}
         theme={theme}

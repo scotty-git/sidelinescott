@@ -74,12 +74,18 @@ IMPORTANT:
         ).first()
         
         if not template:
+            # Check if any template is already default
+            existing_default = db.query(PromptTemplate).filter(
+                PromptTemplate.is_default == True
+            ).first()
+            
             template = PromptTemplate(
                 name="Default CleanerContext Template",
                 template=self.default_template,
                 description="The original system prompt for conversation cleaning",
                 variables=["conversation_context", "raw_text", "cleaning_level"],
-                version="1.0.0"
+                version="1.0.0",
+                is_default=existing_default is None  # Only set as default if no other default exists
             )
             db.add(template)
             db.commit()
@@ -161,6 +167,10 @@ IMPORTANT:
     async def get_template(self, db: Session, template_id: UUID) -> Optional[PromptTemplate]:
         """Get a specific template by ID"""
         return db.query(PromptTemplate).filter(PromptTemplate.id == template_id).first()
+    
+    def get_template_by_id_sync(self, template_id: UUID, db: Session) -> Optional[PromptTemplate]:
+        """Get template by ID (sync version for caching)"""
+        return db.query(PromptTemplate).filter(PromptTemplate.id == template_id).first()
 
     async def update_template(self, db: Session, template_id: UUID, 
                             **updates) -> Optional[PromptTemplate]:
@@ -168,6 +178,16 @@ IMPORTANT:
         template = await self.get_template(db, template_id)
         if not template:
             return None
+        
+        # Handle is_default updates with constraint enforcement
+        if 'is_default' in updates:
+            if updates['is_default'] is True:
+                # If setting this template as default, unset all other defaults
+                await self._ensure_single_default(db, template_id)
+            elif updates['is_default'] is False:
+                # If unsetting as default, ensure we have at least one default
+                if template.is_default:
+                    await self._ensure_at_least_one_default(db, template_id)
         
         for key, value in updates.items():
             if hasattr(template, key) and value is not None:
@@ -484,3 +504,68 @@ IMPORTANT:
         
         logger.info(f"Deleted test conversation: {test_conversation_id}")
         return True
+    
+    async def delete_template(self, db: Session, template_id: UUID) -> bool:
+        """Delete a prompt template with constraint enforcement"""
+        template = await self.get_template(db, template_id)
+        if not template:
+            return False
+        
+        # Check if this is the last template
+        total_templates = db.query(PromptTemplate).count()
+        if total_templates <= 1:
+            raise ValueError("Cannot delete the last remaining prompt template")
+        
+        # If deleting the default template, ensure another one becomes default
+        if template.is_default:
+            await self._ensure_at_least_one_default(db, template_id)
+        
+        db.delete(template)
+        db.commit()
+        
+        logger.info(f"Deleted template: {template_id}")
+        return True
+    
+    async def set_default_template(self, db: Session, template_id: UUID) -> Optional[PromptTemplate]:
+        """Set a template as the default (and unset all others)"""
+        template = await self.get_template(db, template_id)
+        if not template:
+            return None
+        
+        # Use the constraint-enforced update method
+        return await self.update_template(db, template_id, is_default=True)
+    
+    async def get_default_template(self, db: Session) -> Optional[PromptTemplate]:
+        """Get the current default template"""
+        return db.query(PromptTemplate).filter(PromptTemplate.is_default == True).first()
+    
+    async def _ensure_single_default(self, db: Session, new_default_id: UUID) -> None:
+        """Ensure only one template is marked as default"""
+        # Unset all other templates as default
+        db.query(PromptTemplate).filter(
+            PromptTemplate.id != new_default_id,
+            PromptTemplate.is_default == True
+        ).update({PromptTemplate.is_default: False})
+        db.commit()
+        logger.info(f"Unset other templates as default, setting {new_default_id} as default")
+    
+    async def _ensure_at_least_one_default(self, db: Session, excluding_id: UUID) -> None:
+        """Ensure at least one template remains as default"""
+        # Count remaining default templates (excluding the one being changed)
+        remaining_defaults = db.query(PromptTemplate).filter(
+            PromptTemplate.id != excluding_id,
+            PromptTemplate.is_default == True
+        ).count()
+        
+        if remaining_defaults == 0:
+            # Find the next available template to set as default
+            next_template = db.query(PromptTemplate).filter(
+                PromptTemplate.id != excluding_id
+            ).order_by(PromptTemplate.created_at.asc()).first()
+            
+            if next_template:
+                next_template.is_default = True
+                db.commit()
+                logger.info(f"Set {next_template.id} as default to ensure at least one default exists")
+            else:
+                raise ValueError("Cannot unset default: no other templates available")

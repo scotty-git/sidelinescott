@@ -20,7 +20,7 @@ class PromptTemplate(Base):
     description = Column(Text, nullable=True)
     variables = Column(JSON, nullable=False, default=list)  # List of variable names
     version = Column(String(50), nullable=False, default="1.0.0")
-    is_active = Column(Boolean, default=False)
+    is_default = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -40,7 +40,24 @@ export class APIClient {
     const response = await fetch(url, config)
     
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+      // Try to extract detailed error message from response
+      let errorMessage = `HTTP ${response.status}`
+      try {
+        const errorData = await response.json()
+        if (errorData.detail) {
+          errorMessage = errorData.detail
+        } else if (errorData.message) {
+          errorMessage = errorData.message
+        } else if (errorData.error) {
+          errorMessage = errorData.error
+        } else {
+          errorMessage = `HTTP error! status: ${response.status}`
+        }
+      } catch {
+        // If response is not JSON, use status text
+        errorMessage = response.statusText || `HTTP error! status: ${response.status}`
+      }
+      throw new Error(errorMessage)
     }
 
     return response.json()

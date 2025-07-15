@@ -16,6 +16,7 @@ class PromptTemplate(BaseModel):
     description: Optional[str] = None
     variables: List[str]  # List of variable names used in template
     version: str = "1.0.0"
+    is_default: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -109,6 +110,7 @@ class UpdatePromptTemplateRequest(BaseModel):
     template: Optional[str] = None
     description: Optional[str] = None
     variables: Optional[List[str]] = None
+    is_default: Optional[bool] = None
 
 
 class RenderPromptRequest(BaseModel):

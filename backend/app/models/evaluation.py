@@ -37,7 +37,8 @@ class Evaluation(Base):
     conversation_id = Column(UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False)
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    prompt_template = Column(Text, nullable=True)  # The actual prompt template used
+    prompt_template = Column(Text, nullable=True)  # The actual prompt template used (deprecated - use prompt_template_id)
+    prompt_template_id = Column(UUID(as_uuid=True), ForeignKey("prompt_templates.id"), nullable=True)  # Reference to prompt template
     settings = Column(JSON, nullable=True)  # cleaning_level, model_params, sliding_window, etc.
     user_id = Column(UUID(as_uuid=True), nullable=False)  # Supabase Auth user ID (no FK constraint)
     status = Column(String(50), default="active", nullable=False)  # active, completed, archived
@@ -49,6 +50,7 @@ class Evaluation(Base):
     # Relationships
     conversation = relationship("Conversation", back_populates="evaluations")
     cleaned_turns = relationship("CleanedTurn", back_populates="evaluation", cascade="all, delete-orphan")
+    prompt_template_ref = relationship("PromptTemplate", foreign_keys=[prompt_template_id])
     
     def __repr__(self):
         return f"<Evaluation(id={self.id}, name='{self.name}', conversation_id={self.conversation_id})>"

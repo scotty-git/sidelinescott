@@ -26,13 +26,16 @@ logger = logging.getLogger(__name__)
 class EvaluationState:
     """Manages the stateful context for a single evaluation"""
     
-    def __init__(self, evaluation_id: UUID, sliding_window_size: int = 10):
+    def __init__(self, evaluation_id: UUID, sliding_window_size: int = 10, prompt_template: str = None):
         self.evaluation_id = evaluation_id
         self.sliding_window_size = sliding_window_size
         self.cleaned_history: List[Dict[str, Any]] = []
+        self.prompt_template = prompt_template  # Cache the template in memory for fast access
         
         print(f"[EvaluationState] Initialized for evaluation {evaluation_id}")
         print(f"[EvaluationState] Sliding window size: {self.sliding_window_size}")
+        if prompt_template:
+            print(f"[EvaluationState] 🎯 Cached prompt template in memory for fast access")
     
     def get_cleaned_sliding_window(self) -> List[Dict[str, Any]]:
         """Get the cleaned conversation history for context (from THIS evaluation)"""
@@ -98,7 +101,8 @@ class EvaluationManager:
     
     async def create_evaluation(self, conversation_id: UUID, name: str, user_id: UUID, 
                               description: str = None, prompt_template: str = None, 
-                              settings: Dict[str, Any] = None, db: Session = None) -> Evaluation:
+                              prompt_template_id: UUID = None, settings: Dict[str, Any] = None, 
+                              db: Session = None) -> Evaluation:
         """Create a new evaluation for a conversation"""
         print(f"[EvaluationManager] Creating new evaluation: '{name}' for conversation {conversation_id}")
         
@@ -116,6 +120,7 @@ class EvaluationManager:
             name=name,
             description=description,
             prompt_template=prompt_template,
+            prompt_template_id=prompt_template_id,
             settings=settings or {},
             user_id=user_id,
             status="active"
@@ -135,7 +140,23 @@ class EvaluationManager:
         
         if evaluation_id not in self.active_evaluations:
             print(f"[EvaluationManager] Creating new evaluation state for {evaluation_id}")
-            self.active_evaluations[evaluation_id] = EvaluationState(evaluation_id, sliding_window_size)
+            
+            # Load evaluation to get the prompt template
+            evaluation = db.query(Evaluation).filter(Evaluation.id == evaluation_id).first()
+            prompt_template = None
+            if evaluation:
+                if evaluation.prompt_template_id:
+                    # Fetch template from database once and cache it
+                    template_obj = self.prompt_service.get_template_by_id_sync(evaluation.prompt_template_id, db)
+                    if template_obj:
+                        prompt_template = template_obj.template
+                        print(f"[EvaluationManager] 🎯 Loaded template for caching: {template_obj.name}")
+                elif evaluation.prompt_template:
+                    # Use legacy hardcoded template
+                    prompt_template = evaluation.prompt_template
+                    print(f"[EvaluationManager] 📝 Using legacy template for caching")
+            
+            self.active_evaluations[evaluation_id] = EvaluationState(evaluation_id, sliding_window_size, prompt_template)
             
             # Load existing cleaned turns from database to rebuild context
             self._load_existing_evaluation_context(evaluation_id, db)
@@ -601,6 +622,15 @@ class EvaluationManager:
         # Detailed timing for user turn processing - start before actual work begins
         user_timing['prompt_preparation_start'] = time.time()
         
+        # Use cached prompt template from evaluation state (no DB hit!)
+        prompt_template = evaluation_state.prompt_template
+        
+        # Evaluation MUST have a prompt template - no fallbacks allowed
+        if not prompt_template:
+            raise ValueError(f"Evaluation {evaluation_id} has no prompt template available. Cannot process turn.")
+        
+        print(f"[EvaluationManager] 🚀 Using cached prompt template (zero-latency)")
+        
         # Use Gemini service for cleaning (this includes prompt preparation + API call)
         cleaned_result = await self.gemini_service.clean_conversation_turn(
             raw_text=raw_turn.raw_text,
@@ -608,7 +638,7 @@ class EvaluationManager:
             cleaned_context=cleaned_context,
             cleaning_level=cleaning_level,
             model_params=model_params,
-            rendered_prompt=evaluation.prompt_template  # Use evaluation's prompt
+            rendered_prompt=prompt_template  # Use cached template from memory
         )
         
         user_timing['gemini_api_end'] = time.time()

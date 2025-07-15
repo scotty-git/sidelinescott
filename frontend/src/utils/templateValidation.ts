@@ -83,19 +83,19 @@ export class TemplateValidator {
 
     // Validate template content
     const templateValidation = this.validateTemplateContent(template)
-    if (templateValidation.errors) {
+    if (templateValidation.errors && templateValidation.errors.length > 0) {
       errors.push(...templateValidation.errors)
     }
-    if (templateValidation.warnings) {
+    if (templateValidation.warnings && templateValidation.warnings.length > 0) {
       warnings.push(...templateValidation.warnings)
     }
 
     // Validate variables
     const variableValidation = this.validateVariables(template)
-    if (variableValidation.errors) {
+    if (variableValidation.errors && variableValidation.errors.length > 0) {
       errors.push(...variableValidation.errors)
     }
-    if (variableValidation.warnings) {
+    if (variableValidation.warnings && variableValidation.warnings.length > 0) {
       warnings.push(...variableValidation.warnings)
     }
 
@@ -106,12 +106,22 @@ export class TemplateValidator {
     // Generate suggestions
     suggestions.push(...this.generateSuggestions(template))
 
-    return {
+    const result = {
       isValid: errors.length === 0,
       errors,
       warnings,
       suggestions
     }
+    
+    console.log('Validation result:', {
+      isValid: result.isValid,
+      errorCount: errors.length,
+      warningCount: warnings.length,
+      errors: errors.map(e => ({ field: e.field, type: e.type, message: e.message })),
+      warnings: warnings.map(w => ({ field: w.field, type: w.type, message: w.message }))
+    })
+    
+    return result
   }
 
   // Validate template name
@@ -478,6 +488,17 @@ export class TemplateValidator {
 
 // Utility function to format validation messages for display
 export function formatValidationMessage(error: ValidationError | ValidationWarning): string {
+  // Safety check for malformed error objects
+  if (!error || typeof error !== 'object') {
+    console.warn('Invalid validation error object:', error)
+    return 'Invalid validation error'
+  }
+  
+  if (!error.message) {
+    console.warn('Validation error missing message:', error)
+    return 'Validation error (no message provided)'
+  }
+  
   let message = error.message
   
   if ('line' in error && error.line) {
