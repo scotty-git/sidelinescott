@@ -187,7 +187,7 @@ export class TemplateValidator {
     return { errors, warnings }
   }
 
-  // Validate template content
+  // Validate template content (relaxed - only check if empty)
   private validateTemplateContent(template: string): Partial<ValidationResult> {
     const errors: ValidationError[] = []
     const warnings: ValidationWarning[] = []
@@ -203,107 +203,10 @@ export class TemplateValidator {
       return { errors, warnings }
     }
 
-    // Check for unmatched braces
-    const braceValidation = this.validateBraceSyntax(template)
-    errors.push(...braceValidation.errors)
-
-    // Length warnings
-    if (template.length > 5000) {
-      warnings.push({
-        field: 'template',
-        type: 'long_template',
-        message: 'Template is very long and may impact performance',
-        suggestion: 'Consider breaking into smaller, focused templates'
-      })
-    }
-
-    // Check for common mistakes
-    const commonMistakes = this.checkCommonMistakes(template)
-    warnings.push(...commonMistakes)
-
+    // That's it! No other template content validation
     return { errors, warnings }
   }
 
-  // Validate brace syntax for variables
-  private validateBraceSyntax(template: string): { errors: ValidationError[] } {
-    const errors: ValidationError[] = []
-    const lines = template.split('\n')
-    
-    lines.forEach((line, lineIndex) => {
-      let braceCount = 0
-      let inVariable = false
-      let variableStart = -1
-      
-      for (let i = 0; i < line.length; i++) {
-        const char = line[i]
-        
-        if (char === '{') {
-          if (inVariable) {
-            errors.push({
-              field: 'template',
-              type: 'invalid_syntax',
-              message: 'Nested braces are not allowed',
-              line: lineIndex + 1,
-              column: i + 1,
-              suggestion: 'Use only single-level braces like {variable_name}'
-            })
-          }
-          braceCount++
-          inVariable = true
-          variableStart = i
-        } else if (char === '}') {
-          if (!inVariable) {
-            errors.push({
-              field: 'template',
-              type: 'invalid_syntax',
-              message: 'Closing brace without opening brace',
-              line: lineIndex + 1,
-              column: i + 1,
-              suggestion: 'Remove the extra closing brace or add an opening brace'
-            })
-          }
-          braceCount--
-          inVariable = false
-          
-          // Validate variable name
-          if (variableStart >= 0) {
-            const variableName = line.substring(variableStart + 1, i)
-            if (!variableName.trim()) {
-              errors.push({
-                field: 'template',
-                type: 'invalid_syntax',
-                message: 'Empty variable name',
-                line: lineIndex + 1,
-                column: variableStart + 1,
-                suggestion: 'Provide a variable name between braces'
-              })
-            } else if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(variableName)) {
-              errors.push({
-                field: 'template',
-                type: 'invalid_syntax',
-                message: `Invalid variable name: ${variableName}`,
-                line: lineIndex + 1,
-                column: variableStart + 1,
-                suggestion: 'Use only letters, numbers, and underscores. Start with letter or underscore'
-              })
-            }
-          }
-        }
-      }
-      
-      if (braceCount !== 0) {
-        errors.push({
-          field: 'template',
-          type: 'invalid_syntax',
-          message: braceCount > 0 ? 'Unclosed variable brace' : 'Extra closing brace',
-          line: lineIndex + 1,
-          suggestion: 'Ensure all variable braces are properly matched'
-        })
-      }
-    })
-    
-    return { errors }
-  }
 
   // Validate variables against the 5-variable system
   private validateVariables(template: string): Partial<ValidationResult> {
@@ -382,29 +285,6 @@ export class TemplateValidator {
     return variables
   }
 
-  // Check for common template mistakes
-  private checkCommonMistakes(template: string): ValidationWarning[] {
-    const warnings: ValidationWarning[] = []
-    
-    // Check for hardcoded values that should be variables
-    const hardcodedPatterns = [
-      { pattern: /\\b(light|full|none)\\b/gi, suggestion: 'Consider using {cleaning_level} variable' },
-      { pattern: /User:|Lumen:/gi, suggestion: 'Consider using {conversation_context} for speaker context' }
-    ]
-    
-    hardcodedPatterns.forEach(({ pattern, suggestion }) => {
-      if (pattern.test(template)) {
-        warnings.push({
-          field: 'template',
-          type: 'unused_variable',
-          message: 'Potential hardcoded value detected',
-          suggestion
-        })
-      }
-    })
-    
-    return warnings
-  }
 
   // Generate helpful suggestions
   private generateSuggestions(template: string): string[] {

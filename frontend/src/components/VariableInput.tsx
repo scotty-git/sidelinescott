@@ -94,11 +94,11 @@ export const VariableInput: React.FC<VariableInputProps> = ({
 
   return (
     <div className={`variable-input ${className}`}>
-      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
         {getVariableDisplayName(variable)}
-        <span className="text-xs text-gray-500 ml-1">
-          ({getVariableDescription(variable)})
-        </span>
+        <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 font-normal">
+          {getVariableDescription(variable)}
+        </div>
       </label>
       
       <div className="relative">
@@ -111,7 +111,7 @@ export const VariableInput: React.FC<VariableInputProps> = ({
             setTimeout(() => setShowSuggestions(false), 200)
           }}
           placeholder={placeholder || `Enter ${getVariableDisplayName(variable).toLowerCase()}...`}
-          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-vertical min-h-[60px] dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+          className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-400 resize-vertical min-h-[60px] bg-white dark:bg-gray-800 dark:text-white"
           rows={2}
         />
         

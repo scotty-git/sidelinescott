@@ -2440,51 +2440,51 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                 <div style={{ fontSize: '11px', color: theme.textMuted, marginTop: '4px' }}>
                                   Variables: {settings.promptTemplate.variables?.join(', ') || 'None'}
                                 </div>
+                                
+                                {/* Integrated Template Variables - shown right after template preview */}
+                                {settings.promptTemplate.variables && 
+                                 settings.promptTemplate.variables.some((v: string) => ['call_context', 'additional_context'].includes(v)) && (
+                                  <div style={{ marginTop: '16px', padding: '16px', backgroundColor: darkMode ? '#1e3a8a20' : '#dbeafe', borderRadius: '8px', border: `2px solid ${darkMode ? '#3b82f6' : '#60a5fa'}` }}>
+                                    <div style={{ fontSize: '13px', fontWeight: '600', color: darkMode ? '#60a5fa' : '#1d4ed8', marginBottom: '12px', display: 'flex', alignItems: 'center' }}>
+                                      <svg style={{ width: '16px', height: '16px', marginRight: '6px' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                      </svg>
+                                      Template Variables
+                                      <span style={{ marginLeft: '8px', padding: '2px 8px', fontSize: '10px', backgroundColor: darkMode ? '#3b82f6' : '#2563eb', color: 'white', borderRadius: '12px' }}>
+                                        Optional
+                                      </span>
+                                    </div>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                                      {settings.promptTemplate.variables.includes('call_context') && (
+                                        <div>
+                                          <VariableInput
+                                            variable="call_context"
+                                            value={settings.callContext}
+                                            onChange={(value) => setSettings({...settings, callContext: value})}
+                                            placeholder="Enter business context from prequalification flow..."
+                                            className="w-full"
+                                          />
+                                        </div>
+                                      )}
+                                      {settings.promptTemplate.variables.includes('additional_context') && (
+                                        <div>
+                                          <VariableInput
+                                            variable="additional_context"
+                                            value={settings.additionalContext}
+                                            onChange={(value) => setSettings({...settings, additionalContext: value})}
+                                            placeholder="Enter additional context for cleaning..."
+                                            className="w-full"
+                                          />
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
                         </div>
                       </div>
-                      
-                      {/* User Variables Section */}
-                      {settings.promptTemplate && settings.promptTemplate.variables && 
-                       settings.promptTemplate.variables.some((v: string) => ['call_context', 'additional_context'].includes(v)) && (
-                        <div>
-                          <h4 style={{ fontSize: '14px', fontWeight: '500', color: theme.text, marginBottom: '12px' }}>
-                            Template Variables
-                          </h4>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                            {settings.promptTemplate.variables.includes('call_context') && (
-                              <div>
-                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
-                                  Call Context
-                                </label>
-                                <VariableInput
-                                  variable="call_context"
-                                  value={settings.callContext}
-                                  onChange={(value) => setSettings({...settings, callContext: value})}
-                                  placeholder="Enter business context from prequalification flow..."
-                                  className="w-full"
-                                />
-                              </div>
-                            )}
-                            {settings.promptTemplate.variables.includes('additional_context') && (
-                              <div>
-                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
-                                  Additional Context
-                                </label>
-                                <VariableInput
-                                  variable="additional_context"
-                                  value={settings.additionalContext}
-                                  onChange={(value) => setSettings({...settings, additionalContext: value})}
-                                  placeholder="Enter additional context for cleaning..."
-                                  className="w-full"
-                                />
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
                       
                       <div>
                         <h4 style={{ fontSize: '14px', fontWeight: '500', color: theme.text, marginBottom: '12px' }}>Model Parameters</h4>

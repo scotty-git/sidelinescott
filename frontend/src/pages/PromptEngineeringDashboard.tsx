@@ -898,38 +898,35 @@ function PromptEngineeringDashboardInner() {
                 </div>
               </div>
 
-              {/* Monaco Editor Container */}
-              <div style={{ flex: 1, position: 'relative', minHeight: '300px' }}>
-                <Editor
-                  height="100%"
-                  defaultLanguage="text"
-                  value={editingTemplate}
-                  onChange={(value) => handleTemplateContentChange(value || '')}
-                  theme={darkMode ? 'vs-dark' : 'light'}
-                  options={{
-                    wordWrap: 'on',
-                    minimap: { enabled: false },
-                    scrollBeyondLastLine: false,
-                    fontSize: 14,
-                    lineNumbers: 'on',
-                    folding: true
-                  }}
-                />
+              {/* Monaco Editor Container with Validation Feedback */}
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '300px' }}>
+                <div style={{ flex: 1, position: 'relative', minHeight: '200px' }}>
+                  <Editor
+                    height="100%"
+                    defaultLanguage="text"
+                    value={editingTemplate}
+                    onChange={(value) => handleTemplateContentChange(value || '')}
+                    theme={darkMode ? 'vs-dark' : 'light'}
+                    options={{
+                      wordWrap: 'on',
+                      minimap: { enabled: false },
+                      scrollBeyondLastLine: false,
+                      fontSize: 14,
+                      lineNumbers: 'on',
+                      folding: true
+                    }}
+                  />
+                </div>
                 
-                
-                {/* Validation Feedback Overlay */}
+                {/* Validation Feedback - Takes up space below editor */}
                 {(validationErrors.length > 0 || validationWarnings.length > 0) && (
                   <div style={{ 
-                    position: 'absolute',
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
                     backgroundColor: darkMode ? '#1e1e1e' : '#f8f9fa',
                     borderTop: `1px solid ${theme.border}`,
                     padding: '8px 12px',
                     maxHeight: '120px',
                     overflowY: 'auto',
-                    zIndex: 10,
+                    flexShrink: 0,
                     boxShadow: '0 -2px 8px rgba(0, 0, 0, 0.1)'
                   }}>
                     {validationErrors.map((error, index) => (

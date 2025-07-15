@@ -17,6 +17,7 @@ from app.models.evaluation import Evaluation
 from app.models.cleaned_turn import CleanedTurn
 from app.models.conversation import Conversation
 from app.models.turn import Turn
+from app.models.user_variable_history import UserVariableHistory
 from app.services.gemini_service import GeminiService
 from app.services.prompt_engineering_service import PromptEngineeringService
 
@@ -649,6 +650,18 @@ class EvaluationManager:
         # Get user-provided variables from evaluation settings
         user_variables = evaluation.settings.get('user_variables', {}) if evaluation.settings else {}
         
+        # Debug: Show what variables we got from evaluation settings
+        print(f"[EvaluationManager] 🔍 DEBUG: Evaluation settings: {evaluation.settings}")
+        print(f"[EvaluationManager] 🔍 DEBUG: Extracted user_variables: {user_variables}")
+        print(f"[EvaluationManager] 🔍 DEBUG: User ID: {evaluation.user_id}")
+        
+        # Save user variables to history for future suggestions (if any are provided)
+        if user_variables:
+            print(f"[EvaluationManager] 💾 Found user variables to save: {user_variables}")
+            await self._save_user_variables_to_history(evaluation.user_id, user_variables, db)
+        else:
+            print(f"[EvaluationManager] ❌ No user variables found in evaluation settings")
+        
         template_variables = {
             "raw_text": raw_turn.raw_text,
             "conversation_context": context_str,
@@ -929,3 +942,49 @@ class EvaluationManager:
                 'context_retrieval_target_ms': 100
             }
         }
+    
+    async def _save_user_variables_to_history(self, user_id: UUID, user_variables: Dict[str, str], db: Session):
+        """Save user-provided variables to history for future suggestions"""
+        if not user_variables:
+            return
+        
+        print(f"[EvaluationManager] 💾 Saving user variables to history for user {user_id}")
+        
+        from datetime import datetime
+        
+        # User is authenticated via Supabase, so we can save variables directly
+        
+        for variable_name, variable_value in user_variables.items():
+            # Only save if the variable has a value and is one we track
+            if variable_value and variable_value.strip() and variable_name in ['call_context', 'additional_context']:
+                try:
+                    # Check if this exact combination already exists
+                    existing = db.query(UserVariableHistory).filter(
+                        UserVariableHistory.user_id == user_id,
+                        UserVariableHistory.variable_name == variable_name,
+                        UserVariableHistory.variable_value == variable_value.strip()
+                    ).first()
+                    
+                    if existing:
+                        # Update the used_at timestamp
+                        existing.used_at = datetime.utcnow()
+                        print(f"[EvaluationManager] ♻️ Updated existing variable: {variable_name}")
+                    else:
+                        # Create new entry
+                        variable_history = UserVariableHistory(
+                            user_id=user_id,
+                            variable_name=variable_name,
+                            variable_value=variable_value.strip()
+                        )
+                        db.add(variable_history)
+                        print(f"[EvaluationManager] ✅ Saved new variable: {variable_name} = '{variable_value[:50]}...'")
+                
+                except Exception as e:
+                    print(f"[EvaluationManager] ❌ Failed to save variable {variable_name}: {e}")
+        
+        try:
+            db.commit()
+            print(f"[EvaluationManager] 💾 User variables saved to database")
+        except Exception as e:
+            db.rollback()
+            print(f"[EvaluationManager] ❌ Failed to commit user variables: {e}")
