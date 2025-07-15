@@ -346,6 +346,8 @@ cd ../backend && source venv/bin/activate && uvicorn app.main:app --reload &
 
 ### **CRITICAL: Automated Testing Workflow**
 
+**🚨 HEADLESS TESTING ONLY**: ALL Playwright tests MUST run in headless mode. NEVER show browser on user's screen.
+
 **MANDATORY SEQUENCE** - Follow this exact order for every feature:
 
 #### **Phase 1: Fast Unit Tests First** ⚡ (Always)
@@ -358,7 +360,9 @@ pytest tests/            # Backend unit tests
 
 #### **Phase 2: Playwright E2E Integration** 🤖 (Auto-run when Phase 1 passes)
 ```bash
-npm run test:e2e         # Playwright full-app testing
+npm run test:e2e         # Playwright full-app testing (HEADLESS ONLY)
+# OR for specific tests:
+npx playwright test --project=chromium  # NEVER use --headed flag
 ```
 
 **CRITICAL PLAYWRIGHT SETUP**: After implementing any feature, Claude MUST:
@@ -423,8 +427,9 @@ npm run test:e2e         # Playwright full-app testing
 
 1. **ALWAYS test with Playwright in headless mode (`headless: true`)**
 2. **NEVER show browser on user's screen**
-3. **Take screenshots to verify UI appearance**
-4. **Check for common UI/UX mistakes:**
+3. **NEVER use --headed flag or any visible browser options**
+4. **Take screenshots to verify UI appearance**
+5. **Check for common UI/UX mistakes:**
    - Dark text on dark background
    - Light text on light background
    - Missing hover states
