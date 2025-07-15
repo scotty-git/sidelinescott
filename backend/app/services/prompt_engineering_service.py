@@ -51,19 +51,10 @@ CLEANING LEVEL: {cleaning_level}
 - light: Fix only obvious STT errors and noise
 - full: Fix STT errors, clarity, and minor grammatical issues while preserving meaning
 
-Return ONLY valid JSON in this exact format:
-{{
-    "cleaned_text": "corrected text here",
-    "confidence_score": "HIGH|MEDIUM|LOW",
-    "cleaning_applied": true,
-    "corrections": [
-        {{"original": "original text", "corrected": "corrected text", "confidence": "HIGH|MEDIUM|LOW", "reason": "explanation"}}
-    ],
-    "context_detected": "business_conversation|casual_chat|technical_discussion"
-}}
+Return ONLY the cleaned text as a raw string. Do not include any JSON formatting or metadata.
 
 IMPORTANT: 
-- If text needs no cleaning, set cleaning_applied: false and return original text
+- If text needs no cleaning, return the original text unchanged
 - Be conservative - when in doubt, preserve original meaning
 - Focus on making speech clear while maintaining authenticity"""
 

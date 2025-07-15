@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { apiClient } from '../lib/api'
 import { GeminiQueryInspector } from '../components/GeminiQueryInspector'
+import { VariableInput } from '../components/VariableInput'
 
 interface ParsedTurn {
   speaker: string
@@ -231,7 +232,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       // Sliding Window Configuration
       slidingWindow: 5,
       // Prompt Template
-      promptTemplate: null
+      promptTemplate: null,
+      // User Variables
+      callContext: '',
+      additionalContext: ''
     }
   })
   
@@ -381,6 +385,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             top_k: settings.topK,
             max_tokens: settings.maxTokens,
             model_name: settings.modelName
+          },
+          user_variables: {
+            call_context: settings.callContext || "",
+            additional_context: settings.additionalContext || ""
           }
         }
       }
@@ -2437,6 +2445,46 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                           </div>
                         </div>
                       </div>
+                      
+                      {/* User Variables Section */}
+                      {settings.promptTemplate && settings.promptTemplate.variables && 
+                       settings.promptTemplate.variables.some((v: string) => ['call_context', 'additional_context'].includes(v)) && (
+                        <div>
+                          <h4 style={{ fontSize: '14px', fontWeight: '500', color: theme.text, marginBottom: '12px' }}>
+                            Template Variables
+                          </h4>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                            {settings.promptTemplate.variables.includes('call_context') && (
+                              <div>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
+                                  Call Context
+                                </label>
+                                <VariableInput
+                                  variable="call_context"
+                                  value={settings.callContext}
+                                  onChange={(value) => setSettings({...settings, callContext: value})}
+                                  placeholder="Enter business context from prequalification flow..."
+                                  className="w-full"
+                                />
+                              </div>
+                            )}
+                            {settings.promptTemplate.variables.includes('additional_context') && (
+                              <div>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
+                                  Additional Context
+                                </label>
+                                <VariableInput
+                                  variable="additional_context"
+                                  value={settings.additionalContext}
+                                  onChange={(value) => setSettings({...settings, additionalContext: value})}
+                                  placeholder="Enter additional context for cleaning..."
+                                  className="w-full"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                       
                       <div>
                         <h4 style={{ fontSize: '14px', fontWeight: '500', color: theme.text, marginBottom: '12px' }}>Model Parameters</h4>

@@ -68,7 +68,7 @@ class GeminiService:
             "top_p": 0.8,
             "top_k": 40,
             "max_output_tokens": 2048,
-            "response_mime_type": "application/json",
+            # Removed JSON mime type - expecting raw string response
         }
         
         try:
@@ -163,7 +163,7 @@ class GeminiService:
                     "top_p": model_params.get("top_p", 0.8),
                     "top_k": model_params.get("top_k", 40),
                     "max_output_tokens": model_params.get("max_tokens", 2048),
-                    "response_mime_type": "application/json",
+                    # Removed JSON mime type - expecting raw string response
                 }
                 
                 # Use custom model name if provided, otherwise use default
@@ -196,21 +196,21 @@ class GeminiService:
                 logger.error(f"Empty response from Gemini API")
                 return self._fallback_response(raw_text, start_time, "empty_response")
             
-            # Parse JSON response
-            logger.info(f"Parsing Gemini response: {response.text[:200]}...")
-            result = json.loads(response.text)
+            # Process raw string response
+            logger.info(f"Processing raw string response: {response.text[:200]}...")
+            cleaned_text = response.text.strip()
             
             processing_time = round((time.time() - start_time) * 1000, 2)
             
-            # Ensure required fields are present
+            # Simple metadata for MVP - no complex logic needed
             cleaned_response = {
-                "cleaned_text": result.get("cleaned_text", raw_text),
+                "cleaned_text": cleaned_text,
                 "metadata": {
-                    "confidence_score": result.get("confidence_score", "MEDIUM"),
-                    "cleaning_applied": result.get("cleaning_applied", True),
+                    "confidence_score": "MEDIUM",  # Default for MVP
+                    "cleaning_applied": raw_text.strip() != cleaned_text.strip(),  # Simple comparison
                     "cleaning_level": cleaning_level,
-                    "corrections": result.get("corrections", []),
-                    "context_detected": result.get("context_detected", "business_conversation"),
+                    "corrections": [],  # Empty for MVP
+                    "context_detected": "business_conversation",  # Default for MVP
                     "processing_time_ms": processing_time,
                     "ai_model_used": model_params.get("model_name", self.model_name) if model_params else self.model_name
                 },
@@ -227,9 +227,6 @@ class GeminiService:
             print(f"[GeminiService] 🚨 CRITICAL: Gemini API timeout after 3 seconds!")
             print(f"[GeminiService] 🚨 Turn details: {speaker} - '{raw_text[:100]}...'")
             return self._fallback_response(raw_text, start_time, "api_timeout_3s")
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Gemini JSON response: {e}")
-            return self._fallback_response(raw_text, start_time, "json_parse_error")
         except Exception as e:
             logger.error(f"Gemini cleaning failed: {e}")
             return self._fallback_response(raw_text, start_time, "api_error")
@@ -269,19 +266,10 @@ CLEANING LEVEL: {cleaning_level}
 - light: Fix only obvious STT errors and noise
 - full: Fix STT errors, clarity, and minor grammatical issues while preserving meaning
 
-Return ONLY valid JSON in this exact format:
-{{
-    "cleaned_text": "corrected text here",
-    "confidence_score": "HIGH|MEDIUM|LOW",
-    "cleaning_applied": true,
-    "corrections": [
-        {{"original": "original text", "corrected": "corrected text", "confidence": "HIGH|MEDIUM|LOW", "reason": "explanation"}}
-    ],
-    "context_detected": "business_conversation|casual_chat|technical_discussion"
-}}
+Return ONLY the cleaned text as a raw string. Do not include any JSON formatting or metadata.
 
 IMPORTANT: 
-- If text needs no cleaning, set cleaning_applied: false and return original text
+- If text needs no cleaning, return the original text unchanged
 - Be conservative - when in doubt, preserve original meaning
 - Focus on making speech clear while maintaining authenticity"""
 

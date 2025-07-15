@@ -180,6 +180,22 @@ export class APIClient {
   async getConversationTurns(conversationId: string) {
     return this.request(`/api/v1/conversations/${conversationId}/turns`)
   }
+
+  // Variables endpoints
+  async getVariableSuggestions(variableName: string, limit: number = 10) {
+    return this.request(`/api/v1/variables/${variableName}/suggestions?limit=${limit}`)
+  }
+
+  async saveVariableValue(variableName: string, variableValue: string) {
+    return this.request(`/api/v1/variables/${variableName}`, {
+      method: 'POST',
+      body: JSON.stringify({ variable_name: variableName, variable_value: variableValue }),
+    })
+  }
+
+  async getAllVariableSuggestions() {
+    return this.request('/api/v1/variables/all-suggestions')
+  }
 }
 
 export const apiClient = new APIClient()

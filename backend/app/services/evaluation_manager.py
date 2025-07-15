@@ -646,12 +646,15 @@ class EvaluationManager:
             ])
         
         # Prepare variables for template rendering
+        # Get user-provided variables from evaluation settings
+        user_variables = evaluation.settings.get('user_variables', {}) if evaluation.settings else {}
+        
         template_variables = {
             "raw_text": raw_turn.raw_text,
             "conversation_context": context_str,
             "cleaning_level": cleaning_level,
-            "call_context": "",  # Could be populated from conversation metadata
-            "additional_context": ""  # Could be populated from evaluation settings
+            "call_context": user_variables.get("call_context", ""),  # From user input
+            "additional_context": user_variables.get("additional_context", "")  # From user input
         }
         
         # Render the prompt template with variables
