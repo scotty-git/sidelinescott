@@ -71,18 +71,6 @@ Hey Claude! You're working on the **Lumen Transcript Cleaner** rebuild - a sophi
 afplay /System/Library/Sounds/Ping.aiff
 ```
 
-**When to ping:**
-- ✅ **ALWAYS** when you finish ANY task and stop working
-- ✅ When you complete what was asked and await next instructions
-- ✅ When you need user input/decision to continue
-- ✅ After fixing an error and the system is ready
-- ✅ When presenting results/options and waiting for response
-
-**When NOT to ping:**
-- ❌ During work-in-progress
-- ❌ While actively debugging/coding
-- ❌ When you're about to continue with more work
-- ❌ Mid-task or between related operations
 
 **Simple rule**: If you're done working and waiting for user = PING!
 
