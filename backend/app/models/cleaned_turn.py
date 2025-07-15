@@ -58,6 +58,9 @@ class CleanedTurn(Base):
     timing_breakdown = Column(JSON, nullable=True)        # Detailed timing by operation
     gemini_prompt = Column(Text, nullable=True)           # Full prompt sent to AI
     gemini_response = Column(Text, nullable=True)         # Raw AI response
+    gemini_http_request = Column(JSON, nullable=True)     # Captured HTTP request to Google
+    gemini_http_response = Column(JSON, nullable=True)    # Captured HTTP response from Google
+    template_variables = Column(JSON, nullable=True)      # Variables used for template rendering
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     

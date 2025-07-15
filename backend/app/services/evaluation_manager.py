@@ -79,6 +79,7 @@ class EvaluationManager:
     
     def __init__(self):
         self.active_evaluations: Dict[UUID, EvaluationState] = {}
+        self.stopped_evaluations: Dict[UUID, bool] = {}  # Track stopped evaluations
         self.gemini_service = GeminiService()
         self.prompt_service = PromptEngineeringService()
         self.performance_metrics = {
@@ -236,6 +237,11 @@ class EvaluationManager:
         
         This creates a cleaned turn linked to both the evaluation and the raw turn.
         """
+        # Check if evaluation has been stopped
+        if self.is_evaluation_stopped(evaluation_id):
+            print(f"[EvaluationManager] ❌ Evaluation {evaluation_id} has been stopped, skipping turn {turn_id}")
+            raise Exception(f"Evaluation {evaluation_id} has been stopped")
+        
         # Comprehensive timing breakdown
         timing = {
             'request_received_at': time.time(),
@@ -627,9 +633,35 @@ class EvaluationManager:
         
         # Evaluation MUST have a prompt template - no fallbacks allowed
         if not prompt_template:
-            raise ValueError(f"Evaluation {evaluation_id} has no prompt template available. Cannot process turn.")
+            raise ValueError(f"Evaluation {evaluation.id} has no prompt template available. Cannot process turn.")
         
         print(f"[EvaluationManager] 🚀 Using cached prompt template (zero-latency)")
+        
+        # Build context string for the prompt variables
+        context_str = ""
+        if cleaned_context:
+            context_str = "\n".join([
+                f"{turn['speaker']}: {turn['cleaned_text']}" 
+                for turn in cleaned_context
+            ])
+        
+        # Prepare variables for template rendering
+        template_variables = {
+            "raw_text": raw_turn.raw_text,
+            "conversation_context": context_str,
+            "cleaning_level": cleaning_level,
+            "call_context": "",  # Could be populated from conversation metadata
+            "additional_context": ""  # Could be populated from evaluation settings
+        }
+        
+        # Render the prompt template with variables
+        try:
+            rendered_prompt = prompt_template.format(**template_variables)
+            print(f"[EvaluationManager] ✅ Rendered prompt template with variables")
+        except KeyError as e:
+            print(f"[EvaluationManager] ❌ Template variable error: {e}")
+            # Fall back to raw template if variable substitution fails
+            rendered_prompt = prompt_template
         
         # Use Gemini service for cleaning (this includes prompt preparation + API call)
         cleaned_result = await self.gemini_service.clean_conversation_turn(
@@ -638,8 +670,28 @@ class EvaluationManager:
             cleaned_context=cleaned_context,
             cleaning_level=cleaning_level,
             model_params=model_params,
-            rendered_prompt=prompt_template  # Use cached template from memory
+            rendered_prompt=rendered_prompt  # Use rendered template with variables
         )
+        
+        # Capture the actual function call data
+        captured_call = self.gemini_service.get_latest_captured_call()
+        print(f"[DEBUG] Captured call data: {captured_call}")
+        
+        # If the call failed, captured_call will be None
+        if captured_call is None:
+            print("[DEBUG] No captured call - likely API failure, creating fallback call data")
+            captured_call = {
+                'function_call': 'model.generate_content(prompt) # API call failed',
+                'model_config': {
+                    'model_name': 'gemini-2.5-flash-lite-preview-06-17',
+                    'generation_config': {'temperature': 0.1, 'top_p': 0.8, 'top_k': 40},
+                    'safety_settings': {}
+                },
+                'prompt': cleaned_result.get('prompt_used', 'No prompt available'),
+                'response': 'API call failed - see fallback response',
+                'timestamp': time.time(),
+                'success': False
+            }
         
         user_timing['gemini_api_end'] = time.time()
         
@@ -702,8 +754,11 @@ class EvaluationManager:
             context_detected=cleaned_result['metadata']['context_detected'],
             ai_model_used=cleaned_result['metadata']['ai_model_used'],
             timing_breakdown=user_timing_breakdown,
-            gemini_prompt=cleaned_result.get('prompt_used'),
-            gemini_response=cleaned_result.get('raw_response')
+            gemini_prompt=rendered_prompt,  # Store the rendered prompt with variables
+            gemini_response=cleaned_result.get('raw_response'),
+            gemini_http_request=captured_call,
+            gemini_http_response=captured_call,
+            template_variables=template_variables  # Store the variables used for rendering
         )
         
         db.add(cleaned_turn)
@@ -793,9 +848,37 @@ class EvaluationManager:
                 'ai_model_used': cleaned_result['metadata']['ai_model_used']
             },
             'created_at': cleaned_turn.created_at.isoformat(),
-            'gemini_prompt': cleaned_turn.gemini_prompt,
+            'gemini_prompt': rendered_prompt,  # Include the rendered prompt with variables
             'gemini_response': cleaned_turn.gemini_response,
-            'timing_breakdown': user_timing_breakdown
+            'gemini_function_call': cleaned_turn.gemini_http_request,  # Contains the actual function call
+            'debug_captured_call': captured_call,  # DEBUG: Show what was captured
+            'gemini_raw_response': cleaned_turn.gemini_http_response,  # Contains the raw response
+            'timing_breakdown': user_timing_breakdown,
+            'template_variables': template_variables  # Include the variables used for rendering
+        }
+    
+    def is_evaluation_stopped(self, evaluation_id: UUID) -> bool:
+        """Check if an evaluation has been stopped"""
+        return self.stopped_evaluations.get(evaluation_id, False)
+    
+    async def stop_evaluation(self, evaluation_id: UUID) -> Dict[str, Any]:
+        """Stop an evaluation and its processing"""
+        print(f"[EvaluationManager] Stopping evaluation {evaluation_id}")
+        
+        # Mark evaluation as stopped
+        self.stopped_evaluations[evaluation_id] = True
+        
+        # Keep the evaluation state but mark it as stopped
+        if evaluation_id in self.active_evaluations:
+            print(f"[EvaluationManager] Evaluation {evaluation_id} marked as stopped (keeping processed data)")
+        else:
+            print(f"[EvaluationManager] Evaluation {evaluation_id} was not active")
+        
+        return {
+            'success': True,
+            'evaluation_id': str(evaluation_id),
+            'message': 'Evaluation stopped successfully',
+            'stopped_at': time.time()
         }
     
     def get_performance_metrics(self) -> Dict[str, Any]:

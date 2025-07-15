@@ -54,6 +54,8 @@ class CleanedTurnResponse(BaseModel):
     # Gemini inspection data
     gemini_prompt: Optional[str] = Field(None, description="Exact prompt sent to Gemini")
     gemini_response: Optional[str] = Field(None, description="Raw response from Gemini")
+    gemini_function_call: Optional[Dict[str, Any]] = Field(None, description="Captured function call data for API logs")
+    template_variables: Optional[Dict[str, Any]] = Field(None, description="Variables used for prompt template rendering")
     
     # Detailed timing breakdown for performance analysis
     timing_breakdown: Optional[Dict[str, Any]] = Field(None, description="Detailed timing breakdown of processing steps")

@@ -241,6 +241,7 @@ async def get_evaluation_details(
             turn_sequence=ct.turn.turn_sequence,
             gemini_prompt=ct.gemini_prompt,
             gemini_response=ct.gemini_response,
+            template_variables=ct.template_variables,
             timing_breakdown=ct.timing_breakdown
         )
         for ct in cleaned_turns
@@ -339,6 +340,8 @@ async def process_turn(
             turn_sequence=result['turn_sequence'],
             gemini_prompt=result.get('gemini_prompt'),
             gemini_response=result.get('gemini_response'),
+            gemini_function_call=result.get('gemini_function_call'),
+            template_variables=result.get('template_variables'),
             timing_breakdown=result.get('timing_breakdown')
         )
         
@@ -427,6 +430,11 @@ async def process_all_turns(
     
     try:
         for i, raw_turn in enumerate(raw_turns):
+            # Check if evaluation has been stopped before processing each turn
+            if evaluation_manager.is_evaluation_stopped(evaluation_uuid):
+                print(f"[EvaluationsAPI] ⏹️ Evaluation {evaluation_uuid} stopped at turn {i+1}/{len(raw_turns)}")
+                break
+            
             print(f"[EvaluationsAPI] Processing turn {i+1}/{len(raw_turns)}: {raw_turn.speaker}")
             
             try:
@@ -439,6 +447,11 @@ async def process_all_turns(
                 print(f"[EvaluationsAPI] ✅ Turn {i+1} processed successfully")
                 
             except Exception as turn_error:
+                # Check if the error is due to stopped evaluation
+                if "has been stopped" in str(turn_error):
+                    print(f"[EvaluationsAPI] ⏹️ Evaluation stopped during turn {i+1} processing")
+                    break
+                
                 error_info = {
                     'turn_id': str(raw_turn.id),
                     'speaker': raw_turn.speaker,
@@ -447,8 +460,13 @@ async def process_all_turns(
                 failed_turns.append(error_info)
                 print(f"[EvaluationsAPI] ❌ Turn {i+1} failed: {turn_error}")
         
+        # Check if evaluation was stopped
+        was_stopped = evaluation_manager.is_evaluation_stopped(evaluation_uuid)
+        
         print(f"[EvaluationsAPI] ✅ Batch processing complete")
         print(f"[EvaluationsAPI] Successful: {len(processed_results)}, Failed: {len(failed_turns)}")
+        if was_stopped:
+            print(f"[EvaluationsAPI] ⏹️ Processing was stopped by user")
         
         return {
             'success': True,
@@ -457,7 +475,8 @@ async def process_all_turns(
             'processed_successfully': len(processed_results),
             'failed_turns': len(failed_turns),
             'failed_details': failed_turns,
-            'message': f"Processed {len(processed_results)}/{len(raw_turns)} turns successfully"
+            'was_stopped': was_stopped,
+            'message': f"Processed {len(processed_results)}/{len(raw_turns)} turns successfully" + (" (stopped by user)" if was_stopped else "")
         }
         
     except Exception as e:
@@ -465,6 +484,54 @@ async def process_all_turns(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Batch processing failed: {str(e)}"
+        )
+
+@router.post("/{evaluation_id}/stop")
+async def stop_evaluation(
+    evaluation_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Stop an evaluation and its processing"""
+    try:
+        evaluation_uuid = UUID(evaluation_id)
+        user_uuid = UUID(current_user["id"])
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid UUID format"
+        )
+    
+    # Verify evaluation access
+    evaluation = db.query(Evaluation).filter(
+        Evaluation.id == evaluation_uuid,
+        Evaluation.user_id == user_uuid
+    ).first()
+    
+    if not evaluation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Evaluation not found or access denied"
+        )
+    
+    try:
+        # Stop the evaluation processing
+        result = await evaluation_manager.stop_evaluation(evaluation_uuid)
+        
+        print(f"[EvaluationsAPI] ✅ Stopped evaluation {evaluation_id}")
+        
+        return {
+            'success': True,
+            'evaluation_id': str(evaluation_uuid),
+            'message': 'Evaluation stopped successfully',
+            'result': result
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to stop evaluation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to stop evaluation: {str(e)}"
         )
 
 @router.delete("/{evaluation_id}")

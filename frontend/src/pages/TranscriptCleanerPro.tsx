@@ -60,6 +60,23 @@ interface APICall {
   error?: string
 }
 
+interface TurnAPIGroup {
+  turnIndex: number
+  turnSequence: number
+  speaker: string
+  rawText: string
+  frontendRequest: APICall
+  backendResponse: APICall
+  geminiFunctionCall?: {
+    function_call: string
+    model_config: any
+    prompt: string
+    response: string
+    timestamp: number
+    success: boolean
+  }
+}
+
 interface ProcessingStats {
   total_turns: number
   user_turns: number
@@ -119,9 +136,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [cleanedTurns, setCleanedTurns] = useState<CleanedTurn[]>([])
   const [processingStats] = useState<ProcessingStats | null>(null)
   const [apiCalls, setApiCalls] = useState<APICall[]>([])
+  const [turnAPIGroups, setTurnAPIGroups] = useState<TurnAPIGroup[]>([])
   const [isProcessing, setIsProcessing] = useState(false)
   const [currentTurnIndex, setCurrentTurnIndex] = useState(0)
   const [conversationId, setConversationId] = useState<string | null>(null)
+  const [currentEvaluationId, setCurrentEvaluationId] = useState<string | null>(null)
   const [selectedTab, setSelectedTab] = useState<'results' | 'api' | 'logs' | 'settings'>('results')
   const [darkMode, setDarkMode] = useState(false)
   const [detailedLogs, setDetailedLogs] = useState<string[]>([])
@@ -335,6 +354,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
 
     setIsProcessing(true)
     setCleanedTurns([])
+    setTurnAPIGroups([])
     setCurrentTurnIndex(0)
     setSelectedTab('results')
     
@@ -367,6 +387,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       
       const evaluationResponse = await apiCallWithLogging('POST', `/api/v1/evaluations/conversations/${conversationId}/evaluations`, evaluationData) as any
       const evaluationId = evaluationResponse.id
+      setCurrentEvaluationId(evaluationId)
       addDetailedLog(`✅ Created evaluation: ${evaluationName} (${evaluationId})`)
       
       // Step 2: Get raw turns from the conversation
@@ -432,6 +453,32 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           created_at: turnResult.created_at
         }
         
+        // Create turn API group
+        console.log('[DEBUG] Creating turnAPIGroup with turnResult:', turnResult);
+        console.log('[DEBUG] turnResult.gemini_function_call:', turnResult.gemini_function_call);
+        console.log('[DEBUG] Latest API call:', apiCalls[apiCalls.length - 1]);
+        
+        const turnAPIGroup: TurnAPIGroup = {
+          turnIndex: i,
+          turnSequence: rawTurn.turn_sequence,
+          speaker: rawTurn.speaker,
+          rawText: rawTurn.raw_text,
+          frontendRequest: apiCalls[apiCalls.length - 1], // Last API call is the frontend request
+          backendResponse: {
+            ...apiCalls[apiCalls.length - 1],
+            response_data: turnResult
+          },
+          geminiFunctionCall: turnResult.gemini_function_call ? {
+            function_call: turnResult.gemini_function_call.function_call,
+            model_config: turnResult.gemini_function_call.model_config,
+            prompt: turnResult.gemini_function_call.prompt,
+            response: turnResult.gemini_function_call.response,
+            timestamp: turnResult.gemini_function_call.timestamp,
+            success: turnResult.gemini_function_call.success
+          } : undefined
+        }
+        
+        setTurnAPIGroups(prev => [...prev, turnAPIGroup])
         processedTurns.push(cleanedTurn)
         
         // Update UI immediately with current progress
@@ -453,7 +500,31 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     } finally {
       setIsProcessing(false)
       setCurrentTurnIndex(0)
+      setCurrentEvaluationId(null)
       addDetailedLog('🏁 Cleaning process completed')
+    }
+  }
+
+  const stopCleaning = async () => {
+    if (!currentEvaluationId) {
+      addDetailedLog(`❌ Cannot stop cleaning: No active evaluation`)
+      return
+    }
+
+    addDetailedLog(`⏹️ Stopping evaluation: ${currentEvaluationId}`)
+    
+    try {
+      await apiCallWithLogging('POST', `/api/v1/evaluations/${currentEvaluationId}/stop`, {}) as any
+      addDetailedLog(`✅ Evaluation stopped successfully`)
+      
+      // Keep the processing state but update the UI
+      setIsProcessing(false)
+      setCurrentEvaluationId(null)
+      
+    } catch (error: any) {
+      addDetailedLog(`❌ Failed to stop evaluation: ${error.message || error}`)
+      console.error('Stop error:', error)
+      alert(`Failed to stop evaluation: ${error.message || error}`)
     }
   }
 
@@ -1127,8 +1198,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 💬 Load Conversation
               </button>
               <button 
-                onClick={startCleaning}
-                disabled={parsedTurns.length === 0 || isProcessing}
+                onClick={isProcessing ? stopCleaning : startCleaning}
+                disabled={parsedTurns.length === 0 && !isProcessing}
                 style={{
                   flex: 1,
                   display: 'inline-flex',
@@ -1140,11 +1211,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                   fontSize: '14px',
                   fontWeight: '500',
                   color: 'white',
-                  backgroundColor: isProcessing || parsedTurns.length === 0 ? '#9ca3af' : '#10b981',
-                  cursor: isProcessing || parsedTurns.length === 0 ? 'not-allowed' : 'pointer'
+                  backgroundColor: isProcessing ? '#ef4444' : (parsedTurns.length === 0 ? '#9ca3af' : '#10b981'),
+                  cursor: (parsedTurns.length === 0 && !isProcessing) ? 'not-allowed' : 'pointer'
                 }}
               >
-                {isProcessing ? `Processing ${currentTurnIndex + 1}/${parsedTurns.length}` : 'Start Cleaning'}
+                {isProcessing ? '⏹️ Stop Cleaning' : 'Start Cleaning'}
               </button>
             </div>
             
@@ -1213,7 +1284,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             <nav style={{ display: 'flex', gap: '32px', padding: '0 24px' }}>
               {[
                 { key: 'results', label: 'Results', count: cleanedTurns.length },
-                { key: 'api', label: 'API Calls', count: apiCalls.length },
+                { key: 'api', label: 'API Calls', count: turnAPIGroups.length },
                 { key: 'logs', label: 'Detailed Logs', count: detailedLogs.length },
                 { key: 'settings', label: 'Configuration', count: null }
               ].map((tab) => (
@@ -1877,98 +1948,174 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             {selectedTab === 'api' && (
               <div style={{ height: '100%', overflowY: 'auto' }}>
                 <div style={{ padding: '24px' }}>
-                  {apiCalls.length === 0 ? (
+                  {turnAPIGroups.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '48px', color: theme.textMuted }}>
-                      <div style={{ fontSize: '18px', fontWeight: '500', marginBottom: '8px' }}>No API calls yet</div>
-                      <div style={{ fontSize: '14px' }}>API requests will appear here as they happen</div>
+                      <div style={{ fontSize: '18px', fontWeight: '500', marginBottom: '8px' }}>No turn API calls yet</div>
+                      <div style={{ fontSize: '14px' }}>Turn-based API requests will appear here as they happen</div>
                     </div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                      {apiCalls.map((call) => (
-                        <div key={call.id} style={{ backgroundColor: theme.bgSecondary, borderRadius: '8px', padding: '24px', border: `1px solid ${theme.border}` }}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                      {turnAPIGroups.map((turnGroup) => (
+                        <div key={`turn-${turnGroup.turnIndex}`} style={{ backgroundColor: theme.bgSecondary, borderRadius: '8px', padding: '24px', border: `1px solid ${theme.border}` }}>
+                          {/* Turn Header */}
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', paddingBottom: '16px', borderBottom: `1px solid ${theme.border}` }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                               <span style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
-                                padding: '2px 10px',
-                                borderRadius: '9999px',
-                                fontSize: '12px',
-                                fontWeight: '500',
-                                backgroundColor: call.status === 200 ? '#dcfce7' : '#fee2e2',
-                                color: call.status === 200 ? '#166534' : '#991b1b'
+                                padding: '4px 12px',
+                                borderRadius: '6px',
+                                fontSize: '14px',
+                                fontWeight: '600',
+                                backgroundColor: theme.accent,
+                                color: 'white'
                               }}>
-                                {call.method}
+                                Turn {turnGroup.turnSequence}
                               </span>
-                              <span style={{ fontSize: '14px', color: theme.textMuted, fontFamily: 'monospace' }}>{call.latency_ms}ms</span>
+                              <span style={{ fontSize: '14px', fontWeight: '500', color: theme.text }}>
+                                {turnGroup.speaker}
+                              </span>
                             </div>
-                            <span style={{ fontSize: '14px', color: theme.textMuted }}>
-                              {new Date(call.timestamp).toLocaleTimeString()}
+                            <span style={{ fontSize: '12px', color: theme.textMuted }}>
+                              {turnGroup.rawText.length > 50 ? `${turnGroup.rawText.substring(0, 50)}...` : turnGroup.rawText}
                             </span>
                           </div>
-                          
-                          <div style={{ fontSize: '14px', fontFamily: 'monospace', color: theme.text, marginBottom: '16px' }}>{call.endpoint}</div>
-                          
-                          {call.request_data && (
-                            <details style={{ marginBottom: '16px' }}>
-                              <summary style={{ fontSize: '14px', fontWeight: '500', color: theme.text, cursor: 'pointer', marginBottom: '8px' }}>
-                                Request Data
-                              </summary>
-                              <pre style={{ 
-                                fontSize: '12px', 
-                                backgroundColor: theme.bg, 
-                                padding: '16px', 
-                                borderRadius: '6px', 
-                                border: `1px solid ${theme.border}`, 
-                                overflowX: 'auto', 
-                                fontFamily: 'monospace', 
-                                color: theme.text,
-                                margin: 0
-                              }}>
-                                {JSON.stringify(call.request_data, null, 2)}
-                              </pre>
-                            </details>
-                          )}
-                          
-                          {call.response_data && (
-                            <details>
-                              <summary style={{ fontSize: '14px', fontWeight: '500', color: theme.text, cursor: 'pointer', marginBottom: '8px' }}>
-                                Response Data
-                              </summary>
-                              <pre style={{ 
-                                fontSize: '12px', 
-                                backgroundColor: theme.bg, 
-                                padding: '16px', 
-                                borderRadius: '6px', 
-                                border: `1px solid ${theme.border}`, 
-                                overflowX: 'auto', 
-                                fontFamily: 'monospace', 
-                                color: theme.text,
-                                margin: 0
-                              }}>
-                                {JSON.stringify(call.response_data, null, 2)}
-                              </pre>
-                            </details>
-                          )}
-                          
-                          {call.error && (
-                            <div style={{ 
-                              backgroundColor: '#fef2f2', 
-                              border: '1px solid #fecaca', 
-                              borderRadius: '6px', 
-                              padding: '12px', 
-                              marginTop: '16px' 
-                            }}>
-                              <div style={{ fontSize: '14px', fontWeight: '500', color: '#b91c1c' }}>Error:</div>
-                              <div style={{ fontSize: '14px', color: '#dc2626', marginTop: '4px' }}>{call.error}</div>
+
+                          {/* Simple API Flow Display */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            <div style={{ fontSize: '14px', fontWeight: '500', color: theme.text }}>API Flow:</div>
+                            <div style={{ fontSize: '12px', color: theme.textMuted, fontFamily: 'monospace' }}>
+                              1. Frontend → Backend: {turnGroup.frontendRequest.method} {turnGroup.frontendRequest.endpoint} ({turnGroup.frontendRequest.latency_ms}ms)
                             </div>
-                          )}
+                            {turnGroup.geminiFunctionCall && (
+                              <div style={{ fontSize: '12px', color: theme.textMuted, fontFamily: 'monospace' }}>
+                                2. Backend → Google: {turnGroup.geminiFunctionCall.function_call} ({turnGroup.geminiFunctionCall.model_config.model_name})
+                              </div>
+                            )}
+                            {turnGroup.geminiFunctionCall && (
+                              <div style={{ fontSize: '12px', color: theme.textMuted, fontFamily: 'monospace' }}>
+                                3. Google → Backend: Response received (success: {turnGroup.geminiFunctionCall.success ? 'true' : 'false'})
+                              </div>
+                            )}
+                            <div style={{ fontSize: '12px', color: theme.textMuted, fontFamily: 'monospace' }}>
+                              4. Backend → Frontend: {turnGroup.backendResponse.status} ({turnGroup.backendResponse.latency_ms}ms)
+                            </div>
+                          </div>
+
+                          {/* Four Separate Dropdowns for API Detail Levels */}
+                          <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            
+                            {/* 1. Frontend Request */}
+                            <details style={{ border: `1px solid ${theme.border}`, borderRadius: '6px', padding: '12px' }}>
+                              <summary style={{ fontSize: '14px', fontWeight: '500', color: theme.text, cursor: 'pointer', marginBottom: '8px' }}>
+                                🔵 1. Frontend Request
+                              </summary>
+                              <div style={{ marginTop: '8px', padding: '8px', backgroundColor: theme.bg, borderRadius: '4px' }}>
+                                <pre style={{ 
+                                  fontSize: '11px', 
+                                  fontFamily: 'monospace', 
+                                  color: theme.text,
+                                  margin: 0,
+                                  overflowX: 'auto',
+                                  maxHeight: '150px'
+                                }}>
+                                  {JSON.stringify({
+                                    method: turnGroup.frontendRequest.method,
+                                    endpoint: turnGroup.frontendRequest.endpoint,
+                                    latency_ms: turnGroup.frontendRequest.latency_ms,
+                                    timestamp: turnGroup.frontendRequest.timestamp,
+                                    request_payload: turnGroup.frontendRequest.request_data || 'No request data'
+                                  }, null, 2)}
+                                </pre>
+                              </div>
+                            </details>
+
+                            {/* 2. Backend Processing */}
+                            <details style={{ border: `1px solid ${theme.border}`, borderRadius: '6px', padding: '12px' }}>
+                              <summary style={{ fontSize: '14px', fontWeight: '500', color: theme.text, cursor: 'pointer', marginBottom: '8px' }}>
+                                🟠 2. Backend Processing
+                              </summary>
+                              <div style={{ marginTop: '8px', padding: '8px', backgroundColor: theme.bg, borderRadius: '4px' }}>
+                                <pre style={{ 
+                                  fontSize: '11px', 
+                                  fontFamily: 'monospace', 
+                                  color: theme.text,
+                                  margin: 0,
+                                  overflowX: 'auto',
+                                  maxHeight: '150px'
+                                }}>
+                                  {JSON.stringify({
+                                    processing_time_ms: turnGroup.backendResponse.response_data?.metadata?.processing_time_ms || 'N/A',
+                                    timing_breakdown: turnGroup.backendResponse.response_data?.timing_breakdown || 'No timing data',
+                                    ai_model_used: turnGroup.backendResponse.response_data?.metadata?.ai_model_used || 'N/A',
+                                    cleaning_level: turnGroup.backendResponse.response_data?.metadata?.cleaning_level || 'N/A',
+                                    confidence_score: turnGroup.backendResponse.response_data?.metadata?.confidence_score || 'N/A'
+                                  }, null, 2)}
+                                </pre>
+                              </div>
+                            </details>
+
+                            {/* 3. Gemini API Call */}
+                            {turnGroup.geminiFunctionCall && (
+                              <details style={{ border: `1px solid ${theme.border}`, borderRadius: '6px', padding: '12px' }}>
+                                <summary style={{ fontSize: '14px', fontWeight: '500', color: theme.text, cursor: 'pointer', marginBottom: '8px' }}>
+                                  🟢 3. Gemini API Call
+                                </summary>
+                                <div style={{ marginTop: '8px', padding: '8px', backgroundColor: theme.bg, borderRadius: '4px' }}>
+                                  <pre style={{ 
+                                    fontSize: '11px', 
+                                    fontFamily: 'monospace', 
+                                    color: theme.text,
+                                    margin: 0,
+                                    overflowX: 'auto',
+                                    maxHeight: '150px'
+                                  }}>
+                                    {JSON.stringify({
+                                      function_call: turnGroup.geminiFunctionCall.function_call,
+                                      model_config: turnGroup.geminiFunctionCall.model_config,
+                                      success: turnGroup.geminiFunctionCall.success,
+                                      timestamp: turnGroup.geminiFunctionCall.timestamp,
+                                      prompt_preview: turnGroup.geminiFunctionCall.prompt?.substring(0, 200) + '...' || 'No prompt',
+                                      response_preview: turnGroup.geminiFunctionCall.response?.substring(0, 200) + '...' || 'No response'
+                                    }, null, 2)}
+                                  </pre>
+                                </div>
+                              </details>
+                            )}
+
+                            {/* 4. Backend Response */}
+                            <details style={{ border: `1px solid ${theme.border}`, borderRadius: '6px', padding: '12px' }}>
+                              <summary style={{ fontSize: '14px', fontWeight: '500', color: theme.text, cursor: 'pointer', marginBottom: '8px' }}>
+                                🔴 4. Backend Response
+                              </summary>
+                              <div style={{ marginTop: '8px', padding: '8px', backgroundColor: theme.bg, borderRadius: '4px' }}>
+                                <pre style={{ 
+                                  fontSize: '11px', 
+                                  fontFamily: 'monospace', 
+                                  color: theme.text,
+                                  margin: 0,
+                                  overflowX: 'auto',
+                                  maxHeight: '150px'
+                                }}>
+                                  {JSON.stringify({
+                                    status: turnGroup.backendResponse.status,
+                                    latency_ms: turnGroup.backendResponse.latency_ms,
+                                    cleaned_text: turnGroup.backendResponse.response_data?.cleaned_text || 'No cleaned text',
+                                    corrections: turnGroup.backendResponse.response_data?.metadata?.corrections || [],
+                                    context_detected: turnGroup.backendResponse.response_data?.metadata?.context_detected || 'N/A',
+                                    gemini_prompt: turnGroup.backendResponse.response_data?.gemini_prompt?.substring(0, 200) + '...' || 'No prompt',
+                                    gemini_response: turnGroup.backendResponse.response_data?.gemini_response?.substring(0, 200) + '...' || 'No response'
+                                  }, null, 2)}
+                                </pre>
+                              </div>
+                            </details>
+                          </div>
                         </div>
                       ))}
                       
                       <div style={{ paddingTop: '16px' }}>
                         <button 
-                          onClick={() => setApiCalls([])}
+                          onClick={() => setTurnAPIGroups([])}
                           style={{
                             display: 'inline-flex',
                             alignItems: 'center',
@@ -1982,7 +2129,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                             cursor: 'pointer'
                           }}
                         >
-                          Clear API Log
+                          Clear Turn API Log
                         </button>
                       </div>
                     </div>

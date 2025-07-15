@@ -16,8 +16,24 @@ import asyncio
 from typing import Dict, List, Any, Optional
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+import requests
+from unittest.mock import patch
+import urllib3
 
 from app.core.config import settings
+
+# Try to import httpx and aiohttp which are used by google-generativeai
+try:
+    import httpx
+    HTTPX_AVAILABLE = True
+except ImportError:
+    HTTPX_AVAILABLE = False
+
+try:
+    import aiohttp
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +50,9 @@ class GeminiService:
         
         # CRITICAL: Use Gemini 2.5 Flash-Lite as specified in CLAUDE.md
         self.model_name = "gemini-2.5-flash-lite-preview-06-17"
+        
+        # Code generation tracking
+        self.captured_code_examples = []
         
         # Initialize model with safety settings for conversation content
         self.safety_settings = {
@@ -147,15 +166,23 @@ class GeminiService:
                     "response_mime_type": "application/json",
                 }
                 
+                # Use custom model name if provided, otherwise use default
+                model_name = model_params.get("model_name", self.model_name)
+                
                 # Create temporary model with custom config
                 custom_model = genai.GenerativeModel(
-                    model_name=self.model_name,
+                    model_name=model_name,
                     generation_config=custom_config,
                     safety_settings=self.safety_settings
                 )
                 
+                logger.info(f"Using custom model: {model_name}")
                 logger.info(f"Using custom model params: {custom_config}")
-                response = await self._call_gemini_with_timeout(custom_model, prompt, timeout_seconds=3)
+                response = await self._call_gemini_with_timeout(custom_model, prompt, timeout_seconds=3, model_config={
+                    'model_name': model_name,
+                    'generation_config': custom_config,
+                    'safety_settings': {k.name: v.name for k, v in self.safety_settings.items()}
+                })
             else:
                 # Use default model
                 logger.info(f"Using default model configuration")
@@ -185,7 +212,7 @@ class GeminiService:
                     "corrections": result.get("corrections", []),
                     "context_detected": result.get("context_detected", "business_conversation"),
                     "processing_time_ms": processing_time,
-                    "ai_model_used": self.model_name
+                    "ai_model_used": model_params.get("model_name", self.model_name) if model_params else self.model_name
                 },
                 "raw_response": response.text,  # Store the raw Gemini response
                 "prompt_used": prompt  # Store the actual prompt that was sent to Gemini
@@ -260,8 +287,8 @@ IMPORTANT:
 
         return prompt
     
-    async def _call_gemini_with_timeout(self, model, prompt: str, timeout_seconds: int = 3):
-        """Call Gemini API with timeout to prevent hanging"""
+    async def _call_gemini_with_timeout(self, model, prompt: str, timeout_seconds: int = 3, model_config: Dict[str, Any] = None):
+        """Call Gemini API with timeout and capture actual function call"""
         try:
             # Wrap the synchronous call in an executor to make it awaitable
             loop = asyncio.get_event_loop()
@@ -275,6 +302,32 @@ IMPORTANT:
                 timeout=timeout_seconds
             )
             
+            # Use provided model config or default
+            if model_config:
+                captured_model_config = model_config
+            else:
+                captured_model_config = {
+                    'model_name': self.model_name,
+                    'generation_config': self.generation_config,
+                    'safety_settings': {k.name: v.name for k, v in self.safety_settings.items()}
+                }
+            
+            # Capture the actual function call that was made
+            actual_call = {
+                'function_call': f'model.generate_content(prompt)',
+                'model_config': captured_model_config,
+                'prompt': prompt,
+                'response': response.text,
+                'timestamp': time.time(),
+                'success': True
+            }
+            
+            # Store the actual call for this turn
+            self.captured_code_examples.append(actual_call)
+            
+            print(f"[GeminiService] ✅ Captured actual function call")
+            print(f"[GeminiService] 📊 Total captured calls: {len(self.captured_code_examples)}")
+            
             return response
             
         except asyncio.TimeoutError:
@@ -284,6 +337,25 @@ IMPORTANT:
         except Exception as e:
             logger.error(f"Gemini API call failed: {e}")
             raise
+    
+    def get_latest_captured_call(self) -> Optional[Dict[str, Any]]:
+        """Get the latest captured function call"""
+        if self.captured_code_examples:
+            return self.captured_code_examples[-1]
+        return None
+    
+    def clear_captured_calls(self):
+        """Clear all captured function calls"""
+        self.captured_code_examples = []
+    
+    def debug_captured_calls(self):
+        """Debug method to print all captured function calls"""
+        print(f"[GeminiService] 🔍 Total captured calls: {len(self.captured_code_examples)}")
+        for i, call in enumerate(self.captured_code_examples):
+            print(f"[GeminiService] 📋 Call {i+1}: {call['function_call']}")
+            print(f"[GeminiService] 📋 Model: {call['model_config']['model_name']}")
+            print(f"[GeminiService] 📋 Success: {call['success']}")
+        return self.captured_code_examples
     
     def _fallback_response(self, raw_text: str, start_time: float, error_type: str = "unknown") -> Dict[str, Any]:
         """Generate fallback response when Gemini fails"""
