@@ -662,6 +662,25 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       setConversationId(conversation.id)
       setShowConversationsModal(false)
       
+      // Load raw turns for the conversation component
+      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as any
+      
+      if (turnsResponse.turns && turnsResponse.turns.length > 0) {
+        const turns = turnsResponse.turns.map((turn: any) => ({
+          speaker: turn.speaker,
+          raw_text: turn.raw_text,
+          turn_index: turnsResponse.turns.indexOf(turn),  // Keep for compatibility
+          turn_sequence: turn.turn_sequence,  // Use actual sequence from backend
+          original_speaker_label: turn.speaker,
+          vt_tags: [],
+          has_noise: false,
+          has_foreign_text: false
+        }))
+        
+        setParsedTurns(turns)
+        addDetailedLog(`✅ Loaded ${turns.length} raw turns for conversation display`)
+      }
+      
       // Convert evaluation cleaned turns to UI format
       const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any) => ({
         turn_id: cleanedTurn.turn_id,
