@@ -261,20 +261,46 @@ class EvaluationManager:
             'context_update_start': 0,
             'context_update_end': 0,
             'response_preparation_start': 0,
-            'response_preparation_end': 0
+            'response_preparation_end': 0,
+            # NEW: Granular timing fields
+            'prompt_preparation_start': 0,
+            'prompt_preparation_end': 0,
+            'gemini_api_start': 0,
+            'gemini_api_end': 0,
+            'gemini_network_start': 0,
+            'gemini_network_end': 0,
+            'response_parsing_start': 0,
+            'response_parsing_end': 0,
+            'websocket_broadcast_start': 0,
+            'websocket_broadcast_end': 0,
+            # Database query breakdown
+            'db_queries': {
+                'evaluation_fetch': {'start': 0, 'end': 0},
+                'turn_fetch': {'start': 0, 'end': 0},
+                'context_fetch': {'start': 0, 'end': 0},
+                'save_operation': {'start': 0, 'end': 0}
+            }
         }
         
         start_time = time.time()
         
         # Step 1: Database queries
         timing['database_query_start'] = time.time()
+        
+        # Evaluation fetch
+        timing['db_queries']['evaluation_fetch']['start'] = time.time()
         evaluation = db.query(Evaluation).filter(Evaluation.id == evaluation_id).first()
+        timing['db_queries']['evaluation_fetch']['end'] = time.time()
         if not evaluation:
             raise ValueError(f"Evaluation {evaluation_id} not found")
         
+        # Turn fetch
+        timing['db_queries']['turn_fetch']['start'] = time.time()
         raw_turn = db.query(Turn).filter(Turn.id == turn_id).first()
+        timing['db_queries']['turn_fetch']['end'] = time.time()
         if not raw_turn:
             raise ValueError(f"Turn {turn_id} not found")
+        
         timing['database_query_end'] = time.time()
         
         # Step 2: Settings preparation
@@ -294,8 +320,13 @@ class EvaluationManager:
         
         # Step 3: Context retrieval
         timing['context_retrieval_start'] = time.time()
+        
+        # Context fetch from database
+        timing['db_queries']['context_fetch']['start'] = time.time()
         evaluation_state = self.get_evaluation_state(evaluation_id, sliding_window_size, db)
         cleaned_context = evaluation_state.get_cleaned_sliding_window()
+        timing['db_queries']['context_fetch']['end'] = time.time()
+        
         timing['context_retrieval_end'] = time.time()
         
         print(f"🔍 Context Window: {len(cleaned_context)} turns (window size: {sliding_window_size})")
@@ -331,8 +362,19 @@ class EvaluationManager:
             'context_retrieval_ms': round((timing['context_retrieval_end'] - timing['context_retrieval_start']) * 1000, 2),
             'processing_decision_ms': round((timing['processing_decision_end'] - timing['processing_decision_start']) * 1000, 2),
             'cleaning_processing_ms': round((timing['cleaning_end'] - timing['cleaning_start']) * 1000, 2),
-            'total_ms': round(total_time, 2)
+            'total_ms': round(total_time, 2),
+            # Add granular database timings
+            'db_queries_breakdown': {
+                'evaluation_fetch_ms': round((timing['db_queries']['evaluation_fetch']['end'] - timing['db_queries']['evaluation_fetch']['start']) * 1000, 2) if timing['db_queries']['evaluation_fetch']['end'] > 0 else 0,
+                'turn_fetch_ms': round((timing['db_queries']['turn_fetch']['end'] - timing['db_queries']['turn_fetch']['start']) * 1000, 2) if timing['db_queries']['turn_fetch']['end'] > 0 else 0,
+                'context_fetch_ms': round((timing['db_queries']['context_fetch']['end'] - timing['db_queries']['context_fetch']['start']) * 1000, 2) if timing['db_queries']['context_fetch']['end'] > 0 else 0
+            }
         }
+        
+        # Add PURE Gemini timing if available
+        if timing['gemini_network_end'] > 0 and timing['gemini_network_start'] > 0:
+            timing_breakdown['gemini_pure_api_ms'] = round((timing['gemini_network_end'] - timing['gemini_network_start']) * 1000, 2)
+            print(f"\n⚡ PURE Gemini API time: {timing_breakdown['gemini_pure_api_ms']}ms")
         
         # Add cleaning-specific timing from the result if available
         if 'timing_breakdown' in result and result['timing_breakdown']:
@@ -362,6 +404,10 @@ class EvaluationManager:
         # Update result with comprehensive timing
         result['timing_breakdown'] = timing_breakdown
         
+        # Also update the processing_time_ms to match total_ms for consistency
+        if 'metadata' in result:
+            result['metadata']['processing_time_ms'] = timing_breakdown['total_ms']
+        
         timing['response_preparation_end'] = time.time()
         
         total_time = (time.time() - start_time) * 1000
@@ -372,7 +418,22 @@ class EvaluationManager:
         self.performance_metrics['average_context_size'].append(context_size)
         self.performance_metrics['sliding_window_sizes'].append(sliding_window_size)
         
-        print(f"[EvaluationManager] ===== TURN COMPLETE in {total_time:.2f}ms =====\n")
+        # Log detailed timing breakdown
+        print(f"\n🔬 DETAILED TIMING BREAKDOWN:")
+        print(f"  └─ Total Request Time: {total_time:.2f}ms")
+        print(f"     ├─ Database Queries: {timing_breakdown['database_query_ms']:.2f}ms")
+        if timing_breakdown.get('db_queries_breakdown'):
+            for query_name, query_time in timing_breakdown['db_queries_breakdown'].items():
+                if query_time > 0:
+                    print(f"     │  └─ {query_name}: {query_time:.2f}ms")
+        print(f"     ├─ Settings Prep: {timing_breakdown['settings_preparation_ms']:.2f}ms")
+        print(f"     ├─ Context Retrieval: {timing_breakdown['context_retrieval_ms']:.2f}ms")
+        print(f"     ├─ Processing Decision: {timing_breakdown['processing_decision_ms']:.2f}ms")
+        print(f"     └─ Cleaning Processing: {timing_breakdown['cleaning_processing_ms']:.2f}ms")
+        if 'gemini_pure_api_ms' in timing_breakdown:
+            print(f"        └─ PURE Gemini API: {timing_breakdown['gemini_pure_api_ms']:.2f}ms ⚡")
+        
+        print(f"\n[EvaluationManager] ===== TURN COMPLETE in {total_time:.2f}ms =====\n")
         print(f"[EvaluationManager] Performance: Total processed: {self.performance_metrics['total_turns_processed']}")
         print(f"[EvaluationManager] Performance: Context size: {context_size} turns")
         
@@ -434,11 +495,15 @@ class EvaluationManager:
                                          evaluation_state: EvaluationState, db: Session, timing: Dict[str, float] = None) -> Dict[str, Any]:
         """Handle transcription errors by creating cleaned turn with skip metadata"""
         process_start = time.time()
+        error_timing = timing or {}
+        
         print(f"[EvaluationManager] 🚫 Processing transcription error with skip")
         
         # Skip cleaning - create cleaned turn with empty text and error metadata
         cleaned_text = ""  # Empty indicates skipped
-        processing_time_ms = 0
+        
+        # Track database save timing
+        error_timing['database_save_start'] = time.time()
         
         # Create cleaned turn record with error metadata
         cleaned_turn = CleanedTurn(
@@ -448,7 +513,7 @@ class EvaluationManager:
             confidence_score='LOW',
             cleaning_applied='true',  # We did apply "cleaning" by removing gibberish
             cleaning_level='skip',
-            processing_time_ms=processing_time_ms,
+            processing_time_ms=0,  # Will update with actual time
             corrections=[{
                 'original': raw_turn.raw_text,
                 'corrected': '',
@@ -457,13 +522,7 @@ class EvaluationManager:
             }],
             context_detected='transcription_error',
             ai_model_used=None,
-            timing_breakdown={
-                'context_retrieval_ms': 0,
-                'prompt_preparation_ms': 0,
-                'gemini_api_ms': 0,
-                'database_save_ms': 0,
-                'total_ms': 0
-            },
+            timing_breakdown={},  # Will update with actual timing
             gemini_prompt=None,
             gemini_response=None
         )
@@ -472,6 +531,11 @@ class EvaluationManager:
         db.add(cleaned_turn)
         db.commit()
         db.refresh(cleaned_turn)
+        
+        error_timing['database_save_end'] = time.time()
+        
+        # Track context update timing
+        error_timing['context_update_start'] = time.time()
         
         # Add to evaluation history (with empty cleaned text to not pollute context)
         context_data = {
@@ -482,18 +546,51 @@ class EvaluationManager:
             'confidence_score': 'LOW',
             'cleaning_applied': True,
             'cleaning_level': 'skip',
-            'processing_time_ms': processing_time_ms,
+            'processing_time_ms': 0,  # Will update
             'corrections': cleaned_turn.corrections,
             'context_detected': 'transcription_error',
             'ai_model_used': None
         }
         evaluation_state.add_to_history(context_data)
         
+        error_timing['context_update_end'] = time.time()
+        
         actual_processing_time = (time.time() - process_start) * 1000
+        
+        # Calculate detailed timing breakdown for error turns
+        error_timing_breakdown = {
+            # Infrastructure timing from main process_turn
+            'database_query_ms': self._safe_timing_diff('database_query_end', 'database_query_start', timing),
+            'settings_preparation_ms': self._safe_timing_diff('settings_preparation_end', 'settings_preparation_start', timing),
+            'context_retrieval_ms': self._safe_timing_diff('context_retrieval_end', 'context_retrieval_start', timing),
+            'processing_decision_ms': self._safe_timing_diff('processing_decision_end', 'processing_decision_start', timing),
+            
+            # Error-specific timing
+            'prompt_preparation_ms': 0,  # No prompt for errors
+            'gemini_api_ms': 0,  # No Gemini call for errors
+            'database_save_ms': self._safe_timing_diff('database_save_end', 'database_save_start', error_timing),
+            'context_update_ms': self._safe_timing_diff('context_update_end', 'context_update_start', error_timing),
+            
+            # Total cleaning processing time
+            'cleaning_processing_ms': round(
+                self._safe_timing_diff('database_save_end', 'database_save_start', error_timing) +
+                self._safe_timing_diff('context_update_end', 'context_update_start', error_timing),
+                2
+            ),
+            'total_ms': round(actual_processing_time, 2)
+        }
+        
+        # Update the cleaned turn with actual timing
+        cleaned_turn.processing_time_ms = actual_processing_time
+        cleaned_turn.timing_breakdown = error_timing_breakdown
+        db.commit()
+        
         self.performance_metrics['transcription_error_processing_times'].append(actual_processing_time)
         self.performance_metrics['total_transcription_errors'] += 1
         
         print(f"[EvaluationManager] ✅ Transcription error processed in {actual_processing_time:.2f}ms")
+        print(f"   - Database Save: {error_timing_breakdown['database_save_ms']:.2f}ms")
+        print(f"   - Context Update: {error_timing_breakdown['context_update_ms']:.2f}ms")
         print(f"[EvaluationManager] Raw text skipped: '{raw_turn.raw_text}'")
         print(f"[EvaluationManager] Cleaned text (empty): '{cleaned_text}'")
         
@@ -517,18 +614,22 @@ class EvaluationManager:
             'created_at': cleaned_turn.created_at.isoformat(),
             'gemini_prompt': cleaned_turn.gemini_prompt,
             'gemini_response': cleaned_turn.gemini_response,
-            'timing_breakdown': cleaned_turn.timing_breakdown
+            'timing_breakdown': error_timing_breakdown
         }
     
     async def _process_lumen_turn(self, evaluation: Evaluation, raw_turn: Turn, 
                                 evaluation_state: EvaluationState, db: Session, timing: Dict[str, float] = None) -> Dict[str, Any]:
         """Process Lumen turns with instant bypass"""
         process_start = time.time()
+        lumen_timing = timing or {}
+        
         print(f"[EvaluationManager] 🚀 Processing Lumen turn with instant bypass")
         
         # Lumen turns are perfect - no cleaning needed
         cleaned_text = raw_turn.raw_text
-        processing_time_ms = 0
+        
+        # Track database save timing
+        lumen_timing['database_save_start'] = time.time()
         
         # Create cleaned turn record
         cleaned_turn = CleanedTurn(
@@ -538,17 +639,11 @@ class EvaluationManager:
             confidence_score='HIGH',
             cleaning_applied='false',
             cleaning_level='none',
-            processing_time_ms=processing_time_ms,
+            processing_time_ms=0,  # Will update with actual time
             corrections=[],
             context_detected='ai_response',
             ai_model_used=None,
-            timing_breakdown={
-                'context_retrieval_ms': 0,
-                'prompt_preparation_ms': 0,
-                'gemini_api_ms': 0,
-                'database_save_ms': 0,
-                'total_ms': 0
-            },
+            timing_breakdown={},  # Will update with actual timing
             gemini_prompt=None,
             gemini_response=None
         )
@@ -556,6 +651,11 @@ class EvaluationManager:
         db.add(cleaned_turn)
         db.commit()
         db.refresh(cleaned_turn)
+        
+        lumen_timing['database_save_end'] = time.time()
+        
+        # Track context update timing
+        lumen_timing['context_update_start'] = time.time()
         
         # Add to evaluation history
         turn_data = {
@@ -566,7 +666,7 @@ class EvaluationManager:
             'confidence_score': 'HIGH',
             'cleaning_applied': 'false',
             'cleaning_level': 'none',
-            'processing_time_ms': processing_time_ms,
+            'processing_time_ms': 0,  # Will update
             'corrections': [],
             'context_detected': 'ai_response',
             'ai_model_used': None
@@ -578,11 +678,44 @@ class EvaluationManager:
         evaluation.turns_processed += 1
         db.commit()
         
+        lumen_timing['context_update_end'] = time.time()
+        
         actual_processing_time = (time.time() - process_start) * 1000
+        
+        # Calculate detailed timing breakdown for Lumen turns
+        lumen_timing_breakdown = {
+            # Infrastructure timing from main process_turn
+            'database_query_ms': self._safe_timing_diff('database_query_end', 'database_query_start', timing),
+            'settings_preparation_ms': self._safe_timing_diff('settings_preparation_end', 'settings_preparation_start', timing),
+            'context_retrieval_ms': self._safe_timing_diff('context_retrieval_end', 'context_retrieval_start', timing),
+            'processing_decision_ms': self._safe_timing_diff('processing_decision_end', 'processing_decision_start', timing),
+            
+            # Lumen-specific timing
+            'prompt_preparation_ms': 0,  # No prompt for Lumen
+            'gemini_api_ms': 0,  # No Gemini call for Lumen
+            'database_save_ms': self._safe_timing_diff('database_save_end', 'database_save_start', lumen_timing),
+            'context_update_ms': self._safe_timing_diff('context_update_end', 'context_update_start', lumen_timing),
+            
+            # Total cleaning processing time (just DB save + context update for Lumen)
+            'cleaning_processing_ms': round(
+                self._safe_timing_diff('database_save_end', 'database_save_start', lumen_timing) +
+                self._safe_timing_diff('context_update_end', 'context_update_start', lumen_timing),
+                2
+            ),
+            'total_ms': round(actual_processing_time, 2)
+        }
+        
+        # Update the cleaned turn with actual timing
+        cleaned_turn.processing_time_ms = actual_processing_time
+        cleaned_turn.timing_breakdown = lumen_timing_breakdown
+        db.commit()
+        
         self.performance_metrics['lumen_processing_times'].append(actual_processing_time)
         self.performance_metrics['total_lumen_turns'] += 1
         
         print(f"[EvaluationManager] ✅ Lumen turn processed in {actual_processing_time:.2f}ms")
+        print(f"   - Database Save: {lumen_timing_breakdown['database_save_ms']:.2f}ms")
+        print(f"   - Context Update: {lumen_timing_breakdown['context_update_ms']:.2f}ms")
         
         return {
             'cleaned_turn_id': str(cleaned_turn.id),
@@ -604,7 +737,7 @@ class EvaluationManager:
             'created_at': cleaned_turn.created_at.isoformat(),
             'gemini_prompt': cleaned_turn.gemini_prompt,
             'gemini_response': cleaned_turn.gemini_response,
-            'timing_breakdown': cleaned_turn.timing_breakdown
+            'timing_breakdown': lumen_timing_breakdown
         }
     
     def _safe_timing_diff(self, end_key: str, start_key: str, timing_dict: Dict[str, float], fallback_start: float = 0) -> float:
@@ -679,7 +812,14 @@ class EvaluationManager:
             # Fall back to raw template if variable substitution fails
             rendered_prompt = prompt_template
         
-        # Use Gemini service for cleaning (this includes prompt preparation + API call)
+        # Mark end of prompt preparation, start of PURE Gemini API call
+        user_timing['prompt_preparation_end'] = time.time()
+        
+        # PURE Gemini API timing starts here
+        user_timing['gemini_api_start'] = time.time()
+        user_timing['gemini_network_start'] = time.time()  # Network call starts
+        
+        # Use Gemini service for cleaning (ONLY the API call)
         cleaned_result = await self.gemini_service.clean_conversation_turn(
             raw_text=raw_turn.raw_text,
             speaker=raw_turn.speaker,
@@ -688,6 +828,13 @@ class EvaluationManager:
             model_params=model_params,
             rendered_prompt=rendered_prompt  # Use rendered template with variables
         )
+        
+        # PURE Gemini API timing ends here
+        user_timing['gemini_network_end'] = time.time()  # Network call ends
+        user_timing['gemini_api_end'] = time.time()
+        
+        # Response parsing starts
+        user_timing['response_parsing_start'] = time.time()
         
         # Capture the actual function call data
         captured_call = self.gemini_service.get_latest_captured_call()
@@ -709,23 +856,26 @@ class EvaluationManager:
                 'success': False
             }
         
-        user_timing['gemini_api_end'] = time.time()
+        # Response parsing ends
+        user_timing['response_parsing_end'] = time.time()
         
-        # Extract timing from the gemini service if it provides it
-        if 'gemini_api_start' in cleaned_result.get('timing', {}):
-            user_timing['gemini_api_start'] = cleaned_result['timing']['gemini_api_start']
-        else:
-            # Honest fallback: if we don't have separate timing, the whole call was essentially API time
-            user_timing['gemini_api_start'] = user_timing['prompt_preparation_start']
-        
-        gemini_time = (user_timing['gemini_api_end'] - user_timing['gemini_api_start']) * 1000
+        # Calculate PURE Gemini network time
+        gemini_pure_network_time = (user_timing['gemini_network_end'] - user_timing['gemini_network_start']) * 1000
+        gemini_total_time = (user_timing['gemini_api_end'] - user_timing['gemini_api_start']) * 1000
+        prompt_prep_time = (user_timing['prompt_preparation_end'] - user_timing['prompt_preparation_start']) * 1000
+        response_parsing_time = (user_timing['response_parsing_end'] - user_timing['response_parsing_start']) * 1000
         
         # Log the Gemini interaction for transparency
         prompt_preview = cleaned_result.get('prompt_used', '')[:100] + '...' if cleaned_result.get('prompt_used') else 'No prompt'
         response_preview = cleaned_result.get('raw_response', '')[:100] + '...' if cleaned_result.get('raw_response') else 'No response'
         print(f"📤 PROMPT SENT: {prompt_preview}")
         print(f"📥 GEMINI RESPONSE: {response_preview}")
-        print(f"⚡ Gemini API: {gemini_time:.2f}ms | Confidence: {cleaned_result['metadata'].get('confidence_score', 'UNKNOWN')}")
+        print(f"\n⚡ TIMING BREAKDOWN:")
+        print(f"   - Prompt Preparation: {prompt_prep_time:.2f}ms")
+        print(f"   - PURE Gemini Network: {gemini_pure_network_time:.2f}ms 🎯")
+        print(f"   - Response Parsing: {response_parsing_time:.2f}ms")
+        print(f"   - Total Gemini Call: {gemini_total_time:.2f}ms")
+        print(f"   - Confidence: {cleaned_result['metadata'].get('confidence_score', 'UNKNOWN')}")
         
         # Step: Database save timing
         user_timing['database_save_start'] = time.time()
@@ -746,8 +896,10 @@ class EvaluationManager:
             'processing_decision_ms': self._safe_timing_diff('processing_decision_end', 'processing_decision_start', timing),
             
             # User turn specific timing (cleaning processing details)  
-            'prompt_preparation_ms': self._safe_timing_diff('gemini_api_start', 'prompt_preparation_start', user_timing, process_start),
+            'prompt_preparation_ms': self._safe_timing_diff('prompt_preparation_end', 'prompt_preparation_start', user_timing, process_start),
             'gemini_api_ms': self._safe_timing_diff('gemini_api_end', 'gemini_api_start', user_timing),
+            'gemini_network_ms': self._safe_timing_diff('gemini_network_end', 'gemini_network_start', user_timing),  # PURE API time
+            'response_parsing_ms': self._safe_timing_diff('response_parsing_end', 'response_parsing_start', user_timing),
             'database_save_ms': 0,  # Will be updated after db save
             'context_update_ms': 0,  # Will be updated after context update
             
@@ -842,9 +994,13 @@ class EvaluationManager:
         self.performance_metrics['user_processing_times'].append(final_processing_time_ms)
         self.performance_metrics['total_user_turns'] += 1
         
-        print(f"✅ User turn processed in {final_processing_time_ms:.2f}ms")
+        print(f"\n✅ User turn processed in {final_processing_time_ms:.2f}ms")
         print(f"   🧠 Confidence: {cleaned_result['metadata']['confidence_score']} | Cleaning: {cleaned_result['metadata']['cleaning_applied']}")
-        print(f"   ⏱️ Gemini: {user_timing_breakdown['gemini_api_ms']}ms | DB: {user_timing_breakdown['database_save_ms']}ms")
+        print(f"   ⏱️ Breakdown:")
+        print(f"      - Prompt Prep: {user_timing_breakdown['prompt_preparation_ms']:.2f}ms")
+        print(f"      - PURE Gemini: {user_timing_breakdown['gemini_network_ms']:.2f}ms 🎯")
+        print(f"      - Response Parse: {user_timing_breakdown['response_parsing_ms']:.2f}ms")
+        print(f"      - DB Save: {user_timing_breakdown['database_save_ms']:.2f}ms")
         
         return {
             'cleaned_turn_id': str(cleaned_turn.id),
