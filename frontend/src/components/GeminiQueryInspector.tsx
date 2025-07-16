@@ -143,7 +143,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
               gemini_api_ms: 0,
               database_save_ms: 0,
               prompt_logging_ms: 0,
-              total_ms: turnData.metadata.processing_time_ms
+              total_ms: 0
             },
             confidence_score: turnData.metadata.confidence_score,
             cleaning_level: turnData.metadata.cleaning_level,
@@ -343,11 +343,13 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                           </span>
                         </h4>
                         {[
-                          { key: 'prompt_preparation_ms', label: 'Prompt Preparation', isGeminiApi: false },
-                          { key: 'gemini_api_ms', label: 'Gemini API', isGeminiApi: true },
-                          { key: 'database_save_ms', label: 'Database Save', isGeminiApi: false },
-                          { key: 'context_update_ms', label: 'Context Update', isGeminiApi: false }
-                        ].map(({ key, label, isGeminiApi }) => {
+                          { key: 'prompt_preparation_ms', label: 'Prompt Preparation', isGeminiApi: false, isPure: false },
+                          { key: 'gemini_api_ms', label: 'Gemini API (Total)', isGeminiApi: true, isPure: false },
+                          { key: 'gemini_network_ms', label: '└─ PURE Network Time', isGeminiApi: true, isPure: true },
+                          { key: 'response_parsing_ms', label: '└─ Response Parsing', isGeminiApi: false, isPure: false },
+                          { key: 'database_save_ms', label: 'Database Save', isGeminiApi: false, isPure: false },
+                          { key: 'context_update_ms', label: 'Context Update', isGeminiApi: false, isPure: false }
+                        ].map(({ key, label, isGeminiApi, isPure }) => {
                           const value = (details.gemini_details.timing_breakdown as any)[key] || 0;
                           const cleaningTotal = (details.gemini_details.timing_breakdown as any).cleaning_processing_ms || details.gemini_details.timing_breakdown.total_ms || 1;
                           const percentage = getTimingPercentage(value as number, cleaningTotal);
@@ -355,11 +357,15 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                           return (
                             <div key={key} className="relative">
                               <div className="flex justify-between items-center mb-1">
-                                <span className="text-sm text-gray-600 dark:text-gray-400">
-                                  {label} {isGeminiApi && '⭐'}
+                                <span className={`text-sm ${
+                                  isPure ? 'font-semibold text-green-600 dark:text-green-400' : 'text-gray-600 dark:text-gray-400'
+                                }`}>
+                                  {label} {isPure && '⚡'} {isGeminiApi && !isPure && '🌐'}
                                 </span>
                                 <span className={`text-sm font-medium ${
-                                  isGeminiApi 
+                                  isPure 
+                                    ? 'text-green-600 dark:text-green-400 font-bold'
+                                    : isGeminiApi 
                                     ? 'text-blue-600 dark:text-blue-400' 
                                     : 'text-gray-900 dark:text-white'
                                 }`}>
@@ -369,7 +375,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                               <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
                                 <div
                                   className={`h-2 rounded-full ${
-                                    isGeminiApi ? 'bg-blue-500' : 'bg-gray-500'
+                                    isPure ? 'bg-green-500' : isGeminiApi ? 'bg-blue-500' : 'bg-gray-500'
                                   }`}
                                   style={{ width: `${percentage}%` }}
                                 />
@@ -385,7 +391,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                             Total Processing Time
                           </span>
                           <span className="text-lg font-semibold text-gray-900 dark:text-white">
-                            {details.gemini_details.timing_breakdown.total_ms || details.gemini_details.processing_time_ms || 'N/A'}ms
+                            {details.gemini_details.timing_breakdown.total_ms || 'N/A'}ms
                           </span>
                         </div>
                       </div>

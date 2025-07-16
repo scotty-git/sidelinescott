@@ -662,7 +662,26 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       setConversationId(conversation.id)
       setShowConversationsModal(false)
       
-      // Convert evaluation cleaned turns to UI format
+      // Load raw turns for the conversation component
+      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as any
+      
+      if (turnsResponse.turns && turnsResponse.turns.length > 0) {
+        const turns = turnsResponse.turns.map((turn: any) => ({
+          speaker: turn.speaker,
+          raw_text: turn.raw_text,
+          turn_index: turnsResponse.turns.indexOf(turn),  // Keep for compatibility
+          turn_sequence: turn.turn_sequence,  // Use actual sequence from backend
+          original_speaker_label: turn.speaker,
+          vt_tags: [],
+          has_noise: false,
+          has_foreign_text: false
+        }))
+        
+        setParsedTurns(turns)
+        addDetailedLog(`✅ Loaded ${turns.length} raw turns for conversation display`)
+      }
+      
+      // Convert evaluation cleaned turns to UI format with complete data
       const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any) => ({
         turn_id: cleanedTurn.turn_id,
         conversation_id: conversation.id,
@@ -675,17 +694,64 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           confidence_score: cleanedTurn.confidence_score,
           cleaning_applied: cleanedTurn.cleaning_applied,
           cleaning_level: cleanedTurn.cleaning_level,
-          corrections: cleanedTurn.corrections,
+          timing_breakdown: cleanedTurn.timing_breakdown,
+          corrections: cleanedTurn.corrections || [],
           context_detected: cleanedTurn.context_detected,
           processing_time_ms: cleanedTurn.processing_time_ms,
-          ai_model_used: cleanedTurn.ai_model_used
+          ai_model_used: cleanedTurn.ai_model_used,
+          gemini_prompt: cleanedTurn.gemini_prompt,
+          gemini_response: cleanedTurn.gemini_response
         },
         created_at: cleanedTurn.created_at
       }))
       
+      // Reconstruct API logs from evaluation data
+      const reconstructedTurnAPIGroups: TurnAPIGroup[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any, index: number) => {
+        const turnIndex = index
+        const turnSequence = cleanedTurn.turn_sequence
+        const speaker = cleanedTurn.raw_speaker
+        const rawText = cleanedTurn.raw_text
+        
+        // Create mock API call objects based on the evaluation data
+        const frontendRequest: APICall = {
+          id: `${cleanedTurn.turn_id}-frontend`,
+          timestamp: cleanedTurn.created_at,
+          method: 'POST',
+          endpoint: `/api/v1/evaluations/${latestEvaluation.id}/process-turn`,
+          request_data: { turn_id: cleanedTurn.turn_id },
+          response_data: cleanedTurn,
+          status: 200,
+          latency_ms: cleanedTurn.processing_time_ms || 0
+        }
+        
+        const backendResponse: APICall = {
+          ...frontendRequest,
+          response_data: cleanedTurn
+        }
+        
+        return {
+          turnIndex,
+          turnSequence,
+          speaker,
+          rawText,
+          frontendRequest,
+          backendResponse,
+          geminiFunctionCall: cleanedTurn.gemini_prompt ? {
+            function_call: 'generateContent',
+            model_config: { model_name: cleanedTurn.ai_model_used || 'gemini-2.5-flash-lite-preview-06-17' },
+            prompt: cleanedTurn.gemini_prompt,
+            response: cleanedTurn.gemini_response,
+            timestamp: Date.now(),
+            success: true
+          } : undefined
+        }
+      })
+      
       setCleanedTurns(cleaned)
+      setTurnAPIGroups(reconstructedTurnAPIGroups)
       setSelectedTab('results')
       addDetailedLog(`✅ Loaded ${cleaned.length} cleaned turns from evaluation: ${latestEvaluation.name}`)
+      addDetailedLog(`✅ Reconstructed ${reconstructedTurnAPIGroups.length} API log entries for inspection`)
       
     } catch (error) {
       console.error('Failed to load latest evaluation:', error)
@@ -739,14 +805,61 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           corrections: cleanedTurn.corrections,
           context_detected: cleanedTurn.context_detected,
           processing_time_ms: cleanedTurn.processing_time_ms,
-          ai_model_used: cleanedTurn.ai_model_used
+          ai_model_used: cleanedTurn.ai_model_used,
+          timing_breakdown: cleanedTurn.timing_breakdown,
+          gemini_prompt: cleanedTurn.gemini_prompt,
+          gemini_response: cleanedTurn.gemini_response
         },
         created_at: cleanedTurn.created_at
       }))
       
+      // Reconstruct API logs from evaluation data
+      const reconstructedTurnAPIGroups: TurnAPIGroup[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any, index: number) => {
+        const turnIndex = index
+        const turnSequence = cleanedTurn.turn_sequence
+        const speaker = cleanedTurn.raw_speaker
+        const rawText = cleanedTurn.raw_text
+        
+        // Create mock API call objects based on the evaluation data
+        const frontendRequest: APICall = {
+          id: `${cleanedTurn.turn_id}-frontend`,
+          timestamp: cleanedTurn.created_at,
+          method: 'POST',
+          endpoint: `/api/v1/evaluations/${evaluation.id}/process-turn`,
+          request_data: { turn_id: cleanedTurn.turn_id },
+          response_data: cleanedTurn,
+          status: 200,
+          latency_ms: cleanedTurn.processing_time_ms || 0
+        }
+        
+        const backendResponse: APICall = {
+          ...frontendRequest,
+          response_data: cleanedTurn
+        }
+        
+        return {
+          turnIndex,
+          turnSequence,
+          speaker,
+          rawText,
+          frontendRequest,
+          backendResponse,
+          geminiFunctionCall: cleanedTurn.gemini_prompt ? {
+            function_call: 'generateContent',
+            model_config: { model_name: cleanedTurn.ai_model_used || 'gemini-2.5-flash-lite-preview-06-17' },
+            prompt: cleanedTurn.gemini_prompt,
+            response: cleanedTurn.gemini_response,
+            timestamp: Date.now(),
+            success: true
+          } : undefined
+        }
+      })
+      
       setCleanedTurns(cleaned)
+      setTurnAPIGroups(reconstructedTurnAPIGroups)
       setSelectedTab('results')
       addDetailedLog(`✅ Loaded ${cleaned.length} cleaned turns from evaluation: ${evaluation.name}`)
+      addDetailedLog(`✅ Reconstructed ${reconstructedTurnAPIGroups.length} API log entries for inspection`)
       
     } catch (error) {
       console.error('Failed to load specific evaluation:', error)

@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-from jose import JWTError, jwt
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from supabase import create_client, Client
@@ -20,34 +19,29 @@ class AuthManager:
         self.supabase_jwt_secret = settings.SUPABASE_JWT_SECRET
     
     def verify_supabase_token(self, token: str) -> Optional[Dict[str, Any]]:
-        """Verify Supabase JWT token."""
+        """Verify Supabase JWT token using Supabase API."""
         try:
-            # Supabase uses HS256 algorithm, but let's be explicit
-            payload = jwt.decode(
-                token, 
-                self.supabase_jwt_secret, 
-                algorithms=["HS256"],
-                options={"verify_aud": False}  # Disable audience verification for now
-            )
-            user_id = payload.get("sub")
-            if user_id is None:
+            # Use Supabase's official auth.get_user() method
+            # This validates against Supabase directly, works across all environments
+            response = supabase.auth.get_user(token)
+            
+            if response.user:
+                return {
+                    "sub": response.user.id,
+                    "email": response.user.email,
+                    "created_at": response.user.created_at.isoformat() if response.user.created_at else ""
+                }
+            else:
                 return None
-            return payload
-        except JWTError as e:
-            print(f"JWT decode error: {e}")
+        except Exception as e:
+            print(f"Supabase auth.get_user() error: {e}")
             return None
     
     def create_access_token(self, data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
-        """Create a new access token."""
-        to_encode = data.copy()
-        if expires_delta:
-            expire = datetime.utcnow() + expires_delta
-        else:
-            expire = datetime.utcnow() + timedelta(hours=settings.JWT_EXPIRATION_HOURS)
-        
-        to_encode.update({"exp": expire})
-        encoded_jwt = jwt.encode(to_encode, self.jwt_secret, algorithm=self.algorithm)
-        return encoded_jwt
+        """Create a new access token (deprecated - use Supabase tokens directly)."""
+        # This method is kept for backward compatibility but should not be used
+        # Supabase handles token creation through auth.sign_in_with_password()
+        raise NotImplementedError("Use Supabase auth.sign_in_with_password() for token creation")
     
     async def authenticate_with_supabase(self, email: str, password: str) -> Dict[str, Any]:
         """Authenticate user with Supabase Auth."""
