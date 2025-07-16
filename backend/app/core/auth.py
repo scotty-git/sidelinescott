@@ -62,7 +62,7 @@ class AuthManager:
                         "created_at": auth_response.user.created_at.isoformat() if auth_response.user.created_at else "",
                         "is_active": True  # Supabase users are active by default
                     },
-                    "expires_in": 3600
+                    "expires_in": 172800  # 48 hours in seconds
                 }
             else:
                 raise HTTPException(

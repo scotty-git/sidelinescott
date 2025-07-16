@@ -29,11 +29,11 @@ async def refresh_token(request: RefreshRequest):
         # Create new access token
         new_token = auth_manager.create_access_token(
             data={"sub": "user_id"},  # This would come from refresh token validation
-            expires_delta=timedelta(hours=1)
+            expires_delta=timedelta(hours=48)
         )
         return RefreshResponse(
             access_token=new_token,
-            expires_in=3600
+            expires_in=172800  # 48 hours in seconds
         )
     except Exception as e:
         raise HTTPException(

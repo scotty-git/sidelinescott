@@ -95,7 +95,7 @@ class AuthManager {
         password
       })
 
-      const { user, access_token } = response
+      const { user, access_token } = response as any
 
       // Store in localStorage
       localStorage.setItem('auth_token', access_token)
@@ -153,7 +153,7 @@ class AuthManager {
       const response = await apiClient.get('/api/v1/auth/me')
       
       // Update user info in case it changed
-      const user = response
+      const user = response as any
       this.setAuthState({
         user,
         token: this.authState.token,
