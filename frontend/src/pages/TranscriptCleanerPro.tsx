@@ -142,6 +142,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [isProcessing, setIsProcessing] = useState(false)
   const [currentTurnIndex, setCurrentTurnIndex] = useState(0)
   const [conversationId, setConversationId] = useState<string | null>(null)
+  const [currentConversation, setCurrentConversation] = useState<any>(null)
   const [currentEvaluationId, setCurrentEvaluationId] = useState<string | null>(null)
   const [selectedTab, setSelectedTab] = useState<'results' | 'api' | 'logs' | 'settings'>('results')
   const [darkMode, setDarkMode] = useState(false)
@@ -661,6 +662,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       
       // Set conversation context
       setConversationId(conversation.id)
+      setCurrentConversation(conversation)
       setShowConversationsModal(false)
       
       // Load raw turns for the conversation component
@@ -770,6 +772,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       
       // Set conversation context
       setConversationId(conversation.id)
+      setCurrentConversation(conversation)
       setShowEvaluationsModal(false)
       
       // Load raw turns for the conversation component
@@ -1202,7 +1205,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           maxWidth: '50%'
         }}>
           <div style={{ padding: '24px', borderBottom: `1px solid ${theme.border}` }}>
-            <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>Conversation</h2>
+            <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>
+              {currentConversation ? currentConversation.name : 'Conversation'}
+            </h2>
             <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>
               {conversationId && parsedTurns.length > 0 
                 ? `${parsedTurns.length} turns loaded • Ready for cleaning`
@@ -1488,8 +1493,27 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       padding: '12px', 
                       backgroundColor: theme.bgSecondary, 
                       borderRadius: '8px', 
-                      border: `1px solid ${theme.border}` 
+                      border: `1px solid ${theme.border}`,
+                      alignItems: 'center',
+                      justifyContent: 'space-between'
                     }}>
+                      {/* Evaluation ID */}
+                      {currentEvaluationId && (
+                        <div style={{
+                          fontSize: '12px',
+                          color: theme.textMuted,
+                          fontFamily: 'monospace',
+                          backgroundColor: theme.bgTertiary,
+                          padding: '4px 8px',
+                          borderRadius: '4px',
+                          border: `1px solid ${theme.border}`
+                        }}>
+                          ID: {currentEvaluationId.slice(0, 8)}...
+                        </div>
+                      )}
+                      
+                      {/* Controls */}
+                      <div style={{ display: 'flex', gap: '12px' }}>
                                             {cleanedTurns.length > 0 && !isProcessing && (
                         <button
                           onClick={async () => {
@@ -1508,7 +1532,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                               const url = URL.createObjectURL(blob)
                               const a = document.createElement('a')
                               a.href = url
-                              a.download = `evaluation-${exportData.evaluation.name.replace(/[^a-zA-Z0-9]/g, '_')}-${new Date().toISOString().split('T')[0]}.json`
+                              a.download = `${exportData.conversation.name.replace(/[^a-zA-Z0-9]/g, '_')}_${exportData.evaluation.id}.json`
                               document.body.appendChild(a)
                               a.click()
                               document.body.removeChild(a)
@@ -1564,6 +1588,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       >
                         {showOnlyCleaned ? '✓ ' : ''}Only Cleaned
                       </button>
+                      </div>
 
                       <div style={{ 
                         fontSize: '12px', 
@@ -3207,7 +3232,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                             const url = URL.createObjectURL(blob)
                             const a = document.createElement('a')
                             a.href = url
-                            a.download = `evaluation-${evaluation.name.replace(/[^a-zA-Z0-9]/g, '_')}-${new Date().toISOString().split('T')[0]}.json`
+                            a.download = `${exportData.conversation.name.replace(/[^a-zA-Z0-9]/g, '_')}_${exportData.evaluation.id}.json`
                             document.body.appendChild(a)
                             a.click()
                             document.body.removeChild(a)
