@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { apiClient } from '../lib/api'
+import { apiClient } from '../lib/api' // TypeScript refresh
 import { GeminiQueryInspector } from '../components/GeminiQueryInspector'
 import { VariableInput } from '../components/VariableInput'
 
@@ -22,6 +22,7 @@ interface CleanedTurn {
   cleaned_text: string
   turn_sequence?: number  // Actual sequence number from backend (1, 2, 3, ...)
   processing_state?: 'pending' | 'processing' | 'completed' | 'skipped'
+  evaluation_id?: string  // Added for export functionality
   metadata: {
     confidence_score: string
     cleaning_applied: boolean
@@ -141,6 +142,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [isProcessing, setIsProcessing] = useState(false)
   const [currentTurnIndex, setCurrentTurnIndex] = useState(0)
   const [conversationId, setConversationId] = useState<string | null>(null)
+  const [currentConversation, setCurrentConversation] = useState<any>(null)
   const [currentEvaluationId, setCurrentEvaluationId] = useState<string | null>(null)
   const [selectedTab, setSelectedTab] = useState<'results' | 'api' | 'logs' | 'settings'>('results')
   const [darkMode, setDarkMode] = useState(false)
@@ -508,7 +510,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     } finally {
       setIsProcessing(false)
       setCurrentTurnIndex(0)
-      setCurrentEvaluationId(null)
+      // Keep currentEvaluationId for export functionality even if cleaning failed
       addDetailedLog('🏁 Cleaning process completed')
     }
   }
@@ -527,7 +529,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       
       // Keep the processing state but update the UI
       setIsProcessing(false)
-      setCurrentEvaluationId(null)
+      // Keep currentEvaluationId for export functionality even after stopping
       
     } catch (error: any) {
       addDetailedLog(`❌ Failed to stop evaluation: ${error.message || error}`)
@@ -660,6 +662,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       
       // Set conversation context
       setConversationId(conversation.id)
+      setCurrentConversation(conversation)
       setShowConversationsModal(false)
       
       // Load raw turns for the conversation component
@@ -690,6 +693,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         cleaned_text: cleanedTurn.cleaned_text,
         turn_sequence: cleanedTurn.turn_sequence,  // Use actual sequence from backend
         processing_state: 'completed',
+        evaluation_id: latestEvaluation.id,  // Add evaluation ID for export
         metadata: {
           confidence_score: cleanedTurn.confidence_score,
           cleaning_applied: cleanedTurn.cleaning_applied,
@@ -768,6 +772,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       
       // Set conversation context
       setConversationId(conversation.id)
+      setCurrentConversation(conversation)
       setShowEvaluationsModal(false)
       
       // Load raw turns for the conversation component
@@ -798,6 +803,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         cleaned_text: cleanedTurn.cleaned_text,
         turn_sequence: cleanedTurn.turn_sequence,  // Use actual sequence from backend
         processing_state: 'completed',
+        evaluation_id: evaluation.id,  // Add evaluation ID for export
         metadata: {
           confidence_score: cleanedTurn.confidence_score,
           cleaning_applied: cleanedTurn.cleaning_applied,
@@ -1199,7 +1205,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           maxWidth: '50%'
         }}>
           <div style={{ padding: '24px', borderBottom: `1px solid ${theme.border}` }}>
-            <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>Conversation</h2>
+            <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>
+              {currentConversation ? currentConversation.name : 'Conversation'}
+            </h2>
             <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>
               {conversationId && parsedTurns.length > 0 
                 ? `${parsedTurns.length} turns loaded • Ready for cleaning`
@@ -1485,8 +1493,71 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       padding: '12px', 
                       backgroundColor: theme.bgSecondary, 
                       borderRadius: '8px', 
-                      border: `1px solid ${theme.border}` 
+                      border: `1px solid ${theme.border}`,
+                      alignItems: 'center',
+                      justifyContent: 'space-between'
                     }}>
+                      {/* Evaluation ID */}
+                      {currentEvaluationId && (
+                        <div style={{
+                          fontSize: '12px',
+                          color: theme.textMuted,
+                          fontFamily: 'monospace',
+                          backgroundColor: theme.bgTertiary,
+                          padding: '4px 8px',
+                          borderRadius: '4px',
+                          border: `1px solid ${theme.border}`
+                        }}>
+                          ID: {currentEvaluationId.slice(0, 8)}...
+                        </div>
+                      )}
+                      
+                      {/* Controls */}
+                      <div style={{ display: 'flex', gap: '12px' }}>
+                                            {cleanedTurns.length > 0 && !isProcessing && (
+                        <button
+                          onClick={async () => {
+                            // Find the current evaluation ID from the loaded data
+                            const evaluationId = currentEvaluationId || cleanedTurns[0]?.evaluation_id
+                            if (!evaluationId) {
+                              alert('No evaluation data available to export')
+                              return
+                            }
+                            
+                            try {
+                              const exportData = await apiClient.exportEvaluation(evaluationId)
+                              
+                              // Create and download the file
+                              const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+                              const url = URL.createObjectURL(blob)
+                              const a = document.createElement('a')
+                              a.href = url
+                              a.download = `${exportData.conversation.name.replace(/[^a-zA-Z0-9]/g, '_')}_${exportData.evaluation.id}.json`
+                              document.body.appendChild(a)
+                              a.click()
+                              document.body.removeChild(a)
+                              URL.revokeObjectURL(url)
+                              
+                              addDetailedLog(`📥 Exported evaluation: ${exportData.evaluation.name}`)
+                            } catch (error) {
+                              console.error('Failed to export evaluation:', error)
+                              alert('Failed to export evaluation')
+                            }
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            border: 'none',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            fontWeight: '500',
+                            backgroundColor: '#f59e0b',
+                            color: 'white',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          📥 Export
+                        </button>
+                      )}
                       <button
                         onClick={() => setHideLumenTurns(!hideLumenTurns)}
                         style={{
@@ -1517,6 +1588,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       >
                         {showOnlyCleaned ? '✓ ' : ''}Only Cleaned
                       </button>
+                      </div>
+
                       <div style={{ 
                         fontSize: '12px', 
                         color: theme.textMuted, 
@@ -3148,6 +3221,41 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                         }}
                       >
                         📊 Load
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const exportData = await apiClient.exportEvaluation(evaluation.id)
+                            
+                            // Create and download the file
+                            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+                            const url = URL.createObjectURL(blob)
+                            const a = document.createElement('a')
+                            a.href = url
+                            a.download = `${exportData.conversation.name.replace(/[^a-zA-Z0-9]/g, '_')}_${exportData.evaluation.id}.json`
+                            document.body.appendChild(a)
+                            a.click()
+                            document.body.removeChild(a)
+                            URL.revokeObjectURL(url)
+                            
+                            addDetailedLog(`📥 Exported evaluation: ${evaluation.name}`)
+                          } catch (error) {
+                            console.error('Failed to export evaluation:', error)
+                            alert('Failed to export evaluation')
+                          }
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          backgroundColor: '#f59e0b',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          fontWeight: '500',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        📥 Export
                       </button>
                       <button
                         onClick={async () => {

@@ -7,6 +7,7 @@ on the same conversation with different prompts and settings.
 
 import logging
 import time
+from datetime import datetime
 from typing import List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -582,3 +583,128 @@ async def delete_evaluation(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete evaluation: {str(e)}"
         )
+
+@router.get("/{evaluation_id}/export")
+async def export_evaluation(
+    evaluation_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Export evaluation data as JSON including all turns and metadata"""
+    print(f"[EvaluationsAPI] Exporting evaluation {evaluation_id}")
+    
+    try:
+        evaluation_uuid = UUID(evaluation_id)
+        user_uuid = UUID(current_user["id"])
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid UUID format"
+        )
+    
+    # Get evaluation with prompt template info
+    evaluation = db.query(Evaluation).filter(
+        Evaluation.id == evaluation_uuid,
+        Evaluation.user_id == user_uuid
+    ).first()
+    
+    if not evaluation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Evaluation not found or access denied"
+        )
+    
+    # Get conversation info
+    conversation = db.query(Conversation).filter(
+        Conversation.id == evaluation.conversation_id
+    ).first()
+    
+    # Get cleaned turns with raw turn data ordered by original turn sequence
+    cleaned_turns = db.query(CleanedTurn).join(Turn).filter(
+        CleanedTurn.evaluation_id == evaluation_uuid
+    ).order_by(Turn.turn_sequence.asc()).all()
+    
+    # Calculate summary statistics
+    total_turns = len(cleaned_turns)
+    turns_cleaned = sum(1 for ct in cleaned_turns if ct.cleaning_applied == "true")
+    turns_skipped = total_turns - turns_cleaned
+    processing_times = [ct.processing_time_ms for ct in cleaned_turns if ct.processing_time_ms]
+    avg_processing_time = sum(processing_times) / len(processing_times) if processing_times else 0
+    total_processing_time = sum(processing_times)
+    
+    # Build turns data
+    turns_data = []
+    for ct in cleaned_turns:
+        turn_data = {
+            "turn_id": str(ct.turn_id),
+            "sequence": ct.turn.turn_sequence,
+            "speaker": ct.turn.speaker,
+            "raw_text": ct.turn.raw_text,
+            "cleaned_data": {
+                "cleaned_text": ct.cleaned_text,
+                "cleaning_applied": ct.cleaning_applied,
+                "ai_model_used": ct.ai_model_used,
+                "timing_breakdown": ct.timing_breakdown or {},
+                "gemini_details": {
+                    "prompt_sent": ct.gemini_prompt,
+                    "response_received": ct.gemini_response
+                } if ct.gemini_prompt or ct.gemini_response else None
+            }
+        }
+        turns_data.append(turn_data)
+    
+    # Build prompt template info
+    prompt_template_data = None
+    if evaluation.prompt_template_ref:
+        pt = evaluation.prompt_template_ref
+        prompt_template_data = {
+            "id": str(pt.id),
+            "name": pt.name,
+            "template": pt.template
+        }
+    elif evaluation.prompt_template:
+        # Fallback to inline template
+        prompt_template_data = {
+            "id": None,
+            "name": "Inline Template",
+            "template": evaluation.prompt_template
+        }
+    
+    # Build export data
+    export_data = {
+        "export_metadata": {
+            "exported_at": datetime.utcnow().isoformat() + "Z",
+            "export_type": "evaluation_full"
+        },
+        "evaluation": {
+            "id": str(evaluation.id),
+            "name": evaluation.name,
+            "description": evaluation.description,
+            "turns_processed": evaluation.turns_processed,
+            "created_at": evaluation.created_at.isoformat(),
+            "updated_at": evaluation.updated_at.isoformat(),
+            "settings": {k: v for k, v in (evaluation.settings or {}).items() if k != "user_variables"},
+            "prompt_template": prompt_template_data
+        },
+        "conversation": {
+            "id": str(conversation.id),
+            "name": conversation.name,
+            "description": conversation.description,
+            "call_context": conversation.call_context,
+            "additional_context": conversation.additional_context,
+            "metadata": conversation.conversation_metadata or {}
+        } if conversation else None,
+        "turns": turns_data,
+        "summary": {
+            "total_turns": total_turns,
+            "turns_cleaned": turns_cleaned,
+            "turns_skipped": turns_skipped,
+            "average_processing_time_ms": round(avg_processing_time, 2),
+            "total_processing_time_ms": round(total_processing_time, 2)
+        }
+    }
+    
+    print(f"[EvaluationsAPI] ✅ Export generated for evaluation {evaluation_id}")
+    print(f"[EvaluationsAPI] Export contains {total_turns} turns")
+    
+    return export_data

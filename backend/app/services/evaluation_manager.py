@@ -521,7 +521,7 @@ class EvaluationManager:
                 'reason': 'Detected as transcription error - likely foreign characters or gibberish'
             }],
             context_detected='transcription_error',
-            ai_model_used=None,
+            ai_model_used="bypass",
             timing_breakdown={},  # Will update with actual timing
             gemini_prompt=None,
             gemini_response=None
@@ -642,7 +642,7 @@ class EvaluationManager:
             processing_time_ms=0,  # Will update with actual time
             corrections=[],
             context_detected='ai_response',
-            ai_model_used=None,
+            ai_model_used="bypass",
             timing_breakdown={},  # Will update with actual timing
             gemini_prompt=None,
             gemini_response=None

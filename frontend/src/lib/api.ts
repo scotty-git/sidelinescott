@@ -169,6 +169,11 @@ export class APIClient {
     })
   }
 
+  async exportEvaluation(evaluationId: string): Promise<any> {
+    // Export evaluation data as JSON - refresh for TypeScript
+    return this.request(`/api/v1/evaluations/${evaluationId}/export`)
+  }
+
   // Legacy conversation endpoints (for raw turns)
   async parseTranscript(conversationId: string, rawTranscript: string) {
     return this.request(`/api/v1/conversations/${conversationId}/parse-transcript`, {

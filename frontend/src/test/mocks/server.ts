@@ -28,7 +28,7 @@ export const handlers = [
         email: body.email,
         created_at: new Date().toISOString()
       },
-      expires_in: 3600
+      expires_in: 172800  // 48 hours in seconds
     })
   }),
 

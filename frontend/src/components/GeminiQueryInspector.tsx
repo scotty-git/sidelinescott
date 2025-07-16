@@ -258,7 +258,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                     {copiedSection === 'prompt' ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
-                <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm">
+                <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-y-auto text-sm whitespace-pre-wrap break-words max-h-[400px]">
                   {details.gemini_details.prompt_sent || 'No prompt data available - this may be a Lumen turn or mock data'}
                 </pre>
               </div>
@@ -281,7 +281,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                     {copiedSection === 'response' ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
-                <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm">
+                <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-y-auto text-sm whitespace-pre-wrap break-words max-h-[400px]">
                   {details.gemini_details.response_received ? 
                     formatJSON(details.gemini_details.response_received) : 
                     'No response data available - this may be a Lumen turn or mock data'
