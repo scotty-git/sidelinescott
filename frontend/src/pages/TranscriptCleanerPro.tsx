@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { apiClient } from '../lib/api'
+import { apiClient } from '../lib/api' // TypeScript refresh
 import { GeminiQueryInspector } from '../components/GeminiQueryInspector'
 import { VariableInput } from '../components/VariableInput'
 
@@ -22,6 +22,7 @@ interface CleanedTurn {
   cleaned_text: string
   turn_sequence?: number  // Actual sequence number from backend (1, 2, 3, ...)
   processing_state?: 'pending' | 'processing' | 'completed' | 'skipped'
+  evaluation_id?: string  // Added for export functionality
   metadata: {
     confidence_score: string
     cleaning_applied: boolean
@@ -508,7 +509,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     } finally {
       setIsProcessing(false)
       setCurrentTurnIndex(0)
-      setCurrentEvaluationId(null)
+      // Keep currentEvaluationId for export functionality even if cleaning failed
       addDetailedLog('🏁 Cleaning process completed')
     }
   }
@@ -527,7 +528,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       
       // Keep the processing state but update the UI
       setIsProcessing(false)
-      setCurrentEvaluationId(null)
+      // Keep currentEvaluationId for export functionality even after stopping
       
     } catch (error: any) {
       addDetailedLog(`❌ Failed to stop evaluation: ${error.message || error}`)
@@ -690,6 +691,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         cleaned_text: cleanedTurn.cleaned_text,
         turn_sequence: cleanedTurn.turn_sequence,  // Use actual sequence from backend
         processing_state: 'completed',
+        evaluation_id: latestEvaluation.id,  // Add evaluation ID for export
         metadata: {
           confidence_score: cleanedTurn.confidence_score,
           cleaning_applied: cleanedTurn.cleaning_applied,
@@ -798,6 +800,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         cleaned_text: cleanedTurn.cleaned_text,
         turn_sequence: cleanedTurn.turn_sequence,  // Use actual sequence from backend
         processing_state: 'completed',
+        evaluation_id: evaluation.id,  // Add evaluation ID for export
         metadata: {
           confidence_score: cleanedTurn.confidence_score,
           cleaning_applied: cleanedTurn.cleaning_applied,
@@ -1487,6 +1490,50 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       borderRadius: '8px', 
                       border: `1px solid ${theme.border}` 
                     }}>
+                                            {cleanedTurns.length > 0 && !isProcessing && (
+                        <button
+                          onClick={async () => {
+                            // Find the current evaluation ID from the loaded data
+                            const evaluationId = currentEvaluationId || cleanedTurns[0]?.evaluation_id
+                            if (!evaluationId) {
+                              alert('No evaluation data available to export')
+                              return
+                            }
+                            
+                            try {
+                              const exportData = await apiClient.exportEvaluation(evaluationId)
+                              
+                              // Create and download the file
+                              const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+                              const url = URL.createObjectURL(blob)
+                              const a = document.createElement('a')
+                              a.href = url
+                              a.download = `evaluation-${exportData.evaluation.name.replace(/[^a-zA-Z0-9]/g, '_')}-${new Date().toISOString().split('T')[0]}.json`
+                              document.body.appendChild(a)
+                              a.click()
+                              document.body.removeChild(a)
+                              URL.revokeObjectURL(url)
+                              
+                              addDetailedLog(`📥 Exported evaluation: ${exportData.evaluation.name}`)
+                            } catch (error) {
+                              console.error('Failed to export evaluation:', error)
+                              alert('Failed to export evaluation')
+                            }
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            border: 'none',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            fontWeight: '500',
+                            backgroundColor: '#f59e0b',
+                            color: 'white',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          📥 Export
+                        </button>
+                      )}
                       <button
                         onClick={() => setHideLumenTurns(!hideLumenTurns)}
                         style={{
@@ -1517,6 +1564,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       >
                         {showOnlyCleaned ? '✓ ' : ''}Only Cleaned
                       </button>
+
                       <div style={{ 
                         fontSize: '12px', 
                         color: theme.textMuted, 
@@ -3148,6 +3196,41 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                         }}
                       >
                         📊 Load
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const exportData = await apiClient.exportEvaluation(evaluation.id)
+                            
+                            // Create and download the file
+                            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+                            const url = URL.createObjectURL(blob)
+                            const a = document.createElement('a')
+                            a.href = url
+                            a.download = `evaluation-${evaluation.name.replace(/[^a-zA-Z0-9]/g, '_')}-${new Date().toISOString().split('T')[0]}.json`
+                            document.body.appendChild(a)
+                            a.click()
+                            document.body.removeChild(a)
+                            URL.revokeObjectURL(url)
+                            
+                            addDetailedLog(`📥 Exported evaluation: ${evaluation.name}`)
+                          } catch (error) {
+                            console.error('Failed to export evaluation:', error)
+                            alert('Failed to export evaluation')
+                          }
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          backgroundColor: '#f59e0b',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          fontWeight: '500',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        📥 Export
                       </button>
                       <button
                         onClick={async () => {
