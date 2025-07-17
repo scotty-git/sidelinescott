@@ -39,21 +39,9 @@ interface RenderedPrompt {
   created_at: number
 }
 
-interface TurnAnalysis {
-  turn_id: string
-  conversation_id: string
-  speaker: string
-  raw_text: string
-  cleaned_text: string
-  template_used: PromptTemplate
-  rendered_prompt: RenderedPrompt
-  processing_time_ms: number
-  confidence_score: string
-  corrections: any[]
-}
 
 function PromptEngineeringDashboardInner() {
-  const [activeTab, setActiveTab] = useState<'inspector' | 'master' | 'ab-test' | 'analytics'>('master')
+  const [activeTab, setActiveTab] = useState<'cleaner' | 'function'>('cleaner')
   const [templates, setTemplates] = useState<PromptTemplate[]>([])
   const [activeTemplate, setActiveTemplate] = useState<PromptTemplate | null>(null)
   const [loading, setLoading] = useState(false)
@@ -72,9 +60,9 @@ function PromptEngineeringDashboardInner() {
   })
   const [renderedPreview, setRenderedPreview] = useState<RenderedPrompt | null>(null)
 
-  // Turn Inspector State
-  const [selectedTurnId, setSelectedTurnId] = useState('')
-  const [turnAnalysis, setTurnAnalysis] = useState<TurnAnalysis | null>(null)
+  // Turn Inspector State (unused - keeping for future functionality)
+  // const [selectedTurnId, setSelectedTurnId] = useState('')
+  // const [turnAnalysis, setTurnAnalysis] = useState<TurnAnalysis | null>(null)
 
   // New dual testing mode state
   const [dataSource, setDataSource] = useState<'test' | 'real' | 'saved'>('test')
@@ -109,6 +97,22 @@ function PromptEngineeringDashboardInner() {
 
   // Toast notifications
   const templateToasts = useTemplateToasts()
+  
+  // Tooltip state
+  const [hoveredVariable, setHoveredVariable] = useState<string | null>(null)
+  
+  // Monaco editor ref for drag and drop
+  const [monacoEditor, setMonacoEditor] = useState<any>(null)
+  
+  // Function prompt state
+  const [functionPromptName, setFunctionPromptName] = useState('')
+  const [functionPromptDescription, setFunctionPromptDescription] = useState('')
+  const [functionPromptContent, setFunctionPromptContent] = useState('')
+  
+  // Function prompt validation state
+  const [functionValidationErrors, setFunctionValidationErrors] = useState<ValidationError[]>([])
+  const [functionValidationWarnings, setFunctionValidationWarnings] = useState<ValidationWarning[]>([])
+  const [functionValidationTimeoutId, setFunctionValidationTimeoutId] = useState<NodeJS.Timeout | null>(null)
 
   const theme = {
     bg: darkMode ? '#1f2937' : '#ffffff',
@@ -158,8 +162,11 @@ function PromptEngineeringDashboardInner() {
       if (validationTimeoutId) {
         clearTimeout(validationTimeoutId)
       }
+      if (functionValidationTimeoutId) {
+        clearTimeout(functionValidationTimeoutId)
+      }
     }
-  }, [validationTimeoutId])
+  }, [validationTimeoutId, functionValidationTimeoutId])
 
   const loadTemplates = async () => {
     try {
@@ -238,6 +245,49 @@ function PromptEngineeringDashboardInner() {
     setValidationTimeoutId(timeoutId)
   }
 
+  // Function prompt validation functions  
+  const debouncedFunctionValidation = (name: string, content: string, description: string) => {
+    if (functionValidationTimeoutId) {
+      clearTimeout(functionValidationTimeoutId)
+    }
+    
+    const timeoutId = setTimeout(() => {
+      // Simple validation for function prompt (using proper ValidationError/ValidationWarning types)
+      const errors: ValidationError[] = []
+      const warnings: ValidationWarning[] = []
+      
+      if (!name.trim()) {
+        errors.push({ field: 'name', type: 'required', message: 'Function prompt name is required' })
+      }
+      
+      if (!content.trim()) {
+        errors.push({ field: 'template', type: 'required', message: 'Function prompt content cannot be empty' })
+      }
+      
+      if (!description.trim()) {
+        errors.push({ field: 'description', type: 'required', message: 'Function prompt description is required' })
+      }
+      
+      const requiredVars = ['cleaned_conversation', 'call_context', 'available_functions', 'previous_function_calls']
+      const missingRequired = requiredVars.filter(varName => 
+        !content.includes(`{${varName}}`)
+      )
+      
+      if (missingRequired.length > 0) {
+        warnings.push({ 
+          field: 'variables',
+          type: 'unused_variable', 
+          message: `Consider including required variables: ${missingRequired.join(', ')}` 
+        })
+      }
+      
+      setFunctionValidationErrors(errors)
+      setFunctionValidationWarnings(warnings)
+    }, 300)
+    
+    setFunctionValidationTimeoutId(timeoutId)
+  }
+
   // Helper function to extract variables from template
   const extractVariablesFromTemplate = (template: string): string[] => {
     const variableRegex = /{(\w+)}/g
@@ -289,6 +339,22 @@ function PromptEngineeringDashboardInner() {
     
     // Run debounced validation for real-time feedback
     debouncedValidation(templateName, editingTemplate, description)
+  }
+
+  // Function prompt change handlers
+  const handleFunctionPromptNameChange = (name: string) => {
+    setFunctionPromptName(name)
+    debouncedFunctionValidation(name, functionPromptContent, functionPromptDescription)
+  }
+
+  const handleFunctionPromptContentChange = (content: string) => {
+    setFunctionPromptContent(content)
+    debouncedFunctionValidation(functionPromptName, content, functionPromptDescription)
+  }
+
+  const handleFunctionPromptDescriptionChange = (description: string) => {
+    setFunctionPromptDescription(description)
+    debouncedFunctionValidation(functionPromptName, functionPromptContent, description)
   }
 
   const renderPreview = async () => {
@@ -433,7 +499,7 @@ function PromptEngineeringDashboardInner() {
     setEditingTemplate(template.template)
     setTemplateName(template.name)
     setTemplateDescription(template.description || '')
-    setActiveTab('master')
+    setActiveTab('cleaner')
     setShowTemplateLibrary(false)
   }
 
@@ -501,19 +567,6 @@ function PromptEngineeringDashboardInner() {
     }
   }
 
-  const analyzeTurn = async () => {
-    if (!selectedTurnId) return
-
-    try {
-      setLoading(true)
-      const response = await apiClient.get(`/api/v1/prompt-engineering/turns/${selectedTurnId}/prompt-analysis`) as TurnAnalysis
-      setTurnAnalysis(response)
-    } catch (err) {
-      setError(`Failed to analyze turn: ${err}`)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const loadConversations = async () => {
     try {
@@ -689,10 +742,8 @@ function PromptEngineeringDashboardInner() {
       }}>
         <div style={{ display: 'flex', gap: '0' }}>
           {[
-            { id: 'master', label: '⚙️ Master Editor', desc: 'Edit core prompt template' },
-            { id: 'inspector', label: '🔍 Turn Inspector', desc: 'Analyze individual prompts' },
-            { id: 'ab-test', label: '🧪 A/B Testing', desc: 'Compare prompt performance' },
-            { id: 'analytics', label: '📊 Analytics', desc: 'Performance insights' }
+            { id: 'cleaner', label: '🧹 Cleaner Prompt', desc: 'Edit conversation cleaning prompts' },
+            { id: 'function', label: '⚡ Function Prompt', desc: 'Edit function calling prompts' }
           ].map(tab => (
             <button
               key={tab.id}
@@ -750,8 +801,8 @@ function PromptEngineeringDashboardInner() {
         width: '100%'
       }}>
         
-        {/* Master Editor Tab */}
-        {activeTab === 'master' && (
+        {/* Cleaner Prompt Tab */}
+        {activeTab === 'cleaner' && (
           <div style={{ 
             display: 'grid', 
             gridTemplateColumns: '1fr 1fr', 
@@ -1485,172 +1536,375 @@ function PromptEngineeringDashboardInner() {
           </div>
         )}
 
-        {/* Turn Inspector Tab */}
-        {activeTab === 'inspector' && (
-          <div style={{ maxWidth: '800px' }}>
+        {/* Function Prompt Tab */}
+        {activeTab === 'function' && (
+          <div style={{ 
+            display: 'grid', 
+            gridTemplateColumns: '1fr 1fr', 
+            gap: '16px', 
+            height: '100%',
+            overflow: 'hidden'
+          }}>
+            {/* Left Panel - Function Prompt Editor */}
             <div style={{ 
               backgroundColor: theme.bgSecondary,
               borderRadius: '8px',
               border: `1px solid ${theme.border}`,
-              padding: '24px'
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden'
             }}>
-              <h3 style={{ margin: '0 0 20px 0' }}>🔍 Turn Inspector</h3>
-              
-              <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'block', fontSize: '14px', marginBottom: '8px' }}>
-                  Turn ID to Analyze
-                </label>
-                <div style={{ display: 'flex', gap: '12px' }}>
-                  <input
-                    type="text"
-                    value={selectedTurnId}
-                    onChange={(e) => setSelectedTurnId(e.target.value)}
-                    placeholder="Enter turn UUID..."
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      backgroundColor: theme.bg,
-                      border: `1px solid ${theme.border}`,
-                      borderRadius: '6px',
-                      color: theme.text,
-                      fontSize: '14px'
-                    }}
-                  />
+              <div style={{ 
+                padding: '16px',
+                borderBottom: `1px solid ${theme.border}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between'
+              }}>
+                <h3 style={{ margin: 0 }}>
+                  Function Calling Prompt Editor
+                </h3>
+                <div style={{ display: 'flex', gap: '8px' }}>
                   <button
-                    onClick={analyzeTurn}
-                    disabled={!selectedTurnId || loading}
+                    onClick={() => {}}
                     style={{
-                      padding: '12px 20px',
+                      padding: '6px 12px',
+                      backgroundColor: theme.bgTertiary,
+                      color: theme.text,
+                      border: `1px solid ${theme.border}`,
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '12px'
+                    }}
+                  >
+                    ✨ New
+                  </button>
+                  <button
+                    onClick={() => {}}
+                    style={{
+                      padding: '6px 12px',
                       backgroundColor: theme.accent,
                       color: 'white',
                       border: 'none',
-                      borderRadius: '6px',
-                      cursor: selectedTurnId && !loading ? 'pointer' : 'not-allowed',
-                      fontSize: '14px',
-                      opacity: selectedTurnId && !loading ? 1 : 0.6
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '12px'
                     }}
                   >
-                    {loading ? 'Analyzing...' : 'Analyze'}
+                    🔄 Test
+                  </button>
+                  <button
+                    onClick={() => {}}
+                    style={{
+                      padding: '6px 12px',
+                      backgroundColor: theme.success,
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '12px'
+                    }}
+                  >
+                    💾 Save
                   </button>
                 </div>
               </div>
 
-              {turnAnalysis && (
-                <div style={{ 
-                  backgroundColor: theme.bg,
-                  border: `1px solid ${theme.border}`,
-                  borderRadius: '6px',
-                  padding: '20px'
-                }}>
-                  <h4 style={{ margin: '0 0 16px 0' }}>Turn Analysis Results</h4>
-                  
-                  <div style={{ marginBottom: '16px', fontSize: '14px' }}>
-                    <strong>Speaker:</strong> {turnAnalysis.speaker} | 
-                    <strong> Processing Time:</strong> {turnAnalysis.processing_time_ms}ms | 
-                    <strong> Confidence:</strong> {turnAnalysis.confidence_score}
+              {/* Scrollable Form Content */}
+              <div style={{ 
+                flex: 1,
+                overflow: 'auto',
+                display: 'flex',
+                flexDirection: 'column'
+              }}>
+                {/* Function Prompt Metadata */}
+                <div style={{ padding: '16px', borderBottom: `1px solid ${theme.border}`, flexShrink: 0 }}>
+                  <div style={{ marginBottom: '12px' }}>
+                    <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
+                      Function Prompt Name
+                    </label>
+                    <input
+                      type="text"
+                      value={functionPromptName}
+                      onChange={(e) => handleFunctionPromptNameChange(e.target.value)}
+                      placeholder="Enter function prompt name..."
+                      style={{
+                        width: '100%',
+                        padding: '8px',
+                        backgroundColor: theme.bg,
+                        border: `1px solid ${theme.border}`,
+                        borderRadius: '4px',
+                        color: theme.text,
+                        fontSize: '14px'
+                      }}
+                    />
                   </div>
-
-                  <div style={{ marginBottom: '16px' }}>
-                    <strong>Raw Text:</strong>
-                    <div style={{ 
-                      backgroundColor: theme.bgTertiary,
-                      padding: '12px',
-                      borderRadius: '4px',
-                      marginTop: '4px',
-                      fontFamily: 'monospace',
-                      fontSize: '12px'
-                    }}>
-                      {turnAnalysis.raw_text}
-                    </div>
-                  </div>
-
-                  <div style={{ marginBottom: '16px' }}>
-                    <strong>Cleaned Text:</strong>
-                    <div style={{ 
-                      backgroundColor: theme.bgTertiary,
-                      padding: '12px',
-                      borderRadius: '4px',
-                      marginTop: '4px',
-                      fontFamily: 'monospace',
-                      fontSize: '12px'
-                    }}>
-                      {turnAnalysis.cleaned_text}
-                    </div>
-                  </div>
-
                   <div>
-                    <strong>Full Prompt Used:</strong>
-                    <div style={{ 
-                      backgroundColor: theme.bgTertiary,
-                      padding: '12px',
-                      borderRadius: '4px',
-                      marginTop: '4px',
-                      fontFamily: 'monospace',
-                      fontSize: '11px',
-                      whiteSpace: 'pre-wrap',
-                      maxHeight: '300px',
-                      overflowY: 'auto'
-                    }}>
-                      {turnAnalysis.rendered_prompt.rendered_prompt}
-                    </div>
+                    <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
+                      Description
+                    </label>
+                    <input
+                      type="text"
+                      value={functionPromptDescription}
+                      onChange={(e) => handleFunctionPromptDescriptionChange(e.target.value)}
+                      placeholder="Describe the function calling behavior..."
+                      style={{
+                        width: '100%',
+                        padding: '8px',
+                        backgroundColor: theme.bg,
+                        border: `1px solid ${theme.border}`,
+                        borderRadius: '4px',
+                        color: theme.text,
+                        fontSize: '14px'
+                      }}
+                    />
                   </div>
                 </div>
-              )}
-            </div>
-          </div>
-        )}
 
-        {/* A/B Testing Tab */}
-        {activeTab === 'ab-test' && (
-          <div style={{ 
-            backgroundColor: theme.bgSecondary,
-            borderRadius: '8px',
-            border: `1px solid ${theme.border}`,
-            padding: '24px',
-            textAlign: 'center'
-          }}>
-            <h3 style={{ margin: '0 0 16px 0' }}>🧪 A/B Testing</h3>
-            <p style={{ color: theme.textMuted, marginBottom: '24px' }}>
-              Compare prompt performance with statistical significance testing
-            </p>
-            <div style={{ 
-              padding: '40px',
-              backgroundColor: theme.bg,
-              borderRadius: '8px',
-              border: `2px dashed ${theme.border}`
-            }}>
-              <div style={{ fontSize: '48px', marginBottom: '16px' }}>🚧</div>
-              <div style={{ fontSize: '18px', fontWeight: '600', marginBottom: '8px' }}>Coming Soon</div>
-              <div style={{ color: theme.textMuted }}>
-                A/B testing framework with automatic traffic splitting and statistical analysis
+                {/* Monaco Editor Container */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: '300px' }}>
+                  <div style={{ flex: 1, position: 'relative', minHeight: '200px' }}>
+                    <Editor
+                      height="100%"
+                      defaultLanguage="text"
+                      value={functionPromptContent}
+                      onChange={(value) => handleFunctionPromptContentChange(value || '')}
+                      onMount={(editor) => {
+                        setMonacoEditor(editor)
+                      }}
+                      theme={darkMode ? 'vs-dark' : 'light'}
+                      options={{
+                        wordWrap: 'on',
+                        minimap: { enabled: false },
+                        scrollBeyondLastLine: false,
+                        fontSize: 14,
+                        lineNumbers: 'on',
+                        folding: true
+                      }}
+                    />
+                  </div>
+                  
+                  {/* Function Prompt Validation Feedback */}
+                  {(functionValidationErrors.length > 0 || functionValidationWarnings.length > 0) && (
+                    <div style={{ 
+                      backgroundColor: darkMode ? '#1e1e1e' : '#f8f9fa',
+                      borderTop: `1px solid ${theme.border}`,
+                      padding: '8px 12px',
+                      maxHeight: '120px',
+                      overflowY: 'auto',
+                      flexShrink: 0,
+                      boxShadow: '0 -2px 8px rgba(0, 0, 0, 0.1)'
+                    }}>
+                      {functionValidationErrors.map((error, index) => (
+                        <div key={`error-${index}`} style={{
+                          color: theme.error,
+                          fontSize: '11px',
+                          marginBottom: '4px',
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '6px'
+                        }}>
+                          <span>❌</span>
+                          <span>{formatValidationMessage(error)}</span>
+                        </div>
+                      ))}
+                      {functionValidationWarnings.map((warning, index) => (
+                        <div key={`warning-${index}`} style={{
+                          color: theme.warning,
+                          fontSize: '11px',
+                          marginBottom: '4px',
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: '6px'
+                        }}>
+                          <span>⚠️</span>
+                          <span>{formatValidationMessage(warning)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )}
 
-        {/* Analytics Tab */}
-        {activeTab === 'analytics' && (
-          <div style={{ 
-            backgroundColor: theme.bgSecondary,
-            borderRadius: '8px',
-            border: `1px solid ${theme.border}`,
-            padding: '24px',
-            textAlign: 'center'
-          }}>
-            <h3 style={{ margin: '0 0 16px 0' }}>📊 Analytics</h3>
-            <p style={{ color: theme.textMuted, marginBottom: '24px' }}>
-              Performance insights and prompt optimization recommendations
-            </p>
+            {/* Right Panel - Empty for now */}
             <div style={{ 
-              padding: '40px',
-              backgroundColor: theme.bg,
+              backgroundColor: theme.bgSecondary,
               borderRadius: '8px',
-              border: `2px dashed ${theme.border}`
+              border: `1px solid ${theme.border}`,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'visible'
             }}>
-              <div style={{ fontSize: '48px', marginBottom: '16px' }}>📈</div>
-              <div style={{ fontSize: '18px', fontWeight: '600', marginBottom: '8px' }}>Coming Soon</div>
-              <div style={{ color: theme.textMuted }}>
-                Advanced analytics including token usage, context utilization, and performance trends
+              {/* Right Panel Header */}
+              <div style={{ 
+                padding: '16px',
+                borderBottom: `1px solid ${theme.border}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexShrink: 0
+              }}>
+                <h3 style={{ margin: 0 }}>Function Testing & Preview</h3>
+              </div>
+              
+              {/* Function Variables Information */}
+              <div style={{ 
+                flex: 1,
+                overflow: 'visible',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+                padding: '16px'
+              }}>
+                
+                {/* Variable System Info Card */}
+                <div style={{ 
+                  backgroundColor: theme.bg,
+                  borderRadius: '8px',
+                  border: `1px solid ${theme.border}`,
+                  padding: '16px',
+                  overflow: 'visible'
+                }}>
+                  {/* Variable List with Hover Tooltips */}
+                  <div style={{ marginBottom: '16px' }}>
+                    <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', color: theme.text }}>Available Variables</h4>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', position: 'relative' }}>
+                      {[
+                        { name: 'cleaned_conversation', required: true, tooltip: 'REQUIRED: The full cleaned conversation history from the cleaner model, formatted as speaker-turn pairs' },
+                        { name: 'call_context', required: true, tooltip: 'REQUIRED: User profile and business context including current user data (name, title, company) and permissions' },
+                        { name: 'available_functions', required: true, tooltip: 'REQUIRED: JSON schema of callable functions with parameters, descriptions, and usage examples' },
+                        { name: 'previous_function_calls', required: true, tooltip: 'REQUIRED: History of functions already called in this session to avoid duplicates and maintain state' },
+                        { name: 'additional_context', required: false, tooltip: 'OPTIONAL: Free-form context for custom business rules, special instructions, or testing scenarios' }
+                      ].map((variable) => (
+                        <span
+                          key={variable.name}
+                          onClick={() => {
+                            if (monacoEditor) {
+                              const position = monacoEditor.getPosition()
+                              if (position) {
+                                monacoEditor.executeEdits('click-insert', [{
+                                  range: {
+                                    startLineNumber: position.lineNumber,
+                                    startColumn: position.column,
+                                    endLineNumber: position.lineNumber,
+                                    endColumn: position.column
+                                  },
+                                  text: `{${variable.name}}`
+                                }])
+                                
+                                // Move cursor after inserted text
+                                monacoEditor.setPosition({
+                                  lineNumber: position.lineNumber,
+                                  column: position.column + variable.name.length + 2
+                                })
+                                
+                                // Focus back to editor
+                                monacoEditor.focus()
+                              }
+                            }
+                          }}
+                          onMouseEnter={() => setHoveredVariable(variable.name)}
+                          onMouseLeave={() => setHoveredVariable(null)}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            padding: '4px 8px',
+                            backgroundColor: theme.bgTertiary,
+                            borderRadius: '12px',
+                            border: `1px solid ${theme.border}`,
+                            fontSize: '11px',
+                            cursor: 'pointer',
+                            position: 'relative',
+                            userSelect: 'none'
+                          }}
+                        >
+                          <span style={{ 
+                            width: '6px', 
+                            height: '6px', 
+                            borderRadius: '50%', 
+                            backgroundColor: variable.required ? theme.error : theme.warning 
+                          }}></span>
+                          <span style={{ color: theme.textSecondary, fontFamily: 'monospace' }}>
+                            {variable.name}
+                          </span>
+                          
+                          {/* Custom Tooltip */}
+                          {hoveredVariable === variable.name && (
+                            <div style={{
+                              position: 'absolute',
+                              bottom: '100%',
+                              left: '50%',
+                              transform: 'translateX(-50%)',
+                              marginBottom: '8px',
+                              padding: '8px 12px',
+                              backgroundColor: darkMode ? '#1f2937' : '#ffffff',
+                              border: `1px solid ${theme.border}`,
+                              borderRadius: '6px',
+                              boxShadow: darkMode 
+                                ? '0 4px 12px rgba(0, 0, 0, 0.4)' 
+                                : '0 4px 12px rgba(0, 0, 0, 0.15)',
+                              fontSize: '11px',
+                              color: theme.text,
+                              whiteSpace: 'normal',
+                              zIndex: 9999,
+                              maxWidth: '750px',
+                              minWidth: '300px'
+                            }}>
+                              {variable.tooltip}
+                              {/* Tooltip arrow */}
+                              <div style={{
+                                position: 'absolute',
+                                top: '100%',
+                                left: '50%',
+                                transform: 'translateX(-50%)',
+                                width: 0,
+                                height: 0,
+                                borderLeft: '6px solid transparent',
+                                borderRight: '6px solid transparent',
+                                borderTop: `6px solid ${theme.border}`
+                              }}></div>
+                            </div>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{
+                    padding: '12px',
+                    backgroundColor: theme.bgTertiary,
+                    borderRadius: '4px',
+                    fontSize: '12px',
+                    color: theme.textMuted,
+                    textAlign: 'center',
+                    border: `1px solid ${theme.border}`
+                  }}>
+                    Click variables to insert them at cursor position
+                  </div>
+                </div>
+
+
+                {/* Testing Instructions Card */}
+                <div style={{ 
+                  backgroundColor: theme.bg,
+                  borderRadius: '8px',
+                  border: `1px solid ${theme.border}`,
+                  padding: '16px'
+                }}>
+                  <h4 style={{ margin: '0 0 12px 0' }}>Testing Instructions</h4>
+                  <div style={{ fontSize: '12px', color: theme.textSecondary, lineHeight: '1.5' }}>
+                    <strong style={{ color: theme.text }}>Expected Output Format:</strong><br/>
+                    • <strong>FUNCTION_CALL:</strong> function_name(parameters) - when a function should be executed<br/>
+                    • <strong>NO_FUNCTION_CALL</strong> - when no action is needed<br/>
+                    • <strong>CONFIDENCE:</strong> HIGH/MEDIUM/LOW - confidence level<br/>
+                    <br/>
+                    <strong style={{ color: theme.text }}>Test with mock data:</strong><br/>
+                    Scott (Head of Marketing) at Quick Fit Windows conversations will be processed against actual function execution.
+                  </div>
+                </div>
+
               </div>
             </div>
           </div>

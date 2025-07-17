@@ -1126,6 +1126,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         </div>
         
         {/* Controls */}
+        {/* 
         <div style={{ padding: '12px 24px', backgroundColor: theme.bgSecondary, borderTop: `1px solid ${theme.border}` }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
@@ -1193,6 +1194,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             </button>
           </div>
         </div>
+        */}
       </div>
 
       {/* Main Content */}
@@ -1638,7 +1640,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                       compact_export: {
                                         exported_at: new Date().toISOString(),
                                         evaluation_name: exportData.evaluation.name,
-                                        turns: exportData.turns.map(turn => ({
+                                        turns: exportData.turns.map((turn: any) => ({
                                           sequence: turn.sequence,
                                           speaker: turn.speaker,
                                           raw_text: turn.raw_text,
@@ -1665,7 +1667,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                   compact_export: {
                                     exported_at: new Date().toISOString(),
                                     evaluation_name: exportData.evaluation.name,
-                                    turns: exportData.turns.map(turn => ({
+                                    turns: exportData.turns.map((turn: any) => ({
                                       sequence: turn.sequence,
                                       speaker: turn.speaker,
                                       raw_text: turn.raw_text,
