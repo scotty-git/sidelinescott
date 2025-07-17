@@ -194,7 +194,10 @@ async def get_evaluation_details(
     
     # Get evaluation and verify access
     print(f"[DEBUG] Querying database for evaluation...")
-    evaluation = db.query(Evaluation).filter(
+    from sqlalchemy.orm import joinedload
+    evaluation = db.query(Evaluation).options(
+        joinedload(Evaluation.prompt_template_ref)
+    ).filter(
         Evaluation.id == evaluation_uuid,
         Evaluation.user_id == user_uuid
     ).first()
@@ -250,12 +253,19 @@ async def get_evaluation_details(
         for ct in cleaned_turns
     ]
     
+    # Include prompt template name if available
+    prompt_template_name = None
+    if evaluation.prompt_template_ref:
+        prompt_template_name = evaluation.prompt_template_ref.name
+        print(f"[DEBUG] Found prompt template name from relationship: {prompt_template_name}")
+    
     evaluation_response = EvaluationResponse(
         id=str(evaluation.id),
         conversation_id=str(evaluation.conversation_id),
         name=evaluation.name,
         description=evaluation.description,
         prompt_template=evaluation.prompt_template,
+        prompt_template_id=str(evaluation.prompt_template_id) if evaluation.prompt_template_id else None,
         settings=evaluation.settings or {},
         user_id=str(evaluation.user_id),
         status=evaluation.status,
@@ -263,6 +273,12 @@ async def get_evaluation_details(
         created_at=evaluation.created_at.isoformat(),
         updated_at=evaluation.updated_at.isoformat()
     )
+    
+    # Add prompt template name to settings for frontend access
+    if prompt_template_name and evaluation_response.settings:
+        evaluation_response.settings['prompt_template_name'] = prompt_template_name
+    elif prompt_template_name:
+        evaluation_response.settings = {'prompt_template_name': prompt_template_name}
     
     return EvaluationDetailsResponse(
         evaluation=evaluation_response,
