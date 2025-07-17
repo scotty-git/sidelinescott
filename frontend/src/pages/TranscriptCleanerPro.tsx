@@ -148,6 +148,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [currentPromptTemplateName, setCurrentPromptTemplateName] = useState<string | null>(null)
   const [showCopySuccess, setShowCopySuccess] = useState(false)
   const [copyCompactLoading, setCopyCompactLoading] = useState(false)
+  const [copyCompactReady, setCopyCompactReady] = useState(false)
+  const [copyCompactData, setCopyCompactData] = useState<any>(null)
   const [selectedTab, setSelectedTab] = useState<'results' | 'api' | 'logs' | 'settings'>('results')
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem('transcript-cleaner-dark-mode')
@@ -257,14 +259,14 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     localStorage.setItem('transcript-cleaner-settings', JSON.stringify(settings))
   }, [settings])
 
-  // Helper function to play completion sound
+  // Helper function to play loud completion ping
   const playCompletionSound = () => {
     try {
-      // Create a pleasant completion sound using Web Audio API
+      // Create a loud, prominent completion ping using Web Audio API
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
       
-      // Create a sequence of notes for a pleasant completion chime
-      const notes = [523.25, 659.25, 783.99] // C5, E5, G5 (major chord)
+      // Create a loud ping sequence - higher frequencies and volume for attention
+      const notes = [1046.5, 1318.5, 1568] // C6, E6, G6 (higher octave for prominence)
       
       notes.forEach((frequency, index) => {
         const oscillator = audioContext.createOscillator()
@@ -276,17 +278,35 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime)
         oscillator.type = 'sine'
         
-        // Create a pleasant fade-in and fade-out envelope
-        const startTime = audioContext.currentTime + (index * 0.15)
-        const duration = 0.4
+        // Create a loud, attention-grabbing envelope
+        const startTime = audioContext.currentTime + (index * 0.1)
+        const duration = 0.3
         
         gainNode.gain.setValueAtTime(0, startTime)
-        gainNode.gain.linearRampToValueAtTime(0.1, startTime + 0.05)
+        gainNode.gain.linearRampToValueAtTime(0.3, startTime + 0.02) // Much louder volume
         gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + duration)
         
         oscillator.start(startTime)
         oscillator.stop(startTime + duration)
       })
+      
+      // Add a final prominent ping after the chord
+      const finalPing = audioContext.createOscillator()
+      const finalGain = audioContext.createGain()
+      
+      finalPing.connect(finalGain)
+      finalGain.connect(audioContext.destination)
+      
+      finalPing.frequency.setValueAtTime(2093, audioContext.currentTime) // C7 - very high and attention-grabbing
+      finalPing.type = 'sine'
+      
+      const finalStartTime = audioContext.currentTime + 0.5
+      finalGain.gain.setValueAtTime(0, finalStartTime)
+      finalGain.gain.linearRampToValueAtTime(0.4, finalStartTime + 0.02) // Loud ping
+      finalGain.gain.exponentialRampToValueAtTime(0.01, finalStartTime + 0.4)
+      
+      finalPing.start(finalStartTime)
+      finalPing.stop(finalStartTime + 0.4)
       
       console.log('🔊 Completion sound played')
     } catch (error: any) {
@@ -590,8 +610,56 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       // Keep currentEvaluationId for export functionality even if cleaning failed
       addDetailedLog('🏁 Cleaning process completed')
       
-      // Play completion sound
+      // Play loud completion ping
       playCompletionSound()
+      
+      // Auto-prepare Copy Compact export data
+      prepareCompactExport()
+    }
+  }
+
+  // Auto-prepare Copy Compact export data after evaluation completion
+  const prepareCompactExport = async () => {
+    if (!currentEvaluationId) {
+      console.log('[Copy Compact] No evaluation ID available for auto-preparation')
+      return
+    }
+    
+    try {
+      console.log('[Copy Compact] Auto-preparing export data...')
+      addDetailedLog('🚀 Auto-preparing Copy Compact export data...')
+      
+      // Fetch the export data in the background
+      const exportData = await apiClient.exportEvaluation(currentEvaluationId)
+      console.log('[Copy Compact] Export data prepared:', exportData.evaluation?.name || 'Unknown')
+      
+      // Create the compact format
+      const compactExport = {
+        prompt_template_name: getPromptTemplateName(exportData.evaluation) || 'Unknown Template',
+        conversation_name: exportData.conversation?.name || 'Unknown Conversation',
+        evaluation_name: exportData.evaluation?.name || 'Unknown Evaluation',
+        exported_at: new Date().toISOString(),
+        turns: exportData.turns?.map((turn: any) => ({
+          sequence: turn.sequence,
+          speaker: turn.speaker,
+          raw_text: turn.raw_text,
+          cleaned_text: turn.cleaned_data?.cleaned_text || turn.raw_text,
+          cleaning_applied: turn.cleaned_data?.cleaning_applied === 'true' || turn.cleaned_data?.cleaning_applied === true,
+          ai_model: turn.cleaned_data?.ai_model_used || 'unknown'
+        })) || []
+      }
+      
+      // Store the prepared data
+      setCopyCompactData({ compact_export: compactExport })
+      setCopyCompactReady(true)
+      
+      console.log('[Copy Compact] Export data ready for instant copy')
+      addDetailedLog('✅ Copy Compact export data prepared and ready!')
+      
+    } catch (error: any) {
+      console.error('[Copy Compact] Auto-preparation failed:', error)
+      addDetailedLog(`❌ Copy Compact auto-preparation failed: ${error.message}`)
+      // Don't show user error for background preparation failure
     }
   }
 
@@ -1034,6 +1102,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       addDetailedLog(`✅ Loaded ${cleaned.length} cleaned turns from evaluation: ${evaluation.name}`)
       addDetailedLog(`✅ Reconstructed ${reconstructedTurnAPIGroups.length} API log entries for inspection`)
       
+      // Auto-prepare Copy Compact export data for loaded evaluation
+      prepareCompactExport()
+      
     } catch (error) {
       console.error('Failed to load specific evaluation:', error)
       alert('Failed to load evaluation')
@@ -1048,6 +1119,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       setCurrentEvaluationName(null)
       setCurrentPromptTemplateName(null)
       setShowConversationsModal(false)
+      
+      // Reset Copy Compact states for new evaluation
+      setCopyCompactReady(false)
+      setCopyCompactData(null)
+      setShowCopySuccess(false)
       
       // Load raw turns
       const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as any
@@ -1853,15 +1929,42 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                         </button>
                       )}
                       
-                      {/* Copy Compact Button */}
+                      {/* Copy Compact Button - Auto-prepared with instant copy */}
                       {cleanedTurns.length > 0 && !isProcessing && (
                         <button
                           onClick={async (event) => {
-                            // Prevent multiple rapid clicks and show loading
+                            // Prevent multiple rapid clicks
                             if (copyCompactLoading) return
+                            
+                            // If data is pre-prepared, copy instantly
+                            if (copyCompactReady && copyCompactData) {
+                              console.log('[Copy Compact] Using pre-prepared data for instant copy')
+                              setCopyCompactLoading(true)
+                              
+                              try {
+                                const jsonString = JSON.stringify(copyCompactData, null, 2)
+                                
+                                // Instant clipboard write
+                                await navigator.clipboard.writeText(jsonString)
+                                
+                                console.log('[Copy Compact] Instant copy successful')
+                                setShowCopySuccess(true)
+                                setTimeout(() => setShowCopySuccess(false), 3000)
+                                addDetailedLog(`📋 Copied compact JSON to clipboard instantly: ${copyCompactData.compact_export?.evaluation_name} (${copyCompactData.compact_export?.turns?.length || 0} turns)`)
+                                
+                              } catch (error: any) {
+                                console.error('[Copy Compact] Instant copy failed:', error)
+                                alert(`❌ Copy failed: ${error.message}`)
+                                addDetailedLog(`❌ Copy Compact instant copy failed: ${error.message}`)
+                              } finally {
+                                setCopyCompactLoading(false)
+                              }
+                              return
+                            }
+                            
+                            // Fallback: Prepare and copy (original behavior)
                             setCopyCompactLoading(true)
                             
-                            // Find the current evaluation ID from the loaded data
                             const evaluationId = currentEvaluationId || cleanedTurns[0]?.evaluation_id
                             if (!evaluationId) {
                               alert('No evaluation data available to copy')
@@ -1869,142 +1972,42 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                               return
                             }
                             
-                            console.log('[Copy Compact] Starting copy operation... v3.0 - Immediate clipboard approach')
+                            console.log('[Copy Compact] Preparing data on-demand...')
                             
                             try {
-                              // CRITICAL: Start clipboard operation immediately to preserve user gesture
-                              const clipboardPromise = (async () => {
-                                console.log('[Copy Compact] Fetching export data...')
-                                const exportData = await apiClient.exportEvaluation(evaluationId)
-                                console.log('[Copy Compact] Export data received:', exportData.evaluation.name)
-                                
-                                // Create compact version
-                                const compactData = {
-                                  compact_export: {
-                                    exported_at: new Date().toISOString(),
-                                    conversation_name: currentConversation?.name || 'Unknown Conversation',
-                                    evaluation_name: exportData.evaluation.name,
-                                    evaluation_id: evaluationId,
-                                    prompt_template_name: exportData.evaluation.prompt_template?.name || currentPromptTemplateName || 'No template',
-                                    turns: exportData.turns.map((turn: any) => ({
-                                      sequence: turn.sequence,
-                                      speaker: turn.speaker,
-                                      raw_text: turn.raw_text,
-                                      cleaned_text: turn.cleaned_data.cleaned_text
-                                    }))
-                                  }
-                                }
-                                
-                                const jsonString = JSON.stringify(compactData, null, 2)
-                                console.log('[Copy Compact] JSON prepared, length:', jsonString.length)
-                                return { jsonString, exportData, compactData }
-                              })()
+                              // Fetch and prepare data
+                              const exportData = await apiClient.exportEvaluation(evaluationId)
                               
-                              // Use modern clipboard with ClipboardItem to handle large data
-                              if (navigator.clipboard && window.ClipboardItem) {
-                                const clipboardItem = new ClipboardItem({
-                                  'text/plain': clipboardPromise.then(result => 
-                                    new Blob([result.jsonString], { type: 'text/plain' })
-                                  )
-                                })
-                                
-                                await navigator.clipboard.write([clipboardItem])
-                                const result = await clipboardPromise
-                                console.log('[Copy Compact] ClipboardItem write successful')
-                                
-                                setShowCopySuccess(true)
-                                setTimeout(() => setShowCopySuccess(false), 3000)
-                                addDetailedLog(`📋 Copied compact JSON to clipboard: ${result.exportData.evaluation.name} (${result.compactData.compact_export.turns.length} turns)`)
-                                
-                              } else {
-                                // Fallback: Direct approach for older browsers
-                                const result = await clipboardPromise
-                                
-                                // Try direct clipboard write
-                                if (navigator.clipboard) {
-                                  await navigator.clipboard.writeText(result.jsonString)
-                                  console.log('[Copy Compact] Direct clipboard write successful')
-                                } else {
-                                  // Legacy fallback
-                                  const textarea = document.createElement('textarea')
-                                  textarea.value = result.jsonString
-                                  textarea.style.position = 'fixed'
-                                  textarea.style.left = '-999999px'
-                                  textarea.style.top = '-999999px'
-                                  document.body.appendChild(textarea)
-                                  textarea.focus()
-                                  textarea.select()
-                                  
-                                  const successful = document.execCommand('copy')
-                                  document.body.removeChild(textarea)
-                                  
-                                  if (!successful) {
-                                    throw new Error('Legacy clipboard method failed')
-                                  }
-                                  console.log('[Copy Compact] Legacy clipboard write successful')
+                              const compactData = {
+                                compact_export: {
+                                  exported_at: new Date().toISOString(),
+                                  conversation_name: currentConversation?.name || 'Unknown Conversation',
+                                  evaluation_name: exportData.evaluation.name,
+                                  evaluation_id: evaluationId,
+                                  prompt_template_name: getPromptTemplateName(exportData.evaluation) || 'Unknown Template',
+                                  turns: exportData.turns.map((turn: any) => ({
+                                    sequence: turn.sequence,
+                                    speaker: turn.speaker,
+                                    raw_text: turn.raw_text,
+                                    cleaned_text: turn.cleaned_data?.cleaned_text || turn.raw_text,
+                                    cleaning_applied: turn.cleaned_data?.cleaning_applied === 'true' || turn.cleaned_data?.cleaning_applied === true,
+                                    ai_model: turn.cleaned_data?.ai_model_used || 'unknown'
+                                  }))
                                 }
-                                
-                                setShowCopySuccess(true)
-                                setTimeout(() => setShowCopySuccess(false), 3000)
-                                addDetailedLog(`📋 Copied compact JSON to clipboard: ${result.exportData.evaluation.name} (${result.compactData.compact_export.turns.length} turns)`)
                               }
+                              
+                              const jsonString = JSON.stringify(compactData, null, 2)
+                              await navigator.clipboard.writeText(jsonString)
+                              
+                              console.log('[Copy Compact] On-demand copy successful')
+                              setShowCopySuccess(true)
+                              setTimeout(() => setShowCopySuccess(false), 3000)
+                              addDetailedLog(`📋 Copied compact JSON to clipboard: ${exportData.evaluation.name} (${compactData.compact_export.turns.length} turns)`)
                               
                             } catch (error: any) {
-                              console.error('[Copy Compact] Failed:', error)
-                              
-                              // Final fallback: Try to get the data and use document.execCommand
-                              try {
-                                console.log('[Copy Compact] Attempting final fallback...')
-                                const exportData = await apiClient.exportEvaluation(evaluationId)
-                                const compactData = {
-                                  compact_export: {
-                                    exported_at: new Date().toISOString(),
-                                    conversation_name: currentConversation?.name || 'Unknown Conversation',
-                                    evaluation_name: exportData.evaluation.name,
-                                    evaluation_id: evaluationId,
-                                    prompt_template_name: exportData.evaluation.prompt_template?.name || currentPromptTemplateName || 'No template',
-                                    turns: exportData.turns.map((turn: any) => ({
-                                      sequence: turn.sequence,
-                                      speaker: turn.speaker,
-                                      raw_text: turn.raw_text,
-                                      cleaned_text: turn.cleaned_data.cleaned_text
-                                    }))
-                                  }
-                                }
-                                const jsonString = JSON.stringify(compactData, null, 2)
-                                
-                                // Force focus and try execCommand
-                                window.focus()
-                                document.body.focus()
-                                
-                                const textarea = document.createElement('textarea')
-                                textarea.value = jsonString
-                                textarea.style.position = 'absolute'
-                                textarea.style.left = '0'
-                                textarea.style.top = '0'
-                                textarea.style.width = '1px'
-                                textarea.style.height = '1px'
-                                textarea.style.opacity = '0'
-                                document.body.appendChild(textarea)
-                                textarea.focus()
-                                textarea.select()
-                                
-                                const success = document.execCommand('copy')
-                                document.body.removeChild(textarea)
-                                
-                                if (success) {
-                                  console.log('[Copy Compact] Final fallback successful')
-                                  setShowCopySuccess(true)
-                                  setTimeout(() => setShowCopySuccess(false), 3000)
-                                  addDetailedLog(`📋 Copied compact JSON (fallback): ${exportData.evaluation.name}`)
-                                } else {
-                                  throw new Error('All clipboard methods exhausted')
-                                }
-                              } catch (fallbackError: any) {
-                                console.error('[Copy Compact] All methods failed:', fallbackError)
-                                alert(`❌ Copy failed: ${error.message}\n\nData size may be too large (${Math.round((error.data?.length || 500000) / 1024)}KB).\n\nTry using the Export button instead.`)
-                                addDetailedLog(`❌ Copy Compact failed completely: ${error.message}`)
-                              }
+                              console.error('[Copy Compact] On-demand copy failed:', error)
+                              alert(`❌ Copy failed: ${error.message}`)
+                              addDetailedLog(`❌ Copy Compact failed: ${error.message}`)
                             } finally {
                               setCopyCompactLoading(false)
                             }
@@ -2015,7 +2018,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                             borderRadius: '6px',
                             fontSize: '12px',
                             fontWeight: '500',
-                            backgroundColor: copyCompactLoading ? '#6b7280' : (showCopySuccess ? '#10b981' : '#3b82f6'),
+                            backgroundColor: copyCompactLoading ? '#6b7280' : (showCopySuccess ? '#10b981' : (copyCompactReady ? '#16a34a' : '#3b82f6')),
                             color: 'white',
                             cursor: copyCompactLoading ? 'not-allowed' : 'pointer',
                             opacity: copyCompactLoading ? 0.7 : 1,
@@ -2023,7 +2026,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                             transition: 'background-color 0.2s'
                           }}
                         >
-                          {copyCompactLoading ? '⏳ Copying...' : (showCopySuccess ? '✅ Copied!' : '📋 Copy Compact')}
+                          {copyCompactLoading ? '⏳ Copying...' : (showCopySuccess ? '✅ Copied!' : (copyCompactReady ? '📋 Copy Compact - Ready' : '📋 Copy Compact'))}
                         </button>
                       )}
                       
