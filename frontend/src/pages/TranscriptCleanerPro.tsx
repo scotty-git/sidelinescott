@@ -1617,6 +1617,89 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                         </button>
                       )}
                       
+                      {/* Copy Compact Button */}
+                      {cleanedTurns.length > 0 && !isProcessing && (
+                        <button
+                          onClick={async () => {
+                            // Find the current evaluation ID from the loaded data
+                            const evaluationId = currentEvaluationId || cleanedTurns[0]?.evaluation_id
+                            if (!evaluationId) {
+                              alert('No evaluation data available to copy')
+                              return
+                            }
+                            
+                            try {
+                              // Use the same ClipboardItem approach as the main copy button to maintain user gesture context
+                              if (navigator.clipboard && window.ClipboardItem) {
+                                const textPromise = apiClient.exportEvaluation(evaluationId)
+                                  .then(exportData => {
+                                    // Create compact version with only essential fields
+                                    const compactData = {
+                                      compact_export: {
+                                        exported_at: new Date().toISOString(),
+                                        evaluation_name: exportData.evaluation.name,
+                                        turns: exportData.turns.map(turn => ({
+                                          sequence: turn.sequence,
+                                          speaker: turn.speaker,
+                                          raw_text: turn.raw_text,
+                                          cleaned_text: turn.cleaned_data.cleaned_text
+                                        }))
+                                      }
+                                    }
+                                    
+                                    const jsonString = JSON.stringify(compactData, null, 2)
+                                    addDetailedLog(`📋 Copied compact JSON to clipboard: ${exportData.evaluation.name} (${compactData.compact_export.turns.length} turns)`)
+                                    return new Blob([jsonString], { type: 'text/plain' })
+                                  })
+                                
+                                const clipboardItem = new ClipboardItem({
+                                  'text/plain': textPromise
+                                })
+                                
+                                await navigator.clipboard.write([clipboardItem])
+                                alert('Compact JSON copied to clipboard!')
+                              } else {
+                                // Fallback: Get data first, then copy immediately
+                                const exportData = await apiClient.exportEvaluation(evaluationId)
+                                const compactData = {
+                                  compact_export: {
+                                    exported_at: new Date().toISOString(),
+                                    evaluation_name: exportData.evaluation.name,
+                                    turns: exportData.turns.map(turn => ({
+                                      sequence: turn.sequence,
+                                      speaker: turn.speaker,
+                                      raw_text: turn.raw_text,
+                                      cleaned_text: turn.cleaned_data.cleaned_text
+                                    }))
+                                  }
+                                }
+                                
+                                const jsonString = JSON.stringify(compactData, null, 2)
+                                await navigator.clipboard.writeText(jsonString)
+                                alert('Compact JSON copied to clipboard!')
+                                addDetailedLog(`📋 Copied compact JSON to clipboard: ${exportData.evaluation.name} (${compactData.compact_export.turns.length} turns)`)
+                              }
+                            } catch (error) {
+                              console.error('Failed to copy compact evaluation:', error)
+                              alert('Failed to copy compact evaluation. Please try again.')
+                            }
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            border: 'none',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            fontWeight: '500',
+                            backgroundColor: '#3b82f6',
+                            color: 'white',
+                            cursor: 'pointer',
+                            marginLeft: '8px'
+                          }}
+                        >
+                          📋 Copy Compact
+                        </button>
+                      )}
+                      
                       <button
                         onClick={() => setHideLumenTurns(!hideLumenTurns)}
                         style={{
