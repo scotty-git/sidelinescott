@@ -144,6 +144,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [currentConversation, setCurrentConversation] = useState<any>(null)
   const [currentEvaluationId, setCurrentEvaluationId] = useState<string | null>(null)
+  const [currentEvaluationName, setCurrentEvaluationName] = useState<string | null>(null)
+  const [currentPromptTemplateName, setCurrentPromptTemplateName] = useState<string | null>(null)
   const [selectedTab, setSelectedTab] = useState<'results' | 'api' | 'logs' | 'settings'>('results')
   const [darkMode, setDarkMode] = useState(false)
   const [detailedLogs, setDetailedLogs] = useState<string[]>([])
@@ -245,6 +247,22 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   React.useEffect(() => {
     localStorage.setItem('transcript-cleaner-settings', JSON.stringify(settings))
   }, [settings])
+
+  // Helper function to extract prompt template name from evaluation data
+  const extractPromptTemplateName = (evaluationData: any): string | null => {
+    if (evaluationData?.prompt_template?.name) {
+      return evaluationData.prompt_template.name
+    }
+    // Check if prompt_template_ref exists
+    if (evaluationData?.prompt_template_ref?.name) {
+      return evaluationData.prompt_template_ref.name
+    }
+    // Fallback to checking settings
+    if (evaluationData?.settings?.prompt_template_name) {
+      return evaluationData.settings.prompt_template_name
+    }
+    return null
+  }
 
   const logAPICall = (call: APICall) => {
     setApiCalls(prev => [call, ...prev])
@@ -664,6 +682,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       setConversationId(conversation.id)
       setCurrentConversation(conversation)
       setCurrentEvaluationId(latestEvaluation.id)
+      setCurrentEvaluationName(latestEvaluation.name)
+      setCurrentPromptTemplateName(extractPromptTemplateName(evaluationDetails.evaluation))
       setShowConversationsModal(false)
       
       // Load raw turns for the conversation component
@@ -775,6 +795,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       setConversationId(conversation.id)
       setCurrentConversation(conversation)
       setCurrentEvaluationId(evaluation.id)
+      setCurrentEvaluationName(evaluation.name)
+      setCurrentPromptTemplateName(extractPromptTemplateName(evaluationDetails.evaluation))
       setShowEvaluationsModal(false)
       
       // Load raw turns for the conversation component
@@ -880,6 +902,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       // Set conversation context and load raw turns
       setConversationId(conversation.id)
       setCurrentEvaluationId(null) // Clear current evaluation when starting new
+      setCurrentEvaluationName(null)
+      setCurrentPromptTemplateName(null)
       setShowConversationsModal(false)
       
       // Load raw turns
@@ -1172,6 +1196,23 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 <option value="light">Light cleaning</option>
                 <option value="full">Full cleaning</option>
               </select>
+              
+              {/* Prompt Template Display */}
+              {currentPromptTemplateName && (
+                <div style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: '8px', 
+                  fontSize: '14px',
+                  padding: '4px 8px',
+                  backgroundColor: theme.bgTertiary,
+                  borderRadius: '4px',
+                  border: `1px solid ${theme.border}`
+                }}>
+                  <span style={{ color: theme.textSecondary }}>Template:</span>
+                  <span style={{ color: theme.text, fontWeight: '500' }}>{currentPromptTemplateName}</span>
+                </div>
+              )}
             </div>
             <button 
               onClick={openConversationsModal}
@@ -1217,6 +1258,25 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 : 'Load conversations through the Conversations modal'
               }
             </p>
+            {/* Evaluation Context */}
+            {currentEvaluationName && (
+              <div style={{ 
+                fontSize: '12px', 
+                color: theme.textSecondary, 
+                marginTop: '8px',
+                padding: '4px 8px',
+                backgroundColor: theme.bgTertiary,
+                borderRadius: '4px',
+                border: `1px solid ${theme.border}`
+              }}>
+                <strong>Evaluation:</strong> {currentEvaluationName}
+                {currentPromptTemplateName && (
+                  <span style={{ marginLeft: '12px' }}>
+                    <strong>Template:</strong> {currentPromptTemplateName}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           
           <div style={{ 
@@ -1515,6 +1575,39 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                         </div>
                       )}
                       
+                      {/* Evaluation Context Indicator */}
+                      {currentEvaluationName && (
+                        <div style={{ 
+                          fontSize: '12px', 
+                          color: theme.textSecondary,
+                          padding: '6px 12px',
+                          backgroundColor: theme.bgTertiary,
+                          borderRadius: '4px',
+                          border: `1px solid ${theme.border}`,
+                          marginBottom: '8px'
+                        }}>
+                          <span style={{ fontWeight: '500' }}>Current Evaluation:</span> {currentEvaluationName}
+                          {currentPromptTemplateName && (
+                            <span style={{ marginLeft: '12px' }}>
+                              • <span style={{ fontWeight: '500' }}>Template:</span> {currentPromptTemplateName}
+                            </span>
+                          )}
+                          {currentEvaluationId && (
+                            <span 
+                              style={{ 
+                                marginLeft: '12px', 
+                                fontFamily: 'monospace',
+                                fontSize: '10px',
+                                opacity: 0.7
+                              }}
+                              title={`Full ID: ${currentEvaluationId}`}
+                            >
+                              • ID: {currentEvaluationId.slice(0, 8)}...
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      
                       {/* Controls */}
                       <div style={{ display: 'flex', gap: '12px' }}>
                                             {cleanedTurns.length > 0 && !isProcessing && (
@@ -1633,11 +1726,14 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                               if (navigator.clipboard && window.ClipboardItem) {
                                 const textPromise = apiClient.exportEvaluation(evaluationId)
                                   .then(exportData => {
-                                    // Create compact version with only essential fields
+                                    // Create compact version with enhanced metadata
                                     const compactData = {
                                       compact_export: {
                                         exported_at: new Date().toISOString(),
+                                        conversation_name: currentConversation?.name || 'Unknown Conversation',
                                         evaluation_name: exportData.evaluation.name,
+                                        evaluation_id: evaluationId,
+                                        prompt_template_name: exportData.evaluation.prompt_template?.name || currentPromptTemplateName || 'No template',
                                         turns: exportData.turns.map(turn => ({
                                           sequence: turn.sequence,
                                           speaker: turn.speaker,
@@ -1664,7 +1760,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                 const compactData = {
                                   compact_export: {
                                     exported_at: new Date().toISOString(),
+                                    conversation_name: currentConversation?.name || 'Unknown Conversation',
                                     evaluation_name: exportData.evaluation.name,
+                                    evaluation_id: evaluationId,
+                                    prompt_template_name: exportData.evaluation.prompt_template?.name || currentPromptTemplateName || 'No template',
                                     turns: exportData.turns.map(turn => ({
                                       sequence: turn.sequence,
                                       speaker: turn.speaker,
