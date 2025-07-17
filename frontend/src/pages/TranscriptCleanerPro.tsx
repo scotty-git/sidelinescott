@@ -663,6 +663,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       // Set conversation context
       setConversationId(conversation.id)
       setCurrentConversation(conversation)
+      setCurrentEvaluationId(latestEvaluation.id)
       setShowConversationsModal(false)
       
       // Load raw turns for the conversation component
@@ -773,6 +774,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       // Set conversation context
       setConversationId(conversation.id)
       setCurrentConversation(conversation)
+      setCurrentEvaluationId(evaluation.id)
       setShowEvaluationsModal(false)
       
       // Load raw turns for the conversation component
@@ -877,6 +879,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     try {
       // Set conversation context and load raw turns
       setConversationId(conversation.id)
+      setCurrentEvaluationId(null) // Clear current evaluation when starting new
       setShowConversationsModal(false)
       
       // Load raw turns
@@ -1558,6 +1561,62 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                           📥 Export
                         </button>
                       )}
+                      
+                      {/* Copy JSON Button */}
+                      {cleanedTurns.length > 0 && !isProcessing && (
+                        <button
+                          onClick={async () => {
+                            // Find the current evaluation ID from the loaded data
+                            const evaluationId = currentEvaluationId || cleanedTurns[0]?.evaluation_id
+                            if (!evaluationId) {
+                              alert('No evaluation data available to copy')
+                              return
+                            }
+                            
+                            try {
+                              // Use ClipboardItem with Promise to maintain user gesture context
+                              if (navigator.clipboard && window.ClipboardItem) {
+                                const textPromise = apiClient.exportEvaluation(evaluationId)
+                                  .then(exportData => {
+                                    const jsonString = JSON.stringify(exportData, null, 2)
+                                    addDetailedLog(`📋 Copied evaluation JSON to clipboard: ${exportData.evaluation.name}`)
+                                    return new Blob([jsonString], { type: 'text/plain' })
+                                  })
+                                
+                                const clipboardItem = new ClipboardItem({
+                                  'text/plain': textPromise
+                                })
+                                
+                                await navigator.clipboard.write([clipboardItem])
+                                alert('Evaluation JSON copied to clipboard!')
+                              } else {
+                                // Fallback: Use the same simple approach as Copy Logs
+                                const exportData = await apiClient.exportEvaluation(evaluationId)
+                                const jsonString = JSON.stringify(exportData, null, 2)
+                                await navigator.clipboard.writeText(jsonString)
+                                alert('Evaluation JSON copied to clipboard!')
+                                addDetailedLog(`📋 Copied evaluation JSON to clipboard: ${exportData.evaluation.name}`)
+                              }
+                            } catch (error) {
+                              console.error('Failed to copy evaluation:', error)
+                              alert('Failed to copy evaluation. Please try the Export button instead.')
+                            }
+                          }}
+                          style={{
+                            padding: '6px 12px',
+                            border: 'none',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            fontWeight: '500',
+                            backgroundColor: '#10b981',
+                            color: 'white',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          📋 Copy
+                        </button>
+                      )}
+                      
                       <button
                         onClick={() => setHideLumenTurns(!hideLumenTurns)}
                         style={{
@@ -3259,6 +3318,50 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       </button>
                       <button
                         onClick={async () => {
+                          try {
+                            // Use ClipboardItem with Promise to maintain user gesture context
+                            if (navigator.clipboard && window.ClipboardItem) {
+                              const textPromise = apiClient.exportEvaluation(evaluation.id)
+                                .then(exportData => {
+                                  const jsonString = JSON.stringify(exportData, null, 2)
+                                  addDetailedLog(`📋 Copied evaluation JSON to clipboard: ${evaluation.name}`)
+                                  return new Blob([jsonString], { type: 'text/plain' })
+                                })
+                              
+                              const clipboardItem = new ClipboardItem({
+                                'text/plain': textPromise
+                              })
+                              
+                              await navigator.clipboard.write([clipboardItem])
+                              alert('Evaluation JSON copied to clipboard!')
+                            } else {
+                              // Fallback: Use the same simple approach as Copy Logs
+                              const exportData = await apiClient.exportEvaluation(evaluation.id)
+                              const jsonString = JSON.stringify(exportData, null, 2)
+                              await navigator.clipboard.writeText(jsonString)
+                              alert('Evaluation JSON copied to clipboard!')
+                              addDetailedLog(`📋 Copied evaluation JSON to clipboard: ${evaluation.name}`)
+                            }
+                          } catch (error) {
+                            console.error('Failed to copy evaluation:', error)
+                            alert('Failed to copy evaluation. Please try the Export button instead.')
+                          }
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          backgroundColor: '#10b981',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          fontWeight: '500',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        📋 Copy
+                      </button>
+                      <button
+                        onClick={async () => {
                           if (confirm(`Delete evaluation "${evaluation.name}"?`)) {
                             try {
                               await apiClient.deleteEvaluation(evaluation.id)
@@ -3291,15 +3394,24 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: theme.textMuted }}>
-                    <span>Created: {new Date(evaluation.created_at).toLocaleString()}</span>
-                    <span>•</span>
-                    <span>Settings: {evaluation.settings?.cleaning_level || 'unknown'} cleaning</span>
-                    {evaluation.settings?.model_params?.model_name && (
-                      <>
-                        <span>•</span>
-                        <span>Model: {evaluation.settings.model_params.model_name}</span>
-                      </>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px', color: theme.textMuted }}>
+                    <div style={{ display: 'flex', gap: '16px' }}>
+                      <span>Created: {new Date(evaluation.created_at).toLocaleString()}</span>
+                      <span>•</span>
+                      <span>Settings: {evaluation.settings?.cleaning_level || 'unknown'} cleaning</span>
+                      {evaluation.settings?.model_params?.model_name && (
+                        <>
+                          <span>•</span>
+                          <span>Model: {evaluation.settings.model_params.model_name}</span>
+                        </>
+                      )}
+                    </div>
+                    {evaluation.prompt_template_id && (
+                      <div>
+                        <span>Template: {
+                          promptTemplates.find(t => t.id === evaluation.prompt_template_id)?.name || 'Unknown Template'
+                        }</span>
+                      </div>
                     )}
                   </div>
                 </div>
