@@ -147,6 +147,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [currentEvaluationName, setCurrentEvaluationName] = useState<string | null>(null)
   const [currentPromptTemplateName, setCurrentPromptTemplateName] = useState<string | null>(null)
   const [showCopySuccess, setShowCopySuccess] = useState(false)
+  const [copyCompactLoading, setCopyCompactLoading] = useState(false)
   const [selectedTab, setSelectedTab] = useState<'results' | 'api' | 'logs' | 'settings'>('results')
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem('transcript-cleaner-dark-mode')
@@ -1826,138 +1827,156 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       {cleanedTurns.length > 0 && !isProcessing && (
                         <button
                           onClick={async (event) => {
-                            // Prevent multiple rapid clicks
-                            const button = event.target as HTMLButtonElement
-                            if (button.disabled) return
-                            button.disabled = true
+                            // Prevent multiple rapid clicks and show loading
+                            if (copyCompactLoading) return
+                            setCopyCompactLoading(true)
                             
                             // Find the current evaluation ID from the loaded data
                             const evaluationId = currentEvaluationId || cleanedTurns[0]?.evaluation_id
                             if (!evaluationId) {
                               alert('No evaluation data available to copy')
-                              button.disabled = false
+                              setCopyCompactLoading(false)
                               return
                             }
                             
-                            console.log('[Copy Compact] Starting copy operation... v2.0 - Enhanced clipboard handling')
-                            
-                            // Declare variables outside try block for scope access
-                            let exportData: any = null
-                            let compactData: any = null
-                            let jsonString: string = ''
+                            console.log('[Copy Compact] Starting copy operation... v3.0 - Immediate clipboard approach')
                             
                             try {
-                              // Get export data first to avoid promise chain complexity
-                              exportData = await apiClient.exportEvaluation(evaluationId)
-                              console.log('[Copy Compact] Export data received:', exportData.evaluation.name)
-                              
-                              // Create compact version with enhanced metadata
-                              compactData = {
-                                compact_export: {
-                                  exported_at: new Date().toISOString(),
-                                  conversation_name: currentConversation?.name || 'Unknown Conversation',
-                                  evaluation_name: exportData.evaluation.name,
-                                  evaluation_id: evaluationId,
-                                  prompt_template_name: exportData.evaluation.prompt_template?.name || currentPromptTemplateName || 'No template',
-                                  turns: exportData.turns.map((turn: any) => ({
-                                    sequence: turn.sequence,
-                                    speaker: turn.speaker,
-                                    raw_text: turn.raw_text,
-                                    cleaned_text: turn.cleaned_data.cleaned_text
-                                  }))
+                              // CRITICAL: Start clipboard operation immediately to preserve user gesture
+                              const clipboardPromise = (async () => {
+                                console.log('[Copy Compact] Fetching export data...')
+                                const exportData = await apiClient.exportEvaluation(evaluationId)
+                                console.log('[Copy Compact] Export data received:', exportData.evaluation.name)
+                                
+                                // Create compact version
+                                const compactData = {
+                                  compact_export: {
+                                    exported_at: new Date().toISOString(),
+                                    conversation_name: currentConversation?.name || 'Unknown Conversation',
+                                    evaluation_name: exportData.evaluation.name,
+                                    evaluation_id: evaluationId,
+                                    prompt_template_name: exportData.evaluation.prompt_template?.name || currentPromptTemplateName || 'No template',
+                                    turns: exportData.turns.map((turn: any) => ({
+                                      sequence: turn.sequence,
+                                      speaker: turn.speaker,
+                                      raw_text: turn.raw_text,
+                                      cleaned_text: turn.cleaned_data.cleaned_text
+                                    }))
+                                  }
                                 }
-                              }
+                                
+                                const jsonString = JSON.stringify(compactData, null, 2)
+                                console.log('[Copy Compact] JSON prepared, length:', jsonString.length)
+                                return { jsonString, exportData, compactData }
+                              })()
                               
-                              jsonString = JSON.stringify(compactData, null, 2)
-                              console.log('[Copy Compact] JSON prepared, length:', jsonString.length)
-                              
-                              // Use ClipboardItem approach to maintain user gesture context for large data
+                              // Use modern clipboard with ClipboardItem to handle large data
                               if (navigator.clipboard && window.ClipboardItem) {
-                                try {
-                                  // Ensure document is focused
-                                  if (!document.hasFocus()) {
-                                    window.focus()
-                                    console.log('[Copy Compact] Refocused document for clipboard access')
-                                  }
-                                  
-                                  // Use ClipboardItem for better large data handling
-                                  const blob = new Blob([jsonString], { type: 'text/plain' })
-                                  const clipboardItem = new ClipboardItem({ 'text/plain': blob })
-                                  await navigator.clipboard.write([clipboardItem])
-                                  console.log('[Copy Compact] ClipboardItem write successful')
-                                } catch (clipboardError: any) {
-                                  console.log('[Copy Compact] ClipboardItem failed, trying writeText:', clipboardError.message)
-                                  // Fallback to writeText
-                                  await navigator.clipboard.writeText(jsonString)
-                                  console.log('[Copy Compact] writeText fallback successful')
-                                }
-                              } else if (navigator.clipboard) {
-                                try {
-                                  // Ensure document is focused before writeText
-                                  if (!document.hasFocus()) {
-                                    window.focus()
-                                    await new Promise(resolve => setTimeout(resolve, 100)) // Brief delay after focus
-                                  }
-                                  await navigator.clipboard.writeText(jsonString)
-                                  console.log('[Copy Compact] writeText successful')
-                                } catch (writeTextError: any) {
-                                  console.log('[Copy Compact] writeText failed, using legacy method:', writeTextError.message)
-                                  throw writeTextError // Fall through to legacy method
-                                }
+                                const clipboardItem = new ClipboardItem({
+                                  'text/plain': clipboardPromise.then(result => 
+                                    new Blob([result.jsonString], { type: 'text/plain' })
+                                  )
+                                })
+                                
+                                await navigator.clipboard.write([clipboardItem])
+                                const result = await clipboardPromise
+                                console.log('[Copy Compact] ClipboardItem write successful')
+                                
+                                setShowCopySuccess(true)
+                                setTimeout(() => setShowCopySuccess(false), 3000)
+                                addDetailedLog(`📋 Copied compact JSON to clipboard: ${result.exportData.evaluation.name} (${result.compactData.compact_export.turns.length} turns)`)
+                                
                               } else {
-                                throw new Error('Modern clipboard not available')
+                                // Fallback: Direct approach for older browsers
+                                const result = await clipboardPromise
+                                
+                                // Try direct clipboard write
+                                if (navigator.clipboard) {
+                                  await navigator.clipboard.writeText(result.jsonString)
+                                  console.log('[Copy Compact] Direct clipboard write successful')
+                                } else {
+                                  // Legacy fallback
+                                  const textarea = document.createElement('textarea')
+                                  textarea.value = result.jsonString
+                                  textarea.style.position = 'fixed'
+                                  textarea.style.left = '-999999px'
+                                  textarea.style.top = '-999999px'
+                                  document.body.appendChild(textarea)
+                                  textarea.focus()
+                                  textarea.select()
+                                  
+                                  const successful = document.execCommand('copy')
+                                  document.body.removeChild(textarea)
+                                  
+                                  if (!successful) {
+                                    throw new Error('Legacy clipboard method failed')
+                                  }
+                                  console.log('[Copy Compact] Legacy clipboard write successful')
+                                }
+                                
+                                setShowCopySuccess(true)
+                                setTimeout(() => setShowCopySuccess(false), 3000)
+                                addDetailedLog(`📋 Copied compact JSON to clipboard: ${result.exportData.evaluation.name} (${result.compactData.compact_export.turns.length} turns)`)
                               }
                               
-                              // Show success feedback
-                              setShowCopySuccess(true)
-                              console.log('[Copy Compact] Success feedback shown')
+                            } catch (error: any) {
+                              console.error('[Copy Compact] Failed:', error)
                               
-                              // Hide success feedback after 3 seconds (longer duration)
-                              setTimeout(() => {
-                                setShowCopySuccess(false)
-                                console.log('[Copy Compact] Success feedback hidden')
-                              }, 3000)
-                              
-                              addDetailedLog(`📋 Copied compact JSON to clipboard: ${exportData.evaluation.name} (${compactData.compact_export.turns.length} turns)`)
-                              
-                            } catch (error) {
-                              console.error('[Copy Compact] Modern clipboard failed, trying legacy method:', error)
-                              
-                              // Enhanced legacy fallback for large data
+                              // Final fallback: Try to get the data and use document.execCommand
                               try {
-                                if (!jsonString) {
-                                  throw new Error('No data to copy - export failed')
+                                console.log('[Copy Compact] Attempting final fallback...')
+                                const exportData = await apiClient.exportEvaluation(evaluationId)
+                                const compactData = {
+                                  compact_export: {
+                                    exported_at: new Date().toISOString(),
+                                    conversation_name: currentConversation?.name || 'Unknown Conversation',
+                                    evaluation_name: exportData.evaluation.name,
+                                    evaluation_id: evaluationId,
+                                    prompt_template_name: exportData.evaluation.prompt_template?.name || currentPromptTemplateName || 'No template',
+                                    turns: exportData.turns.map((turn: any) => ({
+                                      sequence: turn.sequence,
+                                      speaker: turn.speaker,
+                                      raw_text: turn.raw_text,
+                                      cleaned_text: turn.cleaned_data.cleaned_text
+                                    }))
+                                  }
                                 }
+                                const jsonString = JSON.stringify(compactData, null, 2)
+                                
+                                // Force focus and try execCommand
+                                window.focus()
+                                document.body.focus()
+                                
                                 const textarea = document.createElement('textarea')
                                 textarea.value = jsonString
-                                textarea.style.position = 'fixed'
-                                textarea.style.left = '-999999px'
-                                textarea.style.top = '-999999px'
+                                textarea.style.position = 'absolute'
+                                textarea.style.left = '0'
+                                textarea.style.top = '0'
+                                textarea.style.width = '1px'
+                                textarea.style.height = '1px'
+                                textarea.style.opacity = '0'
                                 document.body.appendChild(textarea)
                                 textarea.focus()
                                 textarea.select()
                                 
-                                const successful = document.execCommand('copy')
+                                const success = document.execCommand('copy')
                                 document.body.removeChild(textarea)
                                 
-                                if (successful) {
-                                  console.log('[Copy Compact] Legacy clipboard write successful')
+                                if (success) {
+                                  console.log('[Copy Compact] Final fallback successful')
                                   setShowCopySuccess(true)
                                   setTimeout(() => setShowCopySuccess(false), 3000)
-                                  addDetailedLog(`📋 Copied compact JSON to clipboard (legacy): ${exportData?.evaluation?.name} (${compactData?.compact_export?.turns?.length || 0} turns)`)
+                                  addDetailedLog(`📋 Copied compact JSON (fallback): ${exportData.evaluation.name}`)
                                 } else {
-                                  throw new Error('Legacy clipboard method failed')
+                                  throw new Error('All clipboard methods exhausted')
                                 }
-                              } catch (legacyError) {
-                                console.error('[Copy Compact] All clipboard methods failed:', legacyError)
-                                alert(`Failed to copy compact evaluation. Data size: ${Math.round((jsonString?.length || 0) / 1024)}KB. Try using the Export button instead.`)
-                                addDetailedLog(`❌ Copy Compact failed (all methods): ${(error as any).message} | Legacy: ${(legacyError as any).message}`)
+                              } catch (fallbackError: any) {
+                                console.error('[Copy Compact] All methods failed:', fallbackError)
+                                alert(`❌ Copy failed: ${error.message}\n\nData size may be too large (${Math.round((error.data?.length || 500000) / 1024)}KB).\n\nTry using the Export button instead.`)
+                                addDetailedLog(`❌ Copy Compact failed completely: ${error.message}`)
                               }
                             } finally {
-                              // Re-enable button after operation
-                              setTimeout(() => {
-                                button.disabled = false
-                              }, 1000)
+                              setCopyCompactLoading(false)
                             }
                           }}
                           style={{
@@ -1966,14 +1985,15 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                             borderRadius: '6px',
                             fontSize: '12px',
                             fontWeight: '500',
-                            backgroundColor: showCopySuccess ? '#10b981' : '#3b82f6',
+                            backgroundColor: copyCompactLoading ? '#6b7280' : (showCopySuccess ? '#10b981' : '#3b82f6'),
                             color: 'white',
-                            cursor: 'pointer',
+                            cursor: copyCompactLoading ? 'not-allowed' : 'pointer',
+                            opacity: copyCompactLoading ? 0.7 : 1,
                             marginLeft: '8px',
                             transition: 'background-color 0.2s'
                           }}
                         >
-                          {showCopySuccess ? '✅ Copied!' : '📋 Copy Compact'}
+                          {copyCompactLoading ? '⏳ Copying...' : (showCopySuccess ? '✅ Copied!' : '📋 Copy Compact')}
                         </button>
                       )}
                       
