@@ -55,3 +55,10 @@ playwright/.cache/
 *.temp
 # Claude Code local settings
 .claude/
+
+# MCP Configuration (user-specific)
+.claude.json
+.mcp.json
+
+# Personal troubleshooting logs
+mcpeditsscott.md
