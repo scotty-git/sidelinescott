@@ -172,6 +172,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [conversationEvaluations, setConversationEvaluations] = useState<{[key: string]: any[]}>({})
   const [loadingConversations, setLoadingConversations] = useState(false)
   const [loadingEvaluation, setLoadingEvaluation] = useState(false)
+  const [loadingProgress, setLoadingProgress] = useState('')
+  const [loadingAbortController, setLoadingAbortController] = useState<AbortController | null>(null)
   const [newConversationName, setNewConversationName] = useState('')
   const [newConversationDescription, setNewConversationDescription] = useState('')
   const [newConversationText, setNewConversationText] = useState('')
@@ -723,8 +725,27 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
 
   // NOTE: Save functions removed - evaluations auto-save during processing
 
+  const cancelEvaluationLoad = () => {
+    if (loadingAbortController) {
+      loadingAbortController.abort()
+      setLoadingAbortController(null)
+      setLoadingEvaluation(false)
+      setLoadingProgress('')
+      addDetailedLog('🚫 Evaluation loading cancelled by user')
+    }
+  }
+
   const loadLatestEvaluation = async (conversation: any) => {
+    // Cancel any existing load operation
+    if (loadingAbortController) {
+      loadingAbortController.abort()
+    }
+    
+    const controller = new AbortController()
+    setLoadingAbortController(controller)
     setLoadingEvaluation(true)
+    setLoadingProgress('Initializing...')
+    
     try {
       const evaluations = conversationEvaluations[conversation.id] || []
       if (evaluations.length === 0) {
@@ -737,12 +758,13 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       addDetailedLog(`📊 Loading latest evaluation: ${latestEvaluation.name}`)
       
       // Load evaluation details including cleaned turns
+      setLoadingProgress('Fetching evaluation metadata...')
       addDetailedLog(`📡 Requesting evaluation details for ID: ${latestEvaluation.id}`)
-      const evaluationDetails = await Promise.race([
-        apiClient.getEvaluationDetails(latestEvaluation.id),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout after 30 seconds')), 30000))
-      ]) as any
-      addDetailedLog(`✅ Received evaluation details, processing ${evaluationDetails.cleaned_turns?.length || 0} cleaned turns`)
+      const evaluationDetails = await apiClient.getEvaluationDetails(latestEvaluation.id, controller.signal) as any
+      
+      const turnCount = evaluationDetails.cleaned_turns?.length || 0
+      setLoadingProgress(`Processing ${turnCount} cleaned turns...`)
+      addDetailedLog(`✅ Received evaluation details, processing ${turnCount} cleaned turns`)
       
       // Set conversation context
       setConversationId(conversation.id)
@@ -753,11 +775,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       setShowConversationsModal(false)
       
       // Load raw turns for the conversation component
+      setLoadingProgress('Loading conversation turns...')
       addDetailedLog(`📡 Requesting raw turns for conversation: ${conversation.id}`)
-      const turnsResponse = await Promise.race([
-        apiClient.get(`/api/v1/conversations/${conversation.id}/turns`),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Turns request timeout after 30 seconds')), 30000))
-      ]) as any
+      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`, controller.signal) as any
       addDetailedLog(`✅ Received ${turnsResponse.turns?.length || 0} raw turns`)
       
       if (turnsResponse.turns && turnsResponse.turns.length > 0) {
@@ -777,6 +797,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       }
       
       // Convert evaluation cleaned turns to UI format with complete data
+      setLoadingProgress(`Converting ${turnCount} turns to UI format...`)
       const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any) => ({
         turn_id: cleanedTurn.turn_id,
         conversation_id: conversation.id,
@@ -843,18 +864,27 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         }
       })
       
+      setLoadingProgress('Finalizing UI...')
       setCleanedTurns(cleaned)
       setTurnAPIGroups(reconstructedTurnAPIGroups)
       setSelectedTab('results')
       addDetailedLog(`✅ Loaded ${cleaned.length} cleaned turns from evaluation: ${latestEvaluation.name}`)
       addDetailedLog(`✅ Reconstructed ${reconstructedTurnAPIGroups.length} API log entries for inspection`)
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to load latest evaluation:', error)
-      addDetailedLog(`❌ Failed to load evaluation: ${(error as any).message}`)
-      alert(`Failed to load latest evaluation: ${(error as any).message}`)
+      
+      if (error.name === 'AbortError') {
+        addDetailedLog('🚫 Evaluation loading was cancelled')
+        // Don't show alert for user-cancelled operations
+      } else {
+        addDetailedLog(`❌ Failed to load evaluation: ${error.message}`)
+        alert(`Failed to load latest evaluation: ${error.message}`)
+      }
     } finally {
       setLoadingEvaluation(false)
+      setLoadingProgress('')
+      setLoadingAbortController(null)
     }
   }
   
@@ -3483,23 +3513,44 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                               {/* Action Buttons */}
                               <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                                 {hasEvaluations && (
-                                  <button
-                                    onClick={() => loadLatestEvaluation(conversation)}
-                                    style={{
-                                      padding: '6px 12px',
-                                      backgroundColor: theme.accent,
-                                      color: 'white',
-                                      border: 'none',
-                                      borderRadius: '4px',
-                                      fontSize: '11px',
-                                      fontWeight: '500',
-                                      cursor: 'pointer',
-                                      flex: 1
-                                    }}
-                                    disabled={loadingEvaluation}
-                                  >
-                                    {loadingEvaluation ? '⏳ Loading...' : '📊 Load Latest'}
-                                  </button>
+                                  <>
+                                    <button
+                                      onClick={() => loadLatestEvaluation(conversation)}
+                                      style={{
+                                        padding: '6px 12px',
+                                        backgroundColor: loadingEvaluation ? '#6b7280' : theme.accent,
+                                        color: 'white',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        fontSize: '11px',
+                                        fontWeight: '500',
+                                        cursor: loadingEvaluation ? 'not-allowed' : 'pointer',
+                                        flex: loadingEvaluation ? 2 : 1,
+                                        opacity: loadingEvaluation ? 0.7 : 1
+                                      }}
+                                      disabled={loadingEvaluation}
+                                    >
+                                      {loadingEvaluation ? (loadingProgress || '⏳ Loading...') : '📊 Load Latest'}
+                                    </button>
+                                    {loadingEvaluation && (
+                                      <button
+                                        onClick={cancelEvaluationLoad}
+                                        style={{
+                                          padding: '6px 8px',
+                                          backgroundColor: '#ef4444',
+                                          color: 'white',
+                                          border: 'none',
+                                          borderRadius: '4px',
+                                          fontSize: '11px',
+                                          fontWeight: '500',
+                                          cursor: 'pointer',
+                                          marginLeft: '4px'
+                                        }}
+                                      >
+                                        ✕ Cancel
+                                      </button>
+                                    )}
+                                  </>
                                 )}
                                 
                                 <button

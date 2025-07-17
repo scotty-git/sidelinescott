@@ -7,7 +7,26 @@ export default defineConfig({
   plugins: [react(), UnoCSS()],
   server: {
     port: 6173,
-    host: '127.0.0.1'
+    host: '127.0.0.1',
+    hmr: {
+      overlay: false, // Disable error overlay
+      clientErrorOverlay: false
+    },
+    // Suppress WebSocket connection errors in console
+    ws: {
+      // Increase ping timeout to reduce connection spam
+      pingTimeout: 60000,
+      // Custom error handling to suppress spam
+      on: {
+        error: (err: Error) => {
+          // Suppress WebSocket connection errors from console spam
+          if (err.message?.includes('WebSocket') || err.message?.includes('connection')) {
+            return // Don't log WebSocket errors
+          }
+          console.error(err)
+        }
+      }
+    }
   },
   test: {
     globals: true,
