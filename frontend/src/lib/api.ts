@@ -32,12 +32,42 @@ export class APIClient {
       console.log('API request with auth token:', endpoint, `Bearer ${this.authToken.substring(0, 50)}...`)
     }
 
+    // Create abort controller for timeout handling
+    const controller = new AbortController()
+    
+    // Determine timeout based on endpoint (large evaluations need more time)
+    const isLargeDataEndpoint = endpoint.includes('/evaluations/') && 
+                               (endpoint.includes('/export') || !endpoint.includes('/process-turn'))
+    const timeoutMs = isLargeDataEndpoint ? 120000 : 30000 // 2 minutes for large data, 30s for others
+    
+    const timeoutId = setTimeout(() => {
+      controller.abort()
+    }, timeoutMs)
+
     const config: RequestInit = {
       ...options,
       headers,
+      signal: controller.signal,
     }
 
-    const response = await fetch(url, config)
+    try {
+      const response = await fetch(url, config)
+      clearTimeout(timeoutId)
+      
+      return await this.handleResponse<T>(response, endpoint)
+    } catch (error: any) {
+      clearTimeout(timeoutId)
+      
+      if (error.name === 'AbortError') {
+        const timeoutSeconds = Math.round(timeoutMs / 1000)
+        throw new Error(`Request timeout after ${timeoutSeconds} seconds`)
+      }
+      
+      throw error
+    }
+  }
+
+  private async handleResponse<T>(response: Response, endpoint: string): Promise<T> {
     
     if (!response.ok) {
       // Try to extract detailed error message from response
@@ -64,8 +94,8 @@ export class APIClient {
   }
 
   // HTTP methods
-  async get<T>(endpoint: string): Promise<T> {
-    return this.request<T>(endpoint, { method: 'GET' })
+  async get<T>(endpoint: string, signal?: AbortSignal): Promise<T> {
+    return this.request<T>(endpoint, { method: 'GET', signal })
   }
 
   async post<T>(endpoint: string, data?: any): Promise<T> {
@@ -144,8 +174,8 @@ export class APIClient {
     return this.request(`/api/v1/evaluations/conversations/${conversationId}/evaluations`)
   }
 
-  async getEvaluationDetails(evaluationId: string) {
-    return this.request(`/api/v1/evaluations/${evaluationId}`)
+  async getEvaluationDetails(evaluationId: string, signal?: AbortSignal) {
+    return this.request(`/api/v1/evaluations/${evaluationId}`, { signal })
   }
 
   async processTurn(evaluationId: string, turnId: string, settings?: any) {
