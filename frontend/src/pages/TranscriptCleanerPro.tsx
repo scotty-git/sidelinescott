@@ -530,6 +530,15 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             max_tokens: settings.maxTokens,
             model_name: settings.modelName
           },
+          function_params: {
+            model_name: settings.functionModelName,
+            temperature: settings.functionTemperature,
+            top_p: settings.functionTopP,
+            top_k: settings.functionTopK,
+            max_tokens: settings.functionMaxTokens,
+            window_size: settings.functionWindowSize,
+            prompt_template_id: settings.functionPromptTemplate?.id || null
+          },
           user_variables: {
             call_context: settings.callContext || "",
             additional_context: settings.additionalContext || ""

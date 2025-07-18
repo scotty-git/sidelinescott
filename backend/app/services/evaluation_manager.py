@@ -213,9 +213,10 @@ class EvaluationManager:
                     print(f"[EvaluationManager] 📝 Using legacy cleaner template for caching")
                 
                 # Get function prompt template from settings
-                if evaluation.settings and evaluation.settings.get('function_template_id'):
+                function_params = evaluation.settings.get('function_params', {}) if evaluation.settings else {}
+                if function_params.get('prompt_template_id'):
                     function_template_obj = self.prompt_service.get_function_template_by_id_sync(
-                        evaluation.settings['function_template_id'], db
+                        function_params['prompt_template_id'], db
                     )
                     if function_template_obj:
                         function_prompt_template = function_template_obj.template
@@ -335,6 +336,38 @@ class EvaluationManager:
         except Exception as e:
             print(f"[EvaluationManager] ❌ Failed to load mirrored customer: {e}")
     
+    def _create_mirrored_customer_from_default(self, evaluation_id: UUID, db: Session = None):
+        """Create a mirrored customer from the default customer for this evaluation"""
+        if not db:
+            return None
+        
+        try:
+            from app.models.mock_customer import MockCustomer, MirroredMockCustomer
+            
+            # Find the default customer
+            default_customer = db.query(MockCustomer).filter(MockCustomer.is_default == True).first()
+            
+            if not default_customer:
+                print(f"[EvaluationManager] ❌ No default customer found")
+                return None
+            
+            # Create mirrored customer from default
+            mirrored_customer = MirroredMockCustomer.from_mock_customer(default_customer, evaluation_id)
+            
+            # Save to database
+            db.add(mirrored_customer)
+            db.commit()
+            db.refresh(mirrored_customer)
+            
+            print(f"[EvaluationManager] ✅ Created mirrored customer from default: {mirrored_customer.company_name}")
+            return mirrored_customer
+            
+        except Exception as e:
+            print(f"[EvaluationManager] ❌ Failed to create mirrored customer from default: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     def _load_existing_function_calls(self, evaluation_id: UUID, db: Session = None):
         """Load existing function calls from database to rebuild function call history"""
         if not db:
@@ -408,10 +441,16 @@ class EvaluationManager:
             print(f"[EvaluationManager] ❌ No function prompt template available, skipping function calls")
             return []
         
-        # Ensure mirrored customer exists
+        # Ensure mirrored customer exists - create if needed
         if not evaluation_state.mirrored_customer:
-            print(f"[EvaluationManager] ❌ No mirrored customer available, skipping function calls")
-            return []
+            print(f"[EvaluationManager] 👤 No mirrored customer found, creating from default customer")
+            mirrored_customer = self._create_mirrored_customer_from_default(evaluation_state.evaluation_id, db)
+            if mirrored_customer:
+                evaluation_state.mirrored_customer = mirrored_customer
+                print(f"[EvaluationManager] ✅ Created mirrored customer: {mirrored_customer.company_name}")
+            else:
+                print(f"[EvaluationManager] ❌ Failed to create mirrored customer, skipping function calls")
+                return []
         
         try:
             function_timing['function_context_start'] = time.time()
