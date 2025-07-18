@@ -231,6 +231,52 @@ export class APIClient {
   async getAllVariableSuggestions() {
     return this.request('/api/v1/variables/all-suggestions')
   }
+
+  // Function Prompt Template endpoints
+  async getFunctionPromptTemplates() {
+    return this.request('/api/v1/prompt-engineering/function-templates')
+  }
+
+  async getFunctionPromptTemplate(templateId: string) {
+    return this.request(`/api/v1/prompt-engineering/function-templates/${templateId}`)
+  }
+
+  async createFunctionPromptTemplate(data: {
+    name: string
+    description: string
+    template: string
+    variables: string[]
+  }) {
+    return this.request('/api/v1/prompt-engineering/function-templates', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    })
+  }
+
+  async updateFunctionPromptTemplate(templateId: string, data: {
+    name?: string
+    description?: string
+    template?: string
+    variables?: string[]
+    is_default?: boolean
+  }) {
+    return this.request(`/api/v1/prompt-engineering/function-templates/${templateId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    })
+  }
+
+  async deleteFunctionPromptTemplate(templateId: string) {
+    return this.request(`/api/v1/prompt-engineering/function-templates/${templateId}`, {
+      method: 'DELETE'
+    })
+  }
+
+  async setFunctionPromptTemplateAsDefault(templateId: string) {
+    return this.request(`/api/v1/prompt-engineering/function-templates/${templateId}/set-default`, {
+      method: 'POST'
+    })
+  }
 }
 
 export const apiClient = new APIClient()

@@ -169,3 +169,34 @@ class UpdateTestConversationRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     variables: Optional[Dict[str, Any]] = None
+
+
+# Function Prompt Templates
+class FunctionPromptTemplate(BaseModel):
+    """Function prompt template schema"""
+    id: str
+    name: str
+    description: str
+    template: str
+    variables: List[str]
+    version: str = "1.0.0"
+    is_default: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class CreateFunctionPromptTemplateRequest(BaseModel):
+    """Request schema for creating function prompt templates"""
+    name: str
+    description: str
+    template: str
+    variables: List[str]
+
+
+class UpdateFunctionPromptTemplateRequest(BaseModel):
+    """Request schema for updating function prompt templates"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    template: Optional[str] = None
+    variables: Optional[List[str]] = None
+    is_default: Optional[bool] = None

@@ -11,7 +11,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 
-from app.models.prompt_template import PromptTemplate, PromptUsage, ABTest, ABTestResult
+from app.models.prompt_template import PromptTemplate, PromptUsage, ABTest, ABTestResult, FunctionPromptTemplate
 from app.models.test_conversation import TestConversation
 from app.schemas.prompt import (
     PromptTemplate as PromptTemplateSchema,
@@ -560,3 +560,133 @@ IMPORTANT:
                 logger.info(f"Set {next_template.id} as default to ensure at least one default exists")
             else:
                 raise ValueError("Cannot unset default: no other templates available")
+
+    # Function Prompt Template Methods
+    
+    async def get_function_templates(self, db: Session) -> List[FunctionPromptTemplate]:
+        """Get all function prompt templates"""
+        return db.query(FunctionPromptTemplate).order_by(FunctionPromptTemplate.created_at.desc()).all()
+    
+    async def get_function_template(self, db: Session, template_id: UUID) -> Optional[FunctionPromptTemplate]:
+        """Get a specific function prompt template"""
+        return db.query(FunctionPromptTemplate).filter(FunctionPromptTemplate.id == template_id).first()
+    
+    async def create_function_template(
+        self, 
+        db: Session, 
+        name: str, 
+        description: str, 
+        template: str, 
+        variables: List[str]
+    ) -> FunctionPromptTemplate:
+        """Create a new function prompt template"""
+        # Check if name already exists
+        existing = db.query(FunctionPromptTemplate).filter(FunctionPromptTemplate.name == name).first()
+        if existing:
+            raise ValueError(f"Function template with name '{name}' already exists")
+        
+        # Create the template
+        function_template = FunctionPromptTemplate(
+            name=name,
+            description=description,
+            template=template,
+            variables=variables
+        )
+        
+        db.add(function_template)
+        db.commit()
+        db.refresh(function_template)
+        
+        logger.info(f"Created function template: {name}")
+        return function_template
+    
+    async def update_function_template(
+        self, 
+        db: Session, 
+        template_id: UUID, 
+        **updates
+    ) -> Optional[FunctionPromptTemplate]:
+        """Update a function prompt template"""
+        template = await self.get_function_template(db, template_id)
+        if not template:
+            return None
+        
+        # Handle is_default constraint
+        if updates.get('is_default') == True:
+            await self._ensure_single_function_default(db, template_id)
+        
+        # Apply updates
+        for key, value in updates.items():
+            if hasattr(template, key):
+                setattr(template, key, value)
+        
+        db.commit()
+        db.refresh(template)
+        
+        logger.info(f"Updated function template: {template_id}")
+        return template
+    
+    async def delete_function_template(self, db: Session, template_id: UUID) -> bool:
+        """Delete a function prompt template"""
+        template = await self.get_function_template(db, template_id)
+        if not template:
+            return False
+        
+        # Check if this is the last template
+        total_templates = db.query(FunctionPromptTemplate).count()
+        if total_templates <= 1:
+            raise ValueError("Cannot delete the last remaining function template")
+        
+        # If deleting the default template, ensure another one becomes default
+        if template.is_default:
+            await self._ensure_at_least_one_function_default(db, template_id)
+        
+        db.delete(template)
+        db.commit()
+        
+        logger.info(f"Deleted function template: {template_id}")
+        return True
+    
+    async def set_default_function_template(self, db: Session, template_id: UUID) -> Optional[FunctionPromptTemplate]:
+        """Set a function template as the default (and unset all others)"""
+        template = await self.get_function_template(db, template_id)
+        if not template:
+            return None
+        
+        # Use the constraint-enforced update method
+        return await self.update_function_template(db, template_id, is_default=True)
+    
+    async def get_default_function_template(self, db: Session) -> Optional[FunctionPromptTemplate]:
+        """Get the current default function template"""
+        return db.query(FunctionPromptTemplate).filter(FunctionPromptTemplate.is_default == True).first()
+    
+    async def _ensure_single_function_default(self, db: Session, new_default_id: UUID) -> None:
+        """Ensure only one function template is marked as default"""
+        # Unset all other templates as default
+        db.query(FunctionPromptTemplate).filter(
+            FunctionPromptTemplate.id != new_default_id,
+            FunctionPromptTemplate.is_default == True
+        ).update({FunctionPromptTemplate.is_default: False})
+        db.commit()
+        logger.info(f"Unset other function templates as default, setting {new_default_id} as default")
+    
+    async def _ensure_at_least_one_function_default(self, db: Session, excluding_id: UUID) -> None:
+        """Ensure at least one function template remains as default"""
+        # Count remaining default templates (excluding the one being changed)
+        remaining_defaults = db.query(FunctionPromptTemplate).filter(
+            FunctionPromptTemplate.id != excluding_id,
+            FunctionPromptTemplate.is_default == True
+        ).count()
+        
+        if remaining_defaults == 0:
+            # Find the next available template to set as default
+            next_template = db.query(FunctionPromptTemplate).filter(
+                FunctionPromptTemplate.id != excluding_id
+            ).order_by(FunctionPromptTemplate.created_at.asc()).first()
+            
+            if next_template:
+                next_template.is_default = True
+                db.commit()
+                logger.info(f"Set {next_template.id} as function default to ensure at least one default exists")
+            else:
+                raise ValueError("Cannot unset default: no other function templates available")

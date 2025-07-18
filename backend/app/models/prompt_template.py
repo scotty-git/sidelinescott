@@ -83,3 +83,21 @@ class ABTestResult(Base):
 
     def __repr__(self):
         return f"<ABTestResult(test_id='{self.test_id}', variant='{self.prompt_variant}')>"
+
+
+class FunctionPromptTemplate(Base):
+    """Database model for function prompt templates"""
+    __tablename__ = "function_prompt_templates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False, unique=True)
+    description = Column(Text, nullable=False)
+    template = Column(Text, nullable=False)
+    variables = Column(JSON, nullable=False, default=list)  # List of variable names
+    version = Column(String(50), nullable=False, default="1.0.0")
+    is_default = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<FunctionPromptTemplate(name='{self.name}', version='{self.version}')>"

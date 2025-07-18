@@ -25,7 +25,10 @@ from app.schemas.prompt import (
     ConversationSimulationRequest,
     CreateTestConversationRequest,
     UpdateTestConversationRequest,
-    TestConversationResponse
+    TestConversationResponse,
+    FunctionPromptTemplate,
+    CreateFunctionPromptTemplateRequest,
+    UpdateFunctionPromptTemplateRequest
 )
 
 logger = logging.getLogger(__name__)
@@ -617,3 +620,170 @@ async def simulate_prompt_with_conversation(
     
     else:
         raise HTTPException(status_code=400, detail="Invalid testing_mode. Must be 'single_turn' or 'full_conversation'")
+
+
+# Function Prompt Templates Endpoints
+
+@router.get("/function-templates", response_model=List[FunctionPromptTemplate])
+async def get_function_prompt_templates(
+    db: Session = Depends(get_db)
+):
+    """Get all function prompt templates"""
+    try:
+        templates = await prompt_service.get_function_templates(db)
+        return [
+            FunctionPromptTemplate(
+                id=str(t.id),
+                name=t.name,
+                description=t.description,
+                template=t.template,
+                variables=t.variables,
+                version=t.version,
+                is_default=t.is_default,
+                created_at=t.created_at,
+                updated_at=t.updated_at
+            )
+            for t in templates
+        ]
+    except Exception as e:
+        logger.error(f"Failed to get function templates: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get function templates: {str(e)}")
+
+
+@router.get("/function-templates/{template_id}", response_model=FunctionPromptTemplate)
+async def get_function_prompt_template(
+    template_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Get a specific function prompt template"""
+    try:
+        template = await prompt_service.get_function_template(db, template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Function template not found")
+        
+        return FunctionPromptTemplate(
+            id=str(template.id),
+            name=template.name,
+            description=template.description,
+            template=template.template,
+            variables=template.variables,
+            version=template.version,
+            is_default=template.is_default,
+            created_at=template.created_at,
+            updated_at=template.updated_at
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get function template: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get function template: {str(e)}")
+
+
+@router.post("/function-templates", response_model=FunctionPromptTemplate)
+async def create_function_prompt_template(
+    request: CreateFunctionPromptTemplateRequest,
+    db: Session = Depends(get_db)
+):
+    """Create a new function prompt template"""
+    try:
+        template = await prompt_service.create_function_template(
+            db=db,
+            name=request.name,
+            description=request.description,
+            template=request.template,
+            variables=request.variables
+        )
+        
+        return FunctionPromptTemplate(
+            id=str(template.id),
+            name=template.name,
+            description=template.description,
+            template=template.template,
+            variables=template.variables,
+            version=template.version,
+            is_default=template.is_default,
+            created_at=template.created_at,
+            updated_at=template.updated_at
+        )
+    except Exception as e:
+        logger.error(f"Failed to create function template: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to create function template: {str(e)}")
+
+
+@router.put("/function-templates/{template_id}", response_model=FunctionPromptTemplate)
+async def update_function_prompt_template(
+    template_id: UUID,
+    request: UpdateFunctionPromptTemplateRequest,
+    db: Session = Depends(get_db)
+):
+    """Update an existing function prompt template"""
+    try:
+        updates = {k: v for k, v in request.dict().items() if v is not None}
+        
+        template = await prompt_service.update_function_template(db, template_id, **updates)
+        if not template:
+            raise HTTPException(status_code=404, detail="Function template not found")
+        
+        return FunctionPromptTemplate(
+            id=str(template.id),
+            name=template.name,
+            description=template.description,
+            template=template.template,
+            variables=template.variables,
+            version=template.version,
+            is_default=template.is_default,
+            created_at=template.created_at,
+            updated_at=template.updated_at
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update function template: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update function template: {str(e)}")
+
+
+@router.delete("/function-templates/{template_id}")
+async def delete_function_template(
+    template_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Delete a function prompt template"""
+    try:
+        success = await prompt_service.delete_function_template(db, template_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Function template not found")
+        return {"message": "Function template deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete function template: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete function template: {str(e)}")
+
+
+@router.post("/function-templates/{template_id}/set-default", response_model=FunctionPromptTemplate)
+async def set_function_template_as_default(
+    template_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Set a function template as the default (and unset all others)"""
+    try:
+        template = await prompt_service.set_default_function_template(db, template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Function template not found")
+        
+        return FunctionPromptTemplate(
+            id=str(template.id),
+            name=template.name,
+            description=template.description,
+            template=template.template,
+            variables=template.variables,
+            version=template.version,
+            is_default=template.is_default,
+            created_at=template.created_at,
+            updated_at=template.updated_at
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to set default function template: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to set default function template: {str(e)}")

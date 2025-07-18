@@ -113,6 +113,10 @@ function PromptEngineeringDashboardInner() {
   const [functionValidationErrors, setFunctionValidationErrors] = useState<ValidationError[]>([])
   const [functionValidationWarnings, setFunctionValidationWarnings] = useState<ValidationWarning[]>([])
   const [functionValidationTimeoutId, setFunctionValidationTimeoutId] = useState<NodeJS.Timeout | null>(null)
+  
+  // Function prompt template state
+  const [functionTemplates, setFunctionTemplates] = useState<any[]>([])
+  const [currentFunctionTemplateId, setCurrentFunctionTemplateId] = useState<string | null>(null)
 
   const theme = {
     bg: darkMode ? '#1f2937' : '#ffffff',
@@ -130,6 +134,7 @@ function PromptEngineeringDashboardInner() {
 
   useEffect(() => {
     loadTemplates()
+    loadFunctionTemplates()
   }, [])
 
   // Initialize validator when templates change
@@ -168,6 +173,39 @@ function PromptEngineeringDashboardInner() {
     }
   }, [validationTimeoutId, functionValidationTimeoutId])
 
+  // Run initial validation on page load for function prompt
+  useEffect(() => {
+    // Run validation immediately on page load to show initial errors
+    debouncedFunctionValidation(functionPromptName, functionPromptContent, functionPromptDescription)
+  }, []) // Empty dependency array means this runs once on mount
+
+  // Load appropriate templates when tab changes
+  useEffect(() => {
+    if (activeTab === 'cleaner') {
+      // Load cleaner template into form if available
+      if (templates.length > 0 && !activeTemplate) {
+        const firstTemplate = templates[0]
+        setActiveTemplate(firstTemplate)
+        setCurrentTemplateId(firstTemplate.id) // Set current template ID for edit mode
+        setEditingTemplate(firstTemplate.template)
+        setTemplateName(firstTemplate.name)
+        setTemplateDescription(firstTemplate.description || '')
+      }
+    } else if (activeTab === 'function') {
+      // Load function template into form if available
+      if (functionTemplates.length > 0 && !currentFunctionTemplateId) {
+        const firstTemplate = functionTemplates[0]
+        setCurrentFunctionTemplateId(firstTemplate.id)
+        setFunctionPromptName(firstTemplate.name)
+        setFunctionPromptDescription(firstTemplate.description)
+        setFunctionPromptContent(firstTemplate.template)
+        // Clear validation errors when loading existing template
+        setFunctionValidationErrors([])
+        setFunctionValidationWarnings([])
+      }
+    }
+  }, [activeTab, templates, functionTemplates])
+
   const loadTemplates = async () => {
     try {
       setLoading(true)
@@ -175,10 +213,11 @@ function PromptEngineeringDashboardInner() {
       console.log('✅ Templates loaded successfully:', response.length, 'templates')
       setTemplates(response)
       
-      // Load the first template if available (or user can select one)
-      if (response.length > 0) {
+      // Load the first template if available and on cleaner tab
+      if (response.length > 0 && activeTab === 'cleaner') {
         const firstTemplate = response[0]
         setActiveTemplate(firstTemplate)
+        setCurrentTemplateId(firstTemplate.id) // Set current template ID for edit mode
         setEditingTemplate(firstTemplate.template)
         setTemplateName(firstTemplate.name)
         setTemplateDescription(firstTemplate.description || '')
@@ -189,6 +228,34 @@ function PromptEngineeringDashboardInner() {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error'
       templateToasts.showApiError('Load Templates', errorMessage)
       setError(`Failed to load templates: ${errorMessage}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadFunctionTemplates = async () => {
+    try {
+      setLoading(true)
+      const response = await apiClient.getFunctionPromptTemplates() as any[]
+      console.log('✅ Function templates loaded successfully:', response.length, 'templates')
+      setFunctionTemplates(response)
+      
+      // Load the first function template if available and on function tab
+      if (response.length > 0 && activeTab === 'function') {
+        const firstTemplate = response[0]
+        setCurrentFunctionTemplateId(firstTemplate.id)
+        setFunctionPromptName(firstTemplate.name)
+        setFunctionPromptDescription(firstTemplate.description)
+        setFunctionPromptContent(firstTemplate.template)
+        // Clear validation errors when loading existing template
+        setFunctionValidationErrors([])
+        setFunctionValidationWarnings([])
+      }
+      
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      templateToasts.showApiError('Load Function Templates', errorMessage)
+      setError(`Failed to load function templates: ${errorMessage}`)
     } finally {
       setLoading(false)
     }
@@ -286,6 +353,158 @@ function PromptEngineeringDashboardInner() {
     }, 300)
     
     setFunctionValidationTimeoutId(timeoutId)
+  }
+
+  // Function to extract variables from function prompt template
+  const extractVariablesFromFunctionTemplate = (template: string): string[] => {
+    const variableRegex = /{(\w+)}/g
+    const variables: string[] = []
+    let match
+    
+    while ((match = variableRegex.exec(template)) !== null) {
+      if (!variables.includes(match[1])) {
+        variables.push(match[1])
+      }
+    }
+    
+    return variables
+  }
+
+  // Clear function prompt form
+  const handleNewFunctionPrompt = () => {
+    setCurrentFunctionTemplateId(null) // Clear current template ID for create mode
+    setFunctionPromptName('')
+    setFunctionPromptDescription('')
+    setFunctionPromptContent('')
+    setFunctionValidationErrors([])
+    setFunctionValidationWarnings([])
+  }
+
+  // Save function prompt template
+  const handleSaveFunctionPrompt = async () => {
+    // Basic validation first
+    if (!functionPromptName.trim()) {
+      templateToasts.showValidationError(['Function prompt name is required'])
+      return
+    }
+    
+    if (!functionPromptContent.trim()) {
+      templateToasts.showValidationError(['Function prompt content cannot be empty'])
+      return
+    }
+    
+    if (!functionPromptDescription.trim()) {
+      templateToasts.showValidationError(['Function prompt description is required'])
+      return
+    }
+    
+    // Check if there are validation errors
+    if (functionValidationErrors.length > 0) {
+      const errorMessages = functionValidationErrors.map(error => error.message)
+      templateToasts.showValidationError(errorMessages)
+      return
+    }
+    
+    try {
+      setLoading(true)
+      
+      // Extract variables from the template
+      const detectedVariables = extractVariablesFromFunctionTemplate(functionPromptContent)
+      
+      if (currentFunctionTemplateId) {
+        // UPDATE existing function template
+        const response = await apiClient.updateFunctionPromptTemplate(currentFunctionTemplateId, {
+          name: functionPromptName,
+          description: functionPromptDescription,
+          template: functionPromptContent,
+          variables: detectedVariables
+        })
+        
+        templateToasts.showSaveSuccess(`Updated function prompt "${functionPromptName}"`)
+        
+        // Reload function templates to get updated data
+        await loadFunctionTemplates()
+        
+      } else {
+        // CREATE new function template
+        const response = await apiClient.createFunctionPromptTemplate({
+          name: functionPromptName,
+          description: functionPromptDescription,
+          template: functionPromptContent,
+          variables: detectedVariables
+        })
+        
+        templateToasts.showSaveSuccess(`Created function prompt "${functionPromptName}"`)
+        
+        // Set the new template as current and reload
+        setCurrentFunctionTemplateId(response.id)
+        await loadFunctionTemplates()
+      }
+      
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      const action = currentFunctionTemplateId ? 'Update Function Prompt' : 'Create Function Prompt'
+      templateToasts.showApiError(action, errorMessage)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Save As - always creates new function template
+  const handleSaveAsFunctionPrompt = async () => {
+    // Basic validation first
+    if (!functionPromptName.trim()) {
+      templateToasts.showValidationError(['Function prompt name is required'])
+      return
+    }
+    
+    if (!functionPromptContent.trim()) {
+      templateToasts.showValidationError(['Function prompt content cannot be empty'])
+      return
+    }
+    
+    if (!functionPromptDescription.trim()) {
+      templateToasts.showValidationError(['Function prompt description is required'])
+      return
+    }
+    
+    // Check if there are validation errors
+    if (functionValidationErrors.length > 0) {
+      const errorMessages = functionValidationErrors.map(error => error.message)
+      templateToasts.showValidationError(errorMessages)
+      return
+    }
+    
+    try {
+      setLoading(true)
+      
+      // Extract variables from the template
+      const detectedVariables = extractVariablesFromFunctionTemplate(functionPromptContent)
+      
+      // Always create a new template (Save As)
+      const response = await apiClient.createFunctionPromptTemplate({
+        name: functionPromptName,
+        description: functionPromptDescription,
+        template: functionPromptContent,
+        variables: detectedVariables
+      })
+      
+      templateToasts.showSaveSuccess(`Created function prompt "${functionPromptName}"`)
+      
+      // Set the new template as current and reload
+      setCurrentFunctionTemplateId(response.id)
+      await loadFunctionTemplates()
+      
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      templateToasts.showApiError('Save As Function Prompt', errorMessage)
+    } finally {
+      setLoading(false)
+    }
+    
+    // Clear validation errors after successful save
+    setFunctionValidationErrors([])
+    setFunctionValidationWarnings([])
   }
 
   // Helper function to extract variables from template
@@ -493,47 +712,82 @@ function PromptEngineeringDashboardInner() {
 
 
   // Template Library Modal Handlers
-  const handleEditTemplate = (template: PromptTemplate) => {
-    setCurrentTemplateId(template.id)
-    setActiveTemplate(template)
-    setEditingTemplate(template.template)
-    setTemplateName(template.name)
-    setTemplateDescription(template.description || '')
-    setActiveTab('cleaner')
-    setShowTemplateLibrary(false)
+  const handleEditTemplate = (template: PromptTemplate | FunctionPromptTemplate) => {
+    if (activeTab === 'cleaner') {
+      setCurrentTemplateId(template.id)
+      setActiveTemplate(template as PromptTemplate)
+      setEditingTemplate(template.template)
+      setTemplateName(template.name)
+      setTemplateDescription(template.description || '')
+      setShowTemplateLibrary(false)
+    } else {
+      setCurrentFunctionTemplateId(template.id)
+      setFunctionTemplateName(template.name)
+      setFunctionTemplateDescription(template.description || '')
+      setFunctionTemplate(template.template)
+      setShowTemplateLibrary(false)
+      // Clear validation errors when loading existing template
+      setFunctionValidationErrors([])
+      setFunctionValidationWarnings([])
+    }
   }
 
   const handleDeleteTemplate = async (templateId: string) => {
-    const template = templates.find(t => t.id === templateId)
-    if (!template) return
+    if (activeTab === 'cleaner') {
+      const template = templates.find(t => t.id === templateId)
+      if (!template) return
 
-    try {
-      await apiClient.delete(`/api/v1/prompt-engineering/templates/${templateId}`)
-      await loadTemplates()
-      templateToasts.showDeleteSuccess(template.name)
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+      try {
+        await apiClient.delete(`/api/v1/prompt-engineering/templates/${templateId}`)
+        await loadTemplates()
+        templateToasts.showDeleteSuccess(template.name)
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+        
+        // Handle constraint-specific errors
+        if (errorMessage.includes('Cannot delete the last remaining')) {
+          templateToasts.showApiError('Cannot Delete Template', 'Cannot delete the last remaining prompt template. At least one template must exist.')
+        } else {
+          templateToasts.showApiError('Delete Template', errorMessage)
+        }
+      }
+    } else {
+      const template = functionTemplates.find(t => t.id === templateId)
+      if (!template) return
       
-      // Handle constraint-specific errors
-      if (errorMessage.includes('Cannot delete the last remaining')) {
-        templateToasts.showApiError('Cannot Delete Template', 'Cannot delete the last remaining prompt template. At least one template must exist.')
-      } else {
-        templateToasts.showApiError('Delete Template', errorMessage)
+      try {
+        await apiClient.deleteFunctionPromptTemplate(templateId)
+        await loadFunctionTemplates()
+        templateToasts.showDeleteSuccess(template.name)
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+        templateToasts.showApiError('Delete Function Template', errorMessage)
       }
     }
   }
 
-  const handleDuplicateTemplate = async (template: PromptTemplate) => {
+  const handleDuplicateTemplate = async (template: PromptTemplate | FunctionPromptTemplate) => {
     try {
       const newName = `${template.name} (Copy)`
-      await apiClient.post('/api/v1/prompt-engineering/templates', {
-        name: newName,
-        template: template.template,
-        description: template.description,
-        variables: template.variables
-      })
       
-      await loadTemplates()
+      if (activeTab === 'cleaner') {
+        await apiClient.post('/api/v1/prompt-engineering/templates', {
+          name: newName,
+          template: template.template,
+          description: template.description,
+          variables: template.variables
+        })
+        await loadTemplates()
+      } else {
+        await apiClient.createFunctionPromptTemplate({
+          name: newName,
+          template: template.template,
+          description: template.description,
+          variables: template.variables
+        })
+        await loadFunctionTemplates()
+      }
+      
       templateToasts.showDuplicateSuccess(template.name, newName)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error'
@@ -554,16 +808,30 @@ function PromptEngineeringDashboardInner() {
   }
 
   const handleSetAsDefault = async (templateId: string) => {
-    const template = templates.find(t => t.id === templateId)
-    if (!template) return
+    if (activeTab === 'cleaner') {
+      const template = templates.find(t => t.id === templateId)
+      if (!template) return
 
-    try {
-      await apiClient.post(`/api/v1/prompt-engineering/templates/${templateId}/set-default`)
-      await loadTemplates()
-      templateToasts.showActivateSuccess(template.name)
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error'
-      templateToasts.showApiError('Set Default Template', errorMessage)
+      try {
+        await apiClient.post(`/api/v1/prompt-engineering/templates/${templateId}/set-default`)
+        await loadTemplates()
+        templateToasts.showActivateSuccess(template.name)
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+        templateToasts.showApiError('Set Default Template', errorMessage)
+      }
+    } else {
+      const template = functionTemplates.find(t => t.id === templateId)
+      if (!template) return
+
+      try {
+        await apiClient.setFunctionPromptTemplateAsDefault(templateId)
+        await loadFunctionTemplates()
+        templateToasts.showActivateSuccess(template.name)
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+        templateToasts.showApiError('Set Default Function Template', errorMessage)
+      }
     }
   }
 
@@ -711,7 +979,7 @@ function PromptEngineeringDashboardInner() {
                 gap: '6px'
               }}
             >
-              📚 Template Library ({templates.length})
+              📚 {activeTab === 'cleaner' ? 'Template Library' : 'Function Library'} ({activeTab === 'cleaner' ? templates.length : functionTemplates.length})
             </button>
             <button
               onClick={() => setDarkMode(!darkMode)}
@@ -727,7 +995,10 @@ function PromptEngineeringDashboardInner() {
               {darkMode ? '☀️' : '🌙'}
             </button>
             <div style={{ color: theme.textMuted, fontSize: '14px' }}>
-              Active: {activeTemplate?.name || 'None'}
+              Active: {activeTab === 'cleaner' 
+                ? (activeTemplate?.name || 'None') 
+                : (functionTemplates.find(t => t.id === currentFunctionTemplateId)?.name || 'None')
+              }
             </div>
           </div>
         </div>
@@ -848,20 +1119,6 @@ function PromptEngineeringDashboardInner() {
                     }}
                   >
                     ✨ New
-                  </button>
-                  <button
-                    onClick={renderPreview}
-                    style={{
-                      padding: '6px 12px',
-                      backgroundColor: theme.accent,
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontSize: '12px'
-                    }}
-                  >
-                    🔄 Preview
                   </button>
                   <button
                     onClick={handleSave}
@@ -1566,7 +1823,7 @@ function PromptEngineeringDashboardInner() {
                 </h3>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button
-                    onClick={() => {}}
+                    onClick={handleNewFunctionPrompt}
                     style={{
                       padding: '6px 12px',
                       backgroundColor: theme.bgTertiary,
@@ -1580,33 +1837,39 @@ function PromptEngineeringDashboardInner() {
                     ✨ New
                   </button>
                   <button
-                    onClick={() => {}}
+                    onClick={handleSaveFunctionPrompt}
+                    disabled={loading || functionValidationErrors.length > 0}
                     style={{
                       padding: '6px 12px',
-                      backgroundColor: theme.accent,
-                      color: 'white',
+                      backgroundColor: (loading || functionValidationErrors.length > 0) ? theme.bgTertiary : theme.success,
+                      color: (loading || functionValidationErrors.length > 0) ? theme.textMuted : 'white',
                       border: 'none',
                       borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontSize: '12px'
+                      cursor: (loading || functionValidationErrors.length > 0) ? 'not-allowed' : 'pointer',
+                      fontSize: '12px',
+                      opacity: loading ? 0.6 : 1
                     }}
                   >
-                    🔄 Test
+                    {loading ? '⏳ Saving...' : (currentFunctionTemplateId ? '💾 Save' : '✅ Create')}
                   </button>
-                  <button
-                    onClick={() => {}}
-                    style={{
-                      padding: '6px 12px',
-                      backgroundColor: theme.success,
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontSize: '12px'
-                    }}
-                  >
-                    💾 Save
-                  </button>
+                  {currentFunctionTemplateId && (
+                    <button
+                      onClick={handleSaveAsFunctionPrompt}
+                      disabled={loading}
+                      style={{
+                        padding: '6px 12px',
+                        backgroundColor: theme.warning,
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: loading ? 'not-allowed' : 'pointer',
+                        fontSize: '12px',
+                        opacity: loading ? 0.6 : 1
+                      }}
+                    >
+                      📋 Save As
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1916,7 +2179,7 @@ function PromptEngineeringDashboardInner() {
       <TemplateLibraryModal
         isOpen={showTemplateLibrary}
         onClose={() => setShowTemplateLibrary(false)}
-        templates={templates}
+        templates={activeTab === 'cleaner' ? templates : functionTemplates}
         onEdit={handleEditTemplate}
         onDelete={handleDeleteTemplate}
         onDuplicate={handleDuplicateTemplate}
