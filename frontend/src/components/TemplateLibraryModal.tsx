@@ -49,7 +49,7 @@ export function TemplateLibraryModal({
 
   // Filter and search logic
   const filteredAndSortedTemplates = useMemo(() => {
-    let filtered = templates.filter(template => {
+    const filtered = templates.filter(template => {
       // Search filter
       const matchesSearch = template.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           template.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||

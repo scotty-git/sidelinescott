@@ -8,10 +8,12 @@ on the same conversation with different prompts, settings, and approaches.
 import time
 import logging
 import asyncio
+import json
 from typing import Dict, List, Optional, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from concurrent.futures import ThreadPoolExecutor
 
 from app.models.evaluation import Evaluation
 from app.models.cleaned_turn import CleanedTurn
@@ -20,6 +22,8 @@ from app.models.turn import Turn
 from app.models.user_variable_history import UserVariableHistory
 from app.services.gemini_service import GeminiService
 from app.services.prompt_engineering_service import PromptEngineeringService
+from app.services.function_executor import FunctionExecutor
+from app.services.function_registry import function_registry
 
 logger = logging.getLogger(__name__)
 
@@ -27,25 +31,42 @@ logger = logging.getLogger(__name__)
 class EvaluationState:
     """Manages the stateful context for a single evaluation"""
     
-    def __init__(self, evaluation_id: UUID, sliding_window_size: int = 10, prompt_template: str = None):
+    def __init__(self, evaluation_id: UUID, cleaner_window_size: int = 10, 
+                 function_window_size: int = 20, prompt_template: str = None,
+                 function_prompt_template: str = None):
         self.evaluation_id = evaluation_id
-        self.sliding_window_size = sliding_window_size
+        
+        # Cleaner-specific fields
+        self.cleaner_window_size = cleaner_window_size
         self.cleaned_history: List[Dict[str, Any]] = []
-        self.prompt_template = prompt_template  # Cache the template in memory for fast access
+        self.prompt_template = prompt_template  # Cache the cleaner template
+        
+        # Function caller-specific fields
+        self.function_window_size = function_window_size
+        self.function_prompt_template = function_prompt_template  # Cache the function template
+        self.function_call_history: List[Dict[str, Any]] = []  # ALL function calls made
+        self.mirrored_customer = None  # Current customer state
+        self.business_insights: Dict[str, Any] = {}  # Accumulated insights
+        
+        # Legacy support - keep sliding_window_size for backward compatibility
+        self.sliding_window_size = cleaner_window_size
         
         print(f"[EvaluationState] Initialized for evaluation {evaluation_id}")
-        print(f"[EvaluationState] Sliding window size: {self.sliding_window_size}")
+        print(f"[EvaluationState] Cleaner window size: {self.cleaner_window_size}")
+        print(f"[EvaluationState] Function window size: {self.function_window_size}")
         if prompt_template:
-            print(f"[EvaluationState] 🎯 Cached prompt template in memory for fast access")
+            print(f"[EvaluationState] 🎯 Cached cleaner prompt template in memory")
+        if function_prompt_template:
+            print(f"[EvaluationState] 🎯 Cached function prompt template in memory")
     
     def get_cleaned_sliding_window(self) -> List[Dict[str, Any]]:
         """Get the cleaned conversation history for context (from THIS evaluation)"""
         print(f"[EvaluationState] 🔍 EVALUATION SLIDING WINDOW: Getting sliding window")
         print(f"[EvaluationState] 📊 Current history length: {len(self.cleaned_history)}")
-        print(f"[EvaluationState] 🎯 Window size configured: {self.sliding_window_size}")
+        print(f"[EvaluationState] 🎯 Window size configured: {self.cleaner_window_size}")
         
         # Return last N turns of CLEANED conversation history from this evaluation
-        window = self.cleaned_history[-self.sliding_window_size:]
+        window = self.cleaned_history[-self.cleaner_window_size:]
         
         print(f"[EvaluationState] ✂️ Sliding window contains {len(window)} turns")
         
@@ -59,6 +80,24 @@ class EvaluationState:
         
         return window
     
+    def get_function_sliding_window(self) -> List[Dict[str, Any]]:
+        """Get sliding window for function caller context (can be different size)"""
+        print(f"[EvaluationState] 🔍 FUNCTION SLIDING WINDOW: Getting sliding window")
+        print(f"[EvaluationState] 📊 Current history length: {len(self.cleaned_history)}")
+        print(f"[EvaluationState] 🎯 Function window size: {self.function_window_size}")
+        
+        # Return last N turns for function context
+        window = self.cleaned_history[-self.function_window_size:]
+        
+        print(f"[EvaluationState] ✂️ Function window contains {len(window)} turns")
+        
+        return window
+    
+    def get_previous_function_calls(self) -> List[Dict[str, Any]]:
+        """Get all previous function calls for the prompt"""
+        print(f"[EvaluationState] 📞 Getting previous function calls: {len(self.function_call_history)} total")
+        return self.function_call_history
+    
     def add_to_history(self, turn_data: Dict[str, Any]):
         """Add a processed cleaned turn to the evaluation history"""
         print(f"[EvaluationState] Adding cleaned turn to evaluation history: {turn_data['speaker']}")
@@ -68,6 +107,12 @@ class EvaluationState:
         self.cleaned_history.append(turn_data)
         
         print(f"[EvaluationState] Evaluation history now contains {len(self.cleaned_history)} cleaned turns")
+    
+    def add_function_call(self, function_call_data: Dict[str, Any]):
+        """Add a function call to the history"""
+        print(f"[EvaluationState] Adding function call: {function_call_data['function_name']}")
+        self.function_call_history.append(function_call_data)
+        print(f"[EvaluationState] Function call history now contains {len(self.function_call_history)} calls")
 
 
 class EvaluationManager:
@@ -83,6 +128,9 @@ class EvaluationManager:
         self.stopped_evaluations: Dict[UUID, bool] = {}  # Track stopped evaluations
         self.gemini_service = GeminiService()
         self.prompt_service = PromptEngineeringService()
+        self.function_executor = FunctionExecutor()
+        self.function_registry = function_registry
+        self.db_executor = ThreadPoolExecutor(max_workers=4)  # For async DB operations
         self.performance_metrics = {
             'lumen_processing_times': [],
             'user_processing_times': [],
@@ -100,6 +148,7 @@ class EvaluationManager:
         print("[EvaluationManager] Initialized with evaluation-based processing")
         print("[EvaluationManager] Performance metrics tracking enabled")
         print("[EvaluationManager] Prompt Engineering Service integrated")
+        print("[EvaluationManager] Async DB executor initialized")
     
     async def create_evaluation(self, conversation_id: UUID, name: str, user_id: UUID, 
                               description: str = None, prompt_template: str = None, 
@@ -143,29 +192,61 @@ class EvaluationManager:
         if evaluation_id not in self.active_evaluations:
             print(f"[EvaluationManager] Creating new evaluation state for {evaluation_id}")
             
-            # Load evaluation to get the prompt template
+            # Load evaluation to get the prompt templates and settings
             evaluation = db.query(Evaluation).filter(Evaluation.id == evaluation_id).first()
             prompt_template = None
+            function_prompt_template = None
+            cleaner_window_size = sliding_window_size
+            function_window_size = 20  # Default function window size
+            
             if evaluation:
+                # Get cleaner prompt template
                 if evaluation.prompt_template_id:
                     # Fetch template from database once and cache it
                     template_obj = self.prompt_service.get_template_by_id_sync(evaluation.prompt_template_id, db)
                     if template_obj:
                         prompt_template = template_obj.template
-                        print(f"[EvaluationManager] 🎯 Loaded template for caching: {template_obj.name}")
+                        print(f"[EvaluationManager] 🎯 Loaded cleaner template for caching: {template_obj.name}")
                 elif evaluation.prompt_template:
                     # Use legacy hardcoded template
                     prompt_template = evaluation.prompt_template
-                    print(f"[EvaluationManager] 📝 Using legacy template for caching")
+                    print(f"[EvaluationManager] 📝 Using legacy cleaner template for caching")
+                
+                # Get function prompt template from settings
+                if evaluation.settings and evaluation.settings.get('function_template_id'):
+                    function_template_obj = self.prompt_service.get_function_template_by_id_sync(
+                        evaluation.settings['function_template_id'], db
+                    )
+                    if function_template_obj:
+                        function_prompt_template = function_template_obj.template
+                        print(f"[EvaluationManager] 🎯 Loaded function template for caching: {function_template_obj.name}")
+                
+                # Get window sizes from settings
+                if evaluation.settings:
+                    cleaner_window_size = evaluation.settings.get('sliding_window', cleaner_window_size)
+                    function_window_size = evaluation.settings.get('function_sliding_window', function_window_size)
             
-            self.active_evaluations[evaluation_id] = EvaluationState(evaluation_id, sliding_window_size, prompt_template)
+            self.active_evaluations[evaluation_id] = EvaluationState(
+                evaluation_id, 
+                cleaner_window_size, 
+                function_window_size,
+                prompt_template,
+                function_prompt_template
+            )
             
             # Load existing cleaned turns from database to rebuild context
             self._load_existing_evaluation_context(evaluation_id, db)
+            
+            # Load mirrored customer if exists
+            self._load_mirrored_customer(evaluation_id, db)
+            
+            # Load existing function calls from database
+            self._load_existing_function_calls(evaluation_id, db)
         else:
             print(f"[EvaluationManager] Using existing evaluation state for {evaluation_id}")
             # Update sliding window size if provided
             if sliding_window_size != 10:
+                self.active_evaluations[evaluation_id].cleaner_window_size = sliding_window_size
                 self.active_evaluations[evaluation_id].sliding_window_size = sliding_window_size
                 print(f"[EvaluationManager] Updated sliding window size to {sliding_window_size}")
         
@@ -230,6 +311,332 @@ class EvaluationManager:
             print(f"[EvaluationManager] ❌ CONTEXT DEBUG: Continuing with fresh context")
             import traceback
             traceback.print_exc()
+    
+    def _load_mirrored_customer(self, evaluation_id: UUID, db: Session = None):
+        """Load mirrored customer from database to evaluation state"""
+        if not db:
+            return
+        
+        try:
+            from app.models.mock_customer import MirroredMockCustomer
+            
+            mirrored_customer = db.query(MirroredMockCustomer).filter(
+                MirroredMockCustomer.evaluation_id == evaluation_id
+            ).first()
+            
+            if mirrored_customer:
+                evaluation_state = self.active_evaluations.get(evaluation_id)
+                if evaluation_state:
+                    evaluation_state.mirrored_customer = mirrored_customer
+                    print(f"[EvaluationManager] 👤 Loaded mirrored customer: {mirrored_customer.company_name}")
+            else:
+                print(f"[EvaluationManager] 👤 No mirrored customer found for evaluation {evaluation_id}")
+                
+        except Exception as e:
+            print(f"[EvaluationManager] ❌ Failed to load mirrored customer: {e}")
+    
+    def _load_existing_function_calls(self, evaluation_id: UUID, db: Session = None):
+        """Load existing function calls from database to rebuild function call history"""
+        if not db:
+            return
+        
+        try:
+            from app.models.called_function import CalledFunction
+            
+            # Query existing function calls for this evaluation, ordered by creation
+            existing_function_calls = db.query(CalledFunction).filter(
+                CalledFunction.evaluation_id == evaluation_id
+            ).order_by(CalledFunction.created_at.asc()).all()
+            
+            print(f"[EvaluationManager] 📞 Found {len(existing_function_calls)} existing function calls")
+            
+            if not existing_function_calls:
+                return
+            
+            evaluation_state = self.active_evaluations.get(evaluation_id)
+            if not evaluation_state:
+                return
+            
+            # Convert function calls to history format
+            for func_call in existing_function_calls:
+                function_data = {
+                    'turn_id': str(func_call.turn_id),
+                    'function_name': func_call.function_name,
+                    'parameters': func_call.parameters,
+                    'result': func_call.result,
+                    'executed': func_call.executed,
+                    'confidence_score': func_call.confidence_score,
+                    'timestamp': func_call.created_at.isoformat()
+                }
+                evaluation_state.add_function_call(function_data)
+            
+            print(f"[EvaluationManager] ✅ Loaded {len(existing_function_calls)} function calls into history")
+                
+        except Exception as e:
+            print(f"[EvaluationManager] ❌ Failed to load existing function calls: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _save_to_db_async(self, func, *args, **kwargs):
+        """Execute database operations asynchronously without blocking"""
+        def _db_operation():
+            try:
+                func(*args, **kwargs)
+            except Exception as e:
+                logger.error(f"Async DB operation failed: {e}")
+        
+        # Submit to executor - returns immediately
+        future = self.db_executor.submit(_db_operation)
+        # Don't wait for result - fire and forget
+        return future
+    
+    async def _process_function_calls(
+        self,
+        evaluation_state: EvaluationState,
+        cleaned_result: Dict[str, Any],
+        raw_turn,
+        db: Session,
+        timing: Dict[str, float]
+    ) -> List[Dict[str, Any]]:
+        """Process function calls after cleaning"""
+        function_timing = timing or {}
+        
+        print(f"[EvaluationManager] 🔧 Processing function calls for cleaned text")
+        
+        # Check if function prompt template is available
+        if not evaluation_state.function_prompt_template:
+            print(f"[EvaluationManager] ❌ No function prompt template available, skipping function calls")
+            return []
+        
+        # Ensure mirrored customer exists
+        if not evaluation_state.mirrored_customer:
+            print(f"[EvaluationManager] ❌ No mirrored customer available, skipping function calls")
+            return []
+        
+        try:
+            function_timing['function_context_start'] = time.time()
+            
+            # Build function calling context
+            context = self._build_function_context(evaluation_state)
+            
+            function_timing['function_context_end'] = time.time()
+            function_timing['function_prompt_start'] = time.time()
+            
+            # Render function prompt template with variables
+            template_variables = {
+                'call_context': context['call_context'],
+                'cleaned_conversation': context['cleaned_conversation'],
+                'available_functions': context['available_functions'],
+                'previous_function_calls': context['previous_function_calls']
+            }
+            
+            rendered_prompt = evaluation_state.function_prompt_template.format(**template_variables)
+            
+            function_timing['function_prompt_end'] = time.time()
+            function_timing['function_gemini_start'] = time.time()
+            
+            # Call Gemini for function decision using same service
+            function_response = await self.gemini_service.clean_conversation_turn(
+                raw_text=cleaned_result['cleaned_text'],
+                speaker=raw_turn.speaker,
+                cleaned_context=[],  # Not used for function calling
+                cleaning_level="full",
+                model_params=None,
+                rendered_prompt=rendered_prompt
+            )
+            
+            function_timing['function_gemini_end'] = time.time()
+            function_timing['function_parse_start'] = time.time()
+            
+            # Parse response expecting JSON with thought_process and function_calls
+            try:
+                response_text = function_response.get('cleaned_text', '').strip()
+                if not response_text:
+                    print(f"[EvaluationManager] ❌ Empty response from function calling Gemini")
+                    return []
+                
+                decision = json.loads(response_text)
+                print(f"[EvaluationManager] 🧠 Function decision: {decision.get('thought_process', 'No reasoning provided')}")
+                
+            except json.JSONDecodeError as e:
+                print(f"[EvaluationManager] ❌ Failed to parse function decision JSON: {e}")
+                print(f"[EvaluationManager] Raw response: {response_text}")
+                return []
+            
+            function_timing['function_parse_end'] = time.time()
+            function_timing['function_execute_start'] = time.time()
+            
+            # Execute functions if any
+            executed_functions = []
+            function_calls = decision.get('function_calls', [])
+            
+            if function_calls:
+                print(f"[EvaluationManager] 🔧 Executing {len(function_calls)} function calls")
+                
+                for func_call in function_calls:
+                    # Execute function
+                    result = await self._execute_single_function(
+                        func_call, evaluation_state, cleaned_result, raw_turn, db
+                    )
+                    executed_functions.append(result)
+                    
+                    # Add to function call history in memory (immediate update)
+                    function_data = {
+                        'turn_id': str(raw_turn.id),
+                        'turn_sequence': raw_turn.turn_sequence,
+                        'function_name': func_call['name'],
+                        'parameters': func_call['parameters'],
+                        'result': result.get('result'),
+                        'executed': result.get('success', False),
+                        'confidence_score': 'MEDIUM',  # Default for now
+                        'timestamp': time.time()
+                    }
+                    evaluation_state.add_function_call(function_data)
+            
+            function_timing['function_execute_end'] = time.time()
+            
+            print(f"[EvaluationManager] ✅ Function calling completed: {len(executed_functions)} functions executed")
+            return executed_functions
+            
+        except Exception as e:
+            print(f"[EvaluationManager] ❌ Function calling failed: {e}")
+            logger.error(f"Function calling error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def _build_function_context(self, evaluation_state: EvaluationState) -> Dict[str, Any]:
+        """Build context for function calling prompt"""
+        
+        # Get cleaned conversation with function-specific window size
+        cleaned_conversation = evaluation_state.get_function_sliding_window()
+        
+        # Format conversation for prompt
+        conversation_str = "\n".join([
+            f"{turn['speaker']}: {turn['cleaned_text']}"
+            for turn in cleaned_conversation
+        ])
+        
+        # Get all previous function calls
+        previous_calls = evaluation_state.get_previous_function_calls()
+        
+        # Format previous function calls
+        if previous_calls:
+            previous_calls_str = json.dumps(previous_calls, indent=2)
+        else:
+            previous_calls_str = "[]"
+        
+        # Get current customer state (call_context)
+        if evaluation_state.mirrored_customer:
+            call_context = {
+                'company_size': evaluation_state.mirrored_customer.company_size,
+                'job_title': evaluation_state.mirrored_customer.job_title,
+                'company_sector': evaluation_state.mirrored_customer.company_sector,
+                'company_name': evaluation_state.mirrored_customer.company_name,
+                'company_description': evaluation_state.mirrored_customer.company_description,
+                'user_name': evaluation_state.mirrored_customer.user_name,
+                'business_insights': evaluation_state.mirrored_customer.business_insights or {}
+            }
+        else:
+            call_context = {}
+        
+        return {
+            'call_context': json.dumps(call_context, indent=2),
+            'cleaned_conversation': conversation_str,
+            'available_functions': self.function_registry.get_functions_catalog(),
+            'previous_function_calls': previous_calls_str
+        }
+    
+    async def _execute_single_function(
+        self,
+        func_call: Dict[str, Any],
+        evaluation_state: EvaluationState,
+        cleaned_result: Dict[str, Any],
+        raw_turn,
+        db: Session
+    ) -> Dict[str, Any]:
+        """Execute a single function and create database record"""
+        
+        function_name = func_call['name']
+        parameters = func_call['parameters']
+        
+        print(f"[EvaluationManager] 🔧 Executing function: {function_name}")
+        
+        try:
+            # Execute function using function executor
+            execution_result = await self.function_executor.execute_function(
+                function_name=function_name,
+                parameters=parameters,
+                mirrored_customer=evaluation_state.mirrored_customer,
+                db=db
+            )
+            
+            # Create CalledFunction record in database (async to not block)
+            self._save_function_call_async(
+                evaluation_state.evaluation_id,
+                raw_turn.id,
+                function_name,
+                parameters,
+                execution_result,
+                db
+            )
+            
+            return {
+                'function_name': function_name,
+                'parameters': parameters,
+                'success': execution_result.get('success', False),
+                'result': execution_result.get('result'),
+                'execution_time_ms': execution_result.get('execution_time_ms', 0),
+                'changes_made': execution_result.get('changes_made', [])
+            }
+            
+        except Exception as e:
+            print(f"[EvaluationManager] ❌ Function execution failed: {e}")
+            return {
+                'function_name': function_name,
+                'parameters': parameters,
+                'success': False,
+                'error': str(e),
+                'execution_time_ms': 0
+            }
+    
+    def _save_function_call_async(
+        self,
+        evaluation_id: UUID,
+        turn_id: UUID,
+        function_name: str,
+        parameters: Dict[str, Any],
+        execution_result: Dict[str, Any],
+        db: Session
+    ):
+        """Save function call to database asynchronously"""
+        def _save_function_call():
+            try:
+                from app.models.called_function import CalledFunction
+                
+                called_function = CalledFunction(
+                    evaluation_id=evaluation_id,
+                    turn_id=turn_id,
+                    function_name=function_name,
+                    parameters=parameters,
+                    result=execution_result.get('result'),
+                    executed=execution_result.get('success', False),
+                    confidence_score='MEDIUM',  # Default for now
+                    processing_time_ms=execution_result.get('execution_time_ms', 0),
+                    mock_data_before=execution_result.get('before_state'),
+                    mock_data_after=execution_result.get('after_state')
+                )
+                
+                db.add(called_function)
+                db.commit()
+                print(f"[EvaluationManager] 💾 Saved function call to database: {function_name}")
+                
+            except Exception as e:
+                print(f"[EvaluationManager] ❌ Failed to save function call: {e}")
+                db.rollback()
+        
+        # Execute async without blocking
+        self._save_to_db_async(_save_function_call)
     
     async def process_turn(self, evaluation_id: UUID, turn_id: UUID, db: Session,
                           override_settings: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -351,7 +758,26 @@ class EvaluationManager:
                                                  cleaned_context, cleaning_level, model_params, timing)
         timing['cleaning_end'] = time.time()
         
-        # Step 6: Response preparation
+        # Step 6: Function calling (NEW)
+        timing['function_calling_start'] = time.time()
+        function_call_results = []
+        
+        # Only process function calls for user turns that were successfully cleaned
+        if not is_lumen and not is_transcription_error and result.get('cleaned_text'):
+            print(f"🔧 FUNCTION CALLING: Processing potential function calls")
+            function_call_results = await self._process_function_calls(
+                evaluation_state, result, raw_turn, db, timing
+            )
+            
+            # Add function calls to result
+            result['function_calls'] = function_call_results
+        else:
+            print(f"🔧 FUNCTION CALLING: Skipped for {raw_turn.speaker} turn")
+            result['function_calls'] = []
+        
+        timing['function_calling_end'] = time.time()
+        
+        # Step 7: Response preparation
         timing['response_preparation_start'] = time.time()
         
         # Calculate comprehensive timing breakdown
@@ -362,6 +788,7 @@ class EvaluationManager:
             'context_retrieval_ms': round((timing['context_retrieval_end'] - timing['context_retrieval_start']) * 1000, 2),
             'processing_decision_ms': round((timing['processing_decision_end'] - timing['processing_decision_start']) * 1000, 2),
             'cleaning_processing_ms': round((timing['cleaning_end'] - timing['cleaning_start']) * 1000, 2),
+            'function_calling_ms': round((timing['function_calling_end'] - timing['function_calling_start']) * 1000, 2),
             'total_ms': round(total_time, 2),
             # Add granular database timings
             'db_queries_breakdown': {
@@ -429,7 +856,8 @@ class EvaluationManager:
         print(f"     ├─ Settings Prep: {timing_breakdown['settings_preparation_ms']:.2f}ms")
         print(f"     ├─ Context Retrieval: {timing_breakdown['context_retrieval_ms']:.2f}ms")
         print(f"     ├─ Processing Decision: {timing_breakdown['processing_decision_ms']:.2f}ms")
-        print(f"     └─ Cleaning Processing: {timing_breakdown['cleaning_processing_ms']:.2f}ms")
+        print(f"     ├─ Cleaning Processing: {timing_breakdown['cleaning_processing_ms']:.2f}ms")
+        print(f"     └─ Function Calling: {timing_breakdown['function_calling_ms']:.2f}ms")
         if 'gemini_pure_api_ms' in timing_breakdown:
             print(f"        └─ PURE Gemini API: {timing_breakdown['gemini_pure_api_ms']:.2f}ms ⚡")
         

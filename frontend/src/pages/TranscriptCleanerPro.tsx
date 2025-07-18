@@ -2,6 +2,8 @@ import React, { useState } from 'react'
 import { apiClient } from '../lib/api' // TypeScript refresh
 import { GeminiQueryInspector } from '../components/GeminiQueryInspector'
 import { VariableInput } from '../components/VariableInput'
+import { CustomerModal } from '../components/CustomerModal'
+import { useToast } from '../components/ToastNotification'
 
 interface ParsedTurn {
   speaker: string
@@ -55,8 +57,8 @@ interface APICall {
   timestamp: string
   method: string
   endpoint: string
-  request_data: any
-  response_data: any
+  request_data: unknown
+  response_data: unknown
   status: number
   latency_ms: number
   error?: string
@@ -71,7 +73,7 @@ interface TurnAPIGroup {
   backendResponse: APICall
   geminiFunctionCall?: {
     function_call: string
-    model_config: any
+    model_config: unknown
     prompt: string
     response: string
     timestamp: number
@@ -94,6 +96,9 @@ interface TranscriptCleanerProProps {
 }
 
 export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps = {}) {
+  // Toast notifications
+  const toast = useToast()
+  
   // Theme helper functions
   const getFontSize = () => {
     switch (fontSize) {
@@ -142,13 +147,13 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [isProcessing, setIsProcessing] = useState(false)
   const [currentTurnIndex, setCurrentTurnIndex] = useState(0)
   const [conversationId, setConversationId] = useState<string | null>(null)
-  const [currentConversation, setCurrentConversation] = useState<any>(null)
+  const [currentConversation, setCurrentConversation] = useState<{ id: string; name: string } | null>(null)
   const [currentEvaluationId, setCurrentEvaluationId] = useState<string | null>(null)
   const [currentEvaluationName, setCurrentEvaluationName] = useState<string | null>(null)
   const [currentPromptTemplateName, setCurrentPromptTemplateName] = useState<string | null>(null)
   const [showCopySuccess, setShowCopySuccess] = useState(false)
   const [copyCompactLoading, setCopyCompactLoading] = useState(false)
-  const [selectedTab, setSelectedTab] = useState<'results' | 'api' | 'logs' | 'settings'>('results')
+  const [selectedTab, setSelectedTab] = useState<'results' | 'api' | 'logs' | 'cleaner-config' | 'function-config'>('results')
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem('transcript-cleaner-dark-mode')
     return saved ? JSON.parse(saved) : true // Default to dark mode
@@ -168,9 +173,14 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   
   // Conversations modal state
   const [showConversationsModal, setShowConversationsModal] = useState(false)
-  const [conversations, setConversations] = useState<any[]>([])
-  const [conversationEvaluations, setConversationEvaluations] = useState<{[key: string]: any[]}>({})
+  const [conversations, setConversations] = useState<{ id: string; name: string; description?: string; created_at: string; turns_count: number }[]>([])
+  const [conversationEvaluations, setConversationEvaluations] = useState<{[key: string]: { id: string; name: string; created_at: string; template_name?: string; prompt_template_name?: string; prompt_template?: string; description?: string }[]}>({})
   const [loadingConversations, setLoadingConversations] = useState(false)
+
+  // Customers modal state
+  const [showCustomersModal, setShowCustomersModal] = useState(false)
+  const [customers, setCustomers] = useState<{ id: string; user_name: string; job_title: string; company_name: string; company_description: string; company_size: string; company_sector: string; is_default: boolean; created_at: string; updated_at: string }[]>([])
+  const [loadingCustomers, setLoadingCustomers] = useState(false)
   const [loadingEvaluation, setLoadingEvaluation] = useState(false)
   const [loadingProgress, setLoadingProgress] = useState('')
   const [loadingAbortController, setLoadingAbortController] = useState<AbortController | null>(null)
@@ -180,12 +190,17 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
 
   // Evaluations modal state
   const [showEvaluationsModal, setShowEvaluationsModal] = useState(false)
-  const [selectedConversationForEvaluations, setSelectedConversationForEvaluations] = useState<any>(null)
+  const [selectedConversationForEvaluations, setSelectedConversationForEvaluations] = useState<{ id: string; name: string } | null>(null)
   
   // Prompt template state
-  const [promptTemplates, setPromptTemplates] = useState<any[]>([])
+  const [promptTemplates, setPromptTemplates] = useState<{ id: string; name: string; template: string; description?: string; variables?: string[] }[]>([])
   const [selectedTemplatePreview, setSelectedTemplatePreview] = useState('')
   const [loadingTemplates, setLoadingTemplates] = useState(false)
+  
+  // Function prompt template state
+  const [functionPromptTemplates, setFunctionPromptTemplates] = useState<{ id: string; name: string; template: string; description?: string; variables?: string[] }[]>([])
+  const [selectedFunctionTemplatePreview, setSelectedFunctionTemplatePreview] = useState('')
+  const [loadingFunctionTemplates, setLoadingFunctionTemplates] = useState(false)
 
   // Save panel width to localStorage
   React.useEffect(() => {
@@ -248,7 +263,15 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       promptTemplate: null,
       // User Variables
       callContext: '',
-      additionalContext: ''
+      additionalContext: '',
+      // Function Caller Configuration
+      functionWindowSize: 10,
+      functionPromptTemplate: null,
+      functionModelName: 'gemini-2.5-flash-lite-preview-06-17',
+      functionTemperature: 0.1,
+      functionTopP: 0.95,
+      functionTopK: 40,
+      functionMaxTokens: 65535
     }
   })
   
@@ -295,23 +318,23 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   }
 
   // Helper function to extract prompt template name from evaluation data
-  const extractPromptTemplateName = (evaluationData: any): string | null => {
+  const extractPromptTemplateName = (evaluationData: Record<string, unknown>): string | null => {
     console.log('[DEBUG] extractPromptTemplateName called with:', evaluationData)
     
     // Check if prompt_template_ref exists (from detailed evaluation response)
-    if (evaluationData?.prompt_template_ref?.name) {
+    if (evaluationData?.prompt_template_ref && typeof evaluationData.prompt_template_ref === 'object' && evaluationData.prompt_template_ref !== null && 'name' in evaluationData.prompt_template_ref) {
       console.log('[DEBUG] Found prompt_template_ref.name:', evaluationData.prompt_template_ref.name)
-      return evaluationData.prompt_template_ref.name
+      return evaluationData.prompt_template_ref.name as string
     }
     // Check if prompt_template exists as object with name (from export response)
-    if (evaluationData?.prompt_template?.name) {
+    if (evaluationData?.prompt_template && typeof evaluationData.prompt_template === 'object' && evaluationData.prompt_template !== null && 'name' in evaluationData.prompt_template) {
       console.log('[DEBUG] Found prompt_template.name:', evaluationData.prompt_template.name)
-      return evaluationData.prompt_template.name
+      return evaluationData.prompt_template.name as string
     }
     // Fallback to checking settings
-    if (evaluationData?.settings?.prompt_template_name) {
+    if (evaluationData?.settings && typeof evaluationData.settings === 'object' && evaluationData.settings !== null && 'prompt_template_name' in evaluationData.settings) {
       console.log('[DEBUG] Found settings.prompt_template_name:', evaluationData.settings.prompt_template_name)
-      return evaluationData.settings.prompt_template_name
+      return evaluationData.settings.prompt_template_name as string
     }
     // Check if this is an inline template
     if (evaluationData?.prompt_template && typeof evaluationData.prompt_template === 'string') {
@@ -335,7 +358,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     console.log(logEntry)
   }
 
-  const apiCallWithLogging = async (method: string, endpoint: string, data?: any) => {
+  const apiCallWithLogging = async (method: string, endpoint: string, data?: unknown) => {
     const startTime = Date.now()
     const callId = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`
     
@@ -386,7 +409,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       setLoadingTemplates(true)
       addDetailedLog('📜 Loading prompt templates...')
       
-      const response = await apiCallWithLogging('GET', '/api/v1/prompt-engineering/templates') as any
+      const response = await apiCallWithLogging('GET', '/api/v1/prompt-engineering/templates') as { id: string; name: string; template: string; description?: string; variables?: string[] }[]
       const templates = Array.isArray(response) ? response : []
       setPromptTemplates(templates)
       
@@ -421,9 +444,51 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     }
   }
 
+  // Load function prompt templates from backend
+  const loadFunctionPromptTemplates = async () => {
+    try {
+      setLoadingFunctionTemplates(true)
+      addDetailedLog('🔧 Loading function prompt templates...')
+      
+      const response = await apiCallWithLogging('GET', '/api/v1/prompt-engineering/function-templates') as { id: string; name: string; template: string; description?: string; variables?: string[] }[]
+      const templates = Array.isArray(response) ? response : []
+      setFunctionPromptTemplates(templates)
+      
+      addDetailedLog(`✅ Loaded ${templates.length} function prompt templates`)
+    } catch (error: any) {
+      addDetailedLog(`❌ Failed to load function templates: ${error.message}`)
+      // Fallback templates for demo
+      setFunctionPromptTemplates([
+        {
+          id: 'default-function',
+          name: 'Default Function Caller Template',
+          description: 'The original system prompt for function calling',
+          template: 'You are an expert function caller...',
+          variables: ['conversation_context', 'available_functions', 'previous_function_calls']
+        }
+      ])
+    } finally {
+      setLoadingFunctionTemplates(false)
+    }
+  }
+
+  // Handle function template selection
+  const handleFunctionTemplateChange = (templateId: string) => {
+    const template = functionPromptTemplates.find(t => t.id === templateId)
+    if (template) {
+      setSettings({...settings, functionPromptTemplate: template})
+      setSelectedFunctionTemplatePreview(template.template)
+      addDetailedLog(`🎯 Selected function template: ${template.name}`)
+    } else {
+      setSettings({...settings, functionPromptTemplate: null})
+      setSelectedFunctionTemplatePreview('')
+    }
+  }
+
   // Load templates on component mount
   React.useEffect(() => {
     loadPromptTemplates()
+    loadFunctionPromptTemplates()
   }, [])
 
 
@@ -472,19 +537,19 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         }
       }
       
-      const evaluationResponse = await apiCallWithLogging('POST', `/api/v1/evaluations/conversations/${conversationId}/evaluations`, evaluationData) as any
+      const evaluationResponse = await apiCallWithLogging('POST', `/api/v1/evaluations/conversations/${conversationId}/evaluations`, evaluationData) as { id: string }
       const evaluationId = evaluationResponse.id
       setCurrentEvaluationId(evaluationId)
       addDetailedLog(`✅ Created evaluation: ${evaluationName} (${evaluationId})`)
       
       // Step 2: Get raw turns from the conversation
       addDetailedLog('🔍 Fetching raw turns from conversation...')
-      const turnsResponse = await apiCallWithLogging('GET', `/api/v1/conversations/${conversationId}/turns`) as any
+      const turnsResponse = await apiCallWithLogging('GET', `/api/v1/conversations/${conversationId}/turns`) as { turns: { id: string; speaker: string; raw_text: string; turn_sequence: number }[] }
       const rawTurns = turnsResponse.turns || []
       addDetailedLog(`📊 Found ${rawTurns.length} raw turns to process`)
       
       // Set the raw turns for display in the conversation component
-      const parsedRawTurns: ParsedTurn[] = rawTurns.map((turn: any, index: number) => ({
+      const parsedRawTurns: ParsedTurn[] = rawTurns.map((turn, index: number) => ({
         speaker: turn.speaker,
         raw_text: turn.raw_text,
         turn_index: index,
@@ -514,7 +579,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         // Process individual turn with API call
         const turnResult = await apiCallWithLogging('POST', `/api/v1/evaluations/${evaluationId}/process-turn`, {
           turn_id: rawTurn.id
-        }) as any
+        }) as { turn_id: string; raw_speaker: string; raw_text: string; cleaned_text: string; turn_sequence: number; confidence_score: string; cleaning_applied: boolean; cleaning_level: string; timing_breakdown: unknown; corrections: unknown[]; context_detected: string; processing_time_ms: number; ai_model_used: string; gemini_prompt: string; gemini_response: string; created_at: string; gemini_function_call?: { function_call: string; model_config: unknown; prompt: string; response: string; timestamp: number; success: boolean } }
         
         // Convert to UI format
         const cleanedTurn: CleanedTurn = {
@@ -529,8 +594,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             confidence_score: turnResult.confidence_score,
             cleaning_applied: turnResult.cleaning_applied,
             cleaning_level: turnResult.cleaning_level,
-            timing_breakdown: turnResult.timing_breakdown,
-            corrections: turnResult.corrections || [],
+            timing_breakdown: turnResult.timing_breakdown as CleanedTurn['metadata']['timing_breakdown'],
+            corrections: (turnResult.corrections || []) as CleanedTurn['metadata']['corrections'],
             context_detected: turnResult.context_detected,
             processing_time_ms: turnResult.processing_time_ms,
             ai_model_used: turnResult.ai_model_used,
@@ -604,7 +669,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     addDetailedLog(`⏹️ Stopping evaluation: ${currentEvaluationId}`)
     
     try {
-      await apiCallWithLogging('POST', `/api/v1/evaluations/${currentEvaluationId}/stop`, {}) as any
+      await apiCallWithLogging('POST', `/api/v1/evaluations/${currentEvaluationId}/stop`, {}) as Record<string, unknown>
       addDetailedLog(`✅ Evaluation stopped successfully`)
       
       // Keep the processing state but update the UI
@@ -623,16 +688,23 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const loadConversations = async () => {
     try {
       setLoadingConversations(true)
-      const response = await apiClient.get('/api/v1/conversations') as any
-      const conversationList = response.conversations || []
+      const response = await apiClient.get('/api/v1/conversations') as { conversations: { id: string; name: string; description?: string; created_at?: string; turns_count?: number }[] }
+      const conversationList = (response.conversations || []).map(conv => ({
+        ...conv,
+        created_at: conv.created_at || new Date().toISOString(),
+        turns_count: conv.turns_count || 0
+      }))
       setConversations(conversationList)
       
       // Load evaluations for each conversation
-      const evaluationData: {[key: string]: any[]} = {}
+      const evaluationData: {[key: string]: { id: string; name: string; created_at: string; template_name?: string; prompt_template_name?: string; prompt_template?: string; description?: string }[]} = {}
       for (const conversation of conversationList) {
         try {
-          const evaluationsResponse = await apiClient.getEvaluations(conversation.id) as any
-          evaluationData[conversation.id] = evaluationsResponse.evaluations || []
+          const evaluationsResponse = await apiClient.getEvaluations(conversation.id) as { evaluations: { id: string; name: string; created_at?: string; template_name?: string; prompt_template_name?: string; prompt_template?: string; description?: string }[] }
+          evaluationData[conversation.id] = (evaluationsResponse.evaluations || []).map(evaluation => ({
+            ...evaluation,
+            created_at: evaluation.created_at || new Date().toISOString()
+          }))
         } catch (error) {
           console.error(`Failed to load evaluations for conversation ${conversation.id}:`, error)
           evaluationData[conversation.id] = []
@@ -665,7 +737,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         }
       })
       
-      const conversationId = (convResponse as any).id
+      const conversationId = (convResponse as { id: string }).id
       addDetailedLog(`✅ Created conversation: ${newConversationName}`)
       
       // Step 2: Parse the transcript and save turns
@@ -718,9 +790,93 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     loadConversations()
   }
 
-  const openEvaluationsModal = (conversation: any) => {
+  const openEvaluationsModal = (conversation: { id: string; name: string }) => {
     setSelectedConversationForEvaluations(conversation)
     setShowEvaluationsModal(true)
+  }
+
+  // Customer management functions
+  const loadCustomers = async () => {
+    try {
+      setLoadingCustomers(true)
+      const response = await apiClient.getCustomers() as { customers: { id: string; user_name: string; job_title: string; company_name: string; company_description: string; company_size: string; company_sector: string; is_default?: boolean; created_at?: string; updated_at?: string }[] }
+      setCustomers((response.customers || []).map(customer => ({
+        ...customer,
+        is_default: customer.is_default || false,
+        created_at: customer.created_at || new Date().toISOString(),
+        updated_at: customer.updated_at || new Date().toISOString()
+      })))
+    } catch (error) {
+      console.error('Failed to load customers:', error)
+      toast.showError('Failed to Load Customers', 'Unable to fetch customer list. Please try again.')
+    } finally {
+      setLoadingCustomers(false)
+    }
+  }
+
+  const openCustomersModal = () => {
+    setShowCustomersModal(true)
+    loadCustomers() // Load customers when modal opens
+  }
+
+  const handleAddCustomer = async (customerData: { user_name: string; job_title: string; company_name: string; company_description: string; company_size: string; company_sector: string; is_default?: boolean }) => {
+    try {
+      setLoadingCustomers(true)
+      await apiClient.createCustomer(customerData)
+      await loadCustomers() // Reload the list
+      toast.showSuccess('Customer Added', `${customerData.user_name} has been added successfully.`)
+    } catch (error) {
+      console.error('Failed to add customer:', error)
+      toast.showError('Failed to Add Customer', 'Unable to create new customer. Please check your input and try again.')
+    } finally {
+      setLoadingCustomers(false)
+    }
+  }
+
+  const handleEditCustomer = async (customer: { id: string; user_name: string; job_title: string; company_name: string; company_description: string; company_size: string; company_sector: string; is_default?: boolean; created_at: string; updated_at: string }) => {
+    try {
+      setLoadingCustomers(true)
+      const { id, created_at, updated_at, ...updateData } = customer
+      await apiClient.updateCustomer(id, updateData)
+      await loadCustomers() // Reload the list
+      toast.showSuccess('Customer Updated', `${customer.user_name} has been updated successfully.`)
+    } catch (error) {
+      console.error('Failed to update customer:', error)
+      toast.showError('Failed to Update Customer', 'Unable to save changes. Please try again.')
+    } finally {
+      setLoadingCustomers(false)
+    }
+  }
+
+  const handleDeleteCustomer = async (customerId: string) => {
+    try {
+      setLoadingCustomers(true)
+      await apiClient.deleteCustomer(customerId)
+      await loadCustomers() // Reload the list
+      toast.showSuccess('Customer Deleted', 'Customer has been removed successfully.')
+    } catch (error) {
+      console.error('Failed to delete customer:', error)
+      const errorMessage = error instanceof Error && error.message.includes('currently used') 
+        ? 'Cannot delete customer: currently being used in evaluations.'
+        : 'Unable to delete customer. Please try again.'
+      toast.showError('Failed to Delete Customer', errorMessage)
+    } finally {
+      setLoadingCustomers(false)
+    }
+  }
+
+  const handleSetDefaultCustomer = async (customerId: string) => {
+    try {
+      setLoadingCustomers(true)
+      const response = await apiClient.setDefaultCustomer(customerId) as { user_name: string }
+      await loadCustomers() // Reload the list
+      toast.showSuccess('Default Customer Set', `${response.user_name} is now the default customer.`)
+    } catch (error) {
+      console.error('Failed to set default customer:', error)
+      toast.showError('Failed to Set Default', 'Unable to set default customer. Please try again.')
+    } finally {
+      setLoadingCustomers(false)
+    }
   }
 
   // NOTE: Save functions removed - evaluations auto-save during processing
@@ -735,7 +891,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     }
   }
 
-  const loadLatestEvaluation = async (conversation: any) => {
+  const loadLatestEvaluation = async (conversation: { id: string; name: string }) => {
     // Cancel any existing load operation
     if (loadingAbortController) {
       loadingAbortController.abort()
@@ -760,7 +916,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       // Load evaluation details including cleaned turns
       setLoadingProgress('Fetching evaluation metadata...')
       addDetailedLog(`📡 Requesting evaluation details for ID: ${latestEvaluation.id}`)
-      const evaluationDetails = await apiClient.getEvaluationDetails(latestEvaluation.id, controller.signal) as any
+      const evaluationDetails = await apiClient.getEvaluationDetails(latestEvaluation.id, controller.signal) as { evaluation: Record<string, unknown>; cleaned_turns: { turn_id: string; raw_speaker: string; raw_text: string; cleaned_text: string; turn_sequence: number; confidence_score: string; cleaning_applied: boolean; cleaning_level: string; timing_breakdown: unknown; corrections: unknown[]; context_detected: string; processing_time_ms: number; ai_model_used: string; gemini_prompt: string; gemini_response: string; created_at: string }[] }
       
       const turnCount = evaluationDetails.cleaned_turns?.length || 0
       setLoadingProgress(`Processing ${turnCount} cleaned turns...`)
@@ -777,11 +933,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       // Load raw turns for the conversation component
       setLoadingProgress('Loading conversation turns...')
       addDetailedLog(`📡 Requesting raw turns for conversation: ${conversation.id}`)
-      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`, controller.signal) as any
+      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`, controller.signal) as { turns: { speaker: string; raw_text: string; turn_sequence: number }[] }
       addDetailedLog(`✅ Received ${turnsResponse.turns?.length || 0} raw turns`)
       
       if (turnsResponse.turns && turnsResponse.turns.length > 0) {
-        const turns = turnsResponse.turns.map((turn: any) => ({
+        const turns = turnsResponse.turns.map((turn) => ({
           speaker: turn.speaker,
           raw_text: turn.raw_text,
           turn_index: turnsResponse.turns.indexOf(turn),  // Keep for compatibility
@@ -798,7 +954,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       
       // Convert evaluation cleaned turns to UI format with complete data
       setLoadingProgress(`Converting ${turnCount} turns to UI format...`)
-      const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any) => ({
+      const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn) => ({
         turn_id: cleanedTurn.turn_id,
         conversation_id: conversation.id,
         speaker: cleanedTurn.raw_speaker,
@@ -811,8 +967,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           confidence_score: cleanedTurn.confidence_score,
           cleaning_applied: cleanedTurn.cleaning_applied,
           cleaning_level: cleanedTurn.cleaning_level,
-          timing_breakdown: cleanedTurn.timing_breakdown,
-          corrections: cleanedTurn.corrections || [],
+          timing_breakdown: cleanedTurn.timing_breakdown as CleanedTurn['metadata']['timing_breakdown'],
+          corrections: (cleanedTurn.corrections || []) as CleanedTurn['metadata']['corrections'],
           context_detected: cleanedTurn.context_detected,
           processing_time_ms: cleanedTurn.processing_time_ms,
           ai_model_used: cleanedTurn.ai_model_used,
@@ -823,7 +979,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       }))
       
       // Reconstruct API logs from evaluation data
-      const reconstructedTurnAPIGroups: TurnAPIGroup[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any, index: number) => {
+      const reconstructedTurnAPIGroups: TurnAPIGroup[] = evaluationDetails.cleaned_turns.map((cleanedTurn, index: number) => {
         const turnIndex = index
         const turnSequence = cleanedTurn.turn_sequence
         const speaker = cleanedTurn.raw_speaker
@@ -888,12 +1044,12 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     }
   }
   
-  const loadSpecificEvaluation = async (evaluation: any, conversation: any) => {
+  const loadSpecificEvaluation = async (evaluation: { id: string; name: string }, conversation: { id: string; name: string }) => {
     try {
-      addDetailedLog(`📊 Loading specific evaluation: ${evaluation.name}`)
+      addDetailedLog(`📊 Loading specific evaluation: ${evaluation.name}`);
       
       // Load evaluation details including cleaned turns
-      const evaluationDetails = await apiClient.getEvaluationDetails(evaluation.id) as any
+      const evaluationDetails = await apiClient.getEvaluationDetails(evaluation.id) as { evaluation: Record<string, unknown>; cleaned_turns: { turn_id: string; raw_speaker: string; raw_text: string; cleaned_text: string; turn_sequence: number; confidence_score: string; cleaning_applied: boolean; cleaning_level: string; timing_breakdown: unknown; corrections: unknown[]; context_detected: string; processing_time_ms: number; ai_model_used: string; gemini_prompt: string; gemini_response: string; created_at: string }[] }
       
       // Set conversation context
       setConversationId(conversation.id)
@@ -914,23 +1070,23 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       
       if (!finalTemplateName) {
         // Try to get from original evaluation object's template field
-        if (evaluation.template_name) {
-          finalTemplateName = evaluation.template_name
+        if ((evaluation as any).template_name) {
+          finalTemplateName = (evaluation as any).template_name
           console.log('[DEBUG] Using evaluation.template_name:', finalTemplateName)
-        } else if (evaluation.prompt_template_name) {
-          finalTemplateName = evaluation.prompt_template_name
+        } else if ((evaluation as any).prompt_template_name) {
+          finalTemplateName = (evaluation as any).prompt_template_name
           console.log('[DEBUG] Using evaluation.prompt_template_name:', finalTemplateName)
-        } else if (typeof evaluation.prompt_template === 'string' && evaluation.prompt_template.includes('gemini')) {
+        } else if (typeof (evaluation as any).prompt_template === 'string' && (evaluation as any).prompt_template.includes('gemini')) {
           // Extract from prompt template content
-          const match = evaluation.prompt_template.match(/gemini\s*(v?\d+)/i)
+          const match = (evaluation as any).prompt_template.match(/gemini\s*(v?\d+)/i)
           if (match) {
             finalTemplateName = `gemini ${match[1]}`
             console.log('[DEBUG] Extracted from prompt template content:', finalTemplateName)
           }
         } else {
           // Last resort: check if evaluation name contains template info
-          if (evaluation.description && evaluation.description.includes('gemini')) {
-            const match = evaluation.description.match(/gemini\s*(v?\d+)/i)
+          if ((evaluation as any).description && (evaluation as any).description.includes('gemini')) {
+            const match = (evaluation as any).description.match(/gemini\s*(v?\d+)/i)
             if (match) {
               finalTemplateName = `gemini ${match[1]}`
               console.log('[DEBUG] Extracted from evaluation description:', finalTemplateName)
@@ -943,10 +1099,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       setShowEvaluationsModal(false)
       
       // Load raw turns for the conversation component
-      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as any
+      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as { turns: { speaker: string; raw_text: string; turn_sequence: number }[] }
       
       if (turnsResponse.turns && turnsResponse.turns.length > 0) {
-        const turns = turnsResponse.turns.map((turn: any) => ({
+        const turns = turnsResponse.turns.map((turn) => ({
           speaker: turn.speaker,
           raw_text: turn.raw_text,
           turn_index: turnsResponse.turns.indexOf(turn),  // Keep for compatibility
@@ -962,7 +1118,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       }
       
       // Convert evaluation cleaned turns to UI format
-      const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any) => ({
+      const cleaned: CleanedTurn[] = evaluationDetails.cleaned_turns.map((cleanedTurn) => ({
         turn_id: cleanedTurn.turn_id,
         conversation_id: conversation.id,
         speaker: cleanedTurn.raw_speaker,
@@ -975,11 +1131,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           confidence_score: cleanedTurn.confidence_score,
           cleaning_applied: cleanedTurn.cleaning_applied,
           cleaning_level: cleanedTurn.cleaning_level,
-          corrections: cleanedTurn.corrections,
+          corrections: (cleanedTurn.corrections || []) as CleanedTurn['metadata']['corrections'],
           context_detected: cleanedTurn.context_detected,
           processing_time_ms: cleanedTurn.processing_time_ms,
           ai_model_used: cleanedTurn.ai_model_used,
-          timing_breakdown: cleanedTurn.timing_breakdown,
+          timing_breakdown: cleanedTurn.timing_breakdown as CleanedTurn['metadata']['timing_breakdown'],
           gemini_prompt: cleanedTurn.gemini_prompt,
           gemini_response: cleanedTurn.gemini_response
         },
@@ -987,7 +1143,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       }))
       
       // Reconstruct API logs from evaluation data
-      const reconstructedTurnAPIGroups: TurnAPIGroup[] = evaluationDetails.cleaned_turns.map((cleanedTurn: any, index: number) => {
+      const reconstructedTurnAPIGroups: TurnAPIGroup[] = evaluationDetails.cleaned_turns.map((cleanedTurn, index: number) => {
         const turnIndex = index
         const turnSequence = cleanedTurn.turn_sequence
         const speaker = cleanedTurn.raw_speaker
@@ -1040,7 +1196,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     }
   }
   
-  const startNewEvaluation = async (conversation: any) => {
+  const startNewEvaluation = async (conversation: { id: string; name: string }) => {
     try {
       // Set conversation context and load raw turns
       setConversationId(conversation.id)
@@ -1050,10 +1206,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       setShowConversationsModal(false)
       
       // Load raw turns
-      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as any
+      const turnsResponse = await apiClient.get(`/api/v1/conversations/${conversation.id}/turns`) as { turns: { speaker: string; raw_text: string; turn_sequence: number }[] }
       
       if (turnsResponse.turns && turnsResponse.turns.length > 0) {
-        const turns = turnsResponse.turns.map((turn: any) => ({
+        const turns = turnsResponse.turns.map((turn) => ({
           speaker: turn.speaker,
           raw_text: turn.raw_text,
           turn_index: turnsResponse.turns.indexOf(turn),  // Keep for compatibility
@@ -1109,7 +1265,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   // Calculate average latency excluding Lumen bypass calls (real API calls only)
   const realApiCalls = apiCalls.filter(call => 
     !call.endpoint.includes('/turns') || 
-    !call.response_data?.metadata?.ai_model_used?.includes('bypass')
+    !(call.response_data && typeof call.response_data === 'object' && 'metadata' in call.response_data && 
+      call.response_data.metadata && typeof call.response_data.metadata === 'object' && 
+      'ai_model_used' in call.response_data.metadata && 
+      typeof call.response_data.metadata.ai_model_used === 'string' && 
+      call.response_data.metadata.ai_model_used.includes('bypass'))
   )
   const averageLatency = realApiCalls.length > 0 ? Math.round(realApiCalls.reduce((a, b) => a + b.latency_ms, 0) / realApiCalls.length) : 0
 
@@ -1357,24 +1517,44 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 </div>
               )}
             </div>
-            <button 
-              onClick={openConversationsModal}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                padding: '8px 16px',
-                border: `1px solid ${theme.border}`,
-                borderRadius: '6px',
-                fontSize: '14px',
-                fontWeight: '500',
-                color: theme.textSecondary,
-                backgroundColor: theme.bgSecondary,
-                cursor: 'pointer',
-                gap: '6px'
-              }}
-            >
-              💬 Conversations
-            </button>
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <button 
+                onClick={openCustomersModal}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '8px 16px',
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  color: theme.textSecondary,
+                  backgroundColor: theme.bgSecondary,
+                  cursor: 'pointer',
+                  gap: '6px'
+                }}
+              >
+                👤 Customers
+              </button>
+              <button 
+                onClick={openConversationsModal}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '8px 16px',
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  color: theme.textSecondary,
+                  backgroundColor: theme.bgSecondary,
+                  cursor: 'pointer',
+                  gap: '6px'
+                }}
+              >
+                💬 Conversations
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1621,7 +1801,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 { key: 'results', label: 'Results', count: cleanedTurns.length },
                 { key: 'api', label: 'API Calls', count: turnAPIGroups.length },
                 { key: 'logs', label: 'Detailed Logs', count: detailedLogs.length },
-                { key: 'settings', label: 'Configuration', count: null }
+                { key: 'cleaner-config', label: 'Cleaner Config', count: null },
+                { key: 'function-config', label: 'Function Config', count: null }
               ].map((tab) => (
                 <button
                   key={tab.key}
@@ -1856,7 +2037,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                       {/* Copy Compact Button */}
                       {cleanedTurns.length > 0 && !isProcessing && (
                         <button
-                          onClick={async (event) => {
+                          onClick={async () => {
                             // Prevent multiple rapid clicks and show loading
                             if (copyCompactLoading) return
                             setCopyCompactLoading(true)
@@ -2652,7 +2833,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                             </div>
                             {turnGroup.geminiFunctionCall && (
                               <div style={{ fontSize: '12px', color: theme.textMuted, fontFamily: 'monospace' }}>
-                                2. Backend → Google: {turnGroup.geminiFunctionCall.function_call} ({turnGroup.geminiFunctionCall.model_config.model_name})
+                                2. Backend → Google: {turnGroup.geminiFunctionCall.function_call} ({turnGroup.geminiFunctionCall.model_config && typeof turnGroup.geminiFunctionCall.model_config === 'object' && 'model_name' in turnGroup.geminiFunctionCall.model_config ? (turnGroup.geminiFunctionCall.model_config as any).model_name : 'unknown model'})
                               </div>
                             )}
                             {turnGroup.geminiFunctionCall && (
@@ -2708,11 +2889,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                   maxHeight: '150px'
                                 }}>
                                   {JSON.stringify({
-                                    processing_time_ms: turnGroup.backendResponse.response_data?.metadata?.processing_time_ms || 'N/A',
-                                    timing_breakdown: turnGroup.backendResponse.response_data?.timing_breakdown || 'No timing data',
-                                    ai_model_used: turnGroup.backendResponse.response_data?.metadata?.ai_model_used || 'N/A',
-                                    cleaning_level: turnGroup.backendResponse.response_data?.metadata?.cleaning_level || 'N/A',
-                                    confidence_score: turnGroup.backendResponse.response_data?.metadata?.confidence_score || 'N/A'
+                                    processing_time_ms: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'metadata' in turnGroup.backendResponse.response_data && turnGroup.backendResponse.response_data.metadata && typeof turnGroup.backendResponse.response_data.metadata === 'object' && 'processing_time_ms' in turnGroup.backendResponse.response_data.metadata) ? (turnGroup.backendResponse.response_data.metadata as any).processing_time_ms : 'N/A',
+                                    timing_breakdown: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'timing_breakdown' in turnGroup.backendResponse.response_data) ? (turnGroup.backendResponse.response_data as any).timing_breakdown : 'No timing data',
+                                    ai_model_used: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'metadata' in turnGroup.backendResponse.response_data && turnGroup.backendResponse.response_data.metadata && typeof turnGroup.backendResponse.response_data.metadata === 'object' && 'ai_model_used' in turnGroup.backendResponse.response_data.metadata) ? (turnGroup.backendResponse.response_data.metadata as any).ai_model_used : 'N/A',
+                                    cleaning_level: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'metadata' in turnGroup.backendResponse.response_data && turnGroup.backendResponse.response_data.metadata && typeof turnGroup.backendResponse.response_data.metadata === 'object' && 'cleaning_level' in turnGroup.backendResponse.response_data.metadata) ? (turnGroup.backendResponse.response_data.metadata as any).cleaning_level : 'N/A',
+                                    confidence_score: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'metadata' in turnGroup.backendResponse.response_data && turnGroup.backendResponse.response_data.metadata && typeof turnGroup.backendResponse.response_data.metadata === 'object' && 'confidence_score' in turnGroup.backendResponse.response_data.metadata) ? (turnGroup.backendResponse.response_data.metadata as any).confidence_score : 'N/A'
                                   }, null, 2)}
                                 </pre>
                               </div>
@@ -2763,11 +2944,11 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                   {JSON.stringify({
                                     status: turnGroup.backendResponse.status,
                                     latency_ms: turnGroup.backendResponse.latency_ms,
-                                    cleaned_text: turnGroup.backendResponse.response_data?.cleaned_text || 'No cleaned text',
-                                    corrections: turnGroup.backendResponse.response_data?.metadata?.corrections || [],
-                                    context_detected: turnGroup.backendResponse.response_data?.metadata?.context_detected || 'N/A',
-                                    gemini_prompt: turnGroup.backendResponse.response_data?.gemini_prompt?.substring(0, 200) + '...' || 'No prompt',
-                                    gemini_response: turnGroup.backendResponse.response_data?.gemini_response?.substring(0, 200) + '...' || 'No response'
+                                    cleaned_text: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'cleaned_text' in turnGroup.backendResponse.response_data) ? (turnGroup.backendResponse.response_data as any).cleaned_text : 'No cleaned text',
+                                    corrections: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'metadata' in turnGroup.backendResponse.response_data && turnGroup.backendResponse.response_data.metadata && typeof turnGroup.backendResponse.response_data.metadata === 'object' && 'corrections' in turnGroup.backendResponse.response_data.metadata) ? (turnGroup.backendResponse.response_data.metadata as any).corrections : [],
+                                    context_detected: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'metadata' in turnGroup.backendResponse.response_data && turnGroup.backendResponse.response_data.metadata && typeof turnGroup.backendResponse.response_data.metadata === 'object' && 'context_detected' in turnGroup.backendResponse.response_data.metadata) ? (turnGroup.backendResponse.response_data.metadata as any).context_detected : 'N/A',
+                                    gemini_prompt: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'gemini_prompt' in turnGroup.backendResponse.response_data && typeof (turnGroup.backendResponse.response_data as any).gemini_prompt === 'string') ? (turnGroup.backendResponse.response_data as any).gemini_prompt.substring(0, 200) + '...' : 'No prompt',
+                                    gemini_response: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'gemini_response' in turnGroup.backendResponse.response_data && typeof (turnGroup.backendResponse.response_data as any).gemini_response === 'string') ? (turnGroup.backendResponse.response_data as any).gemini_response.substring(0, 200) + '...' : 'No response'
                                   }, null, 2)}
                                 </pre>
                               </div>
@@ -2885,15 +3066,15 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
               </div>
             )}
             
-            {selectedTab === 'settings' && (
+            {selectedTab === 'cleaner-config' && (
               <div style={{ height: '100%', overflowY: 'auto' }}>
                 <div style={{ padding: '24px' }}>
                   <div style={{ maxWidth: '512px' }}>
-                    <h3 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, marginBottom: '24px' }}>Configuration</h3>
+                    <h3 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, marginBottom: '24px' }}>Cleaner Configuration</h3>
                     
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                      <div>
-                        <h4 style={{ fontSize: '14px', fontWeight: '500', color: theme.text, marginBottom: '12px' }}>Processing Options</h4>
+                        <div>
+                          <h4 style={{ fontSize: '14px', fontWeight: '500', color: theme.text, marginBottom: '12px' }}>Processing Options</h4>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                           <label style={{ display: 'flex', alignItems: 'center' }}>
                             <input 
@@ -3234,6 +3415,229 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 </div>
               </div>
             )}
+            
+            {selectedTab === 'function-config' && (
+              <div style={{ height: '100%', overflowY: 'auto' }}>
+                <div style={{ padding: '24px' }}>
+                  <div style={{ maxWidth: '512px' }}>
+                    <h3 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, marginBottom: '24px' }}>Function Caller Configuration</h3>
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                          <div>
+                            <h4 style={{ fontSize: '14px', fontWeight: '500', color: theme.text, marginBottom: '12px' }}>Function Window Settings</h4>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
+                                  Function Window: {settings.functionWindowSize} turns
+                                </label>
+                                <div style={{ position: 'relative' }}>
+                                  <input 
+                                    type="range"
+                                    min="0"
+                                    max="30"
+                                    value={settings.functionWindowSize}
+                                    onChange={(e) => setSettings({...settings, functionWindowSize: parseInt(e.target.value)})}
+                                    style={{ 
+                                      width: '100%',
+                                      height: '6px',
+                                      borderRadius: '3px',
+                                      backgroundColor: theme.border,
+                                      outline: 'none',
+                                      appearance: 'none'
+                                    }}
+                                  />
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: theme.textMuted, marginTop: '4px' }}>
+                                    <span>0</span>
+                                    <span>10</span>
+                                    <span>20</span>
+                                    <span>Max</span>
+                                  </div>
+                                </div>
+                                <div style={{ fontSize: '12px', color: theme.textMuted, marginTop: '4px' }}>
+                                  Include previous {settings.functionWindowSize} turns for function calling context
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div>
+                            <h4 style={{ fontSize: '14px', fontWeight: '500', color: theme.text, marginBottom: '12px' }}>AI Model Settings</h4>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
+                                  Model Name
+                                </label>
+                                <input 
+                                  type="text"
+                                  value={settings.functionModelName}
+                                  onChange={(e) => setSettings({...settings, functionModelName: e.target.value})}
+                                  style={{ 
+                                    display: 'block', 
+                                    width: '100%', 
+                                    borderRadius: '6px', 
+                                    border: `1px solid ${theme.border}`, 
+                                    padding: '8px 12px',
+                                    fontFamily: 'monospace', 
+                                    fontSize: '14px',
+                                    backgroundColor: theme.bg
+                                  }}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
+                                  Function Prompt Template
+                                </label>
+                                <select 
+                                  value={settings.functionPromptTemplate?.id || ''}
+                                  onChange={(e) => handleFunctionTemplateChange(e.target.value)}
+                                  disabled={loadingFunctionTemplates}
+                                  style={{ 
+                                    display: 'block', 
+                                    width: '100%', 
+                                    borderRadius: '6px', 
+                                    border: `1px solid ${theme.border}`, 
+                                    padding: '8px 12px',
+                                    backgroundColor: theme.bg,
+                                    color: theme.text,
+                                    fontSize: '14px'
+                                  }}
+                                >
+                                  <option value="">Default Function Prompt</option>
+                                  {functionPromptTemplates.map(template => (
+                                    <option key={template.id} value={template.id}>
+                                      {template.name} ({template.variables?.length || 0} variables)
+                                    </option>
+                                  ))}
+                                </select>
+                                {loadingFunctionTemplates && (
+                                  <div style={{ fontSize: '12px', color: theme.textMuted, marginTop: '4px' }}>
+                                    Loading function templates...
+                                  </div>
+                                )}
+                                {settings.functionPromptTemplate && (
+                                  <div style={{ marginTop: '8px' }}>
+                                    <div style={{ fontSize: '12px', fontWeight: '500', color: theme.textSecondary, marginBottom: '4px' }}>
+                                      Template Preview:
+                                    </div>
+                                    <textarea
+                                      value={selectedFunctionTemplatePreview}
+                                      readOnly
+                                      style={{
+                                        width: '100%',
+                                        height: '120px',
+                                        borderRadius: '6px',
+                                        border: `1px solid ${theme.border}`,
+                                        padding: '8px 12px',
+                                        backgroundColor: theme.bgSecondary,
+                                        color: theme.text,
+                                        fontSize: '12px',
+                                        fontFamily: 'monospace',
+                                        resize: 'vertical',
+                                        lineHeight: '1.4'
+                                      }}
+                                    />
+                                    <div style={{ fontSize: '11px', color: theme.textMuted, marginTop: '4px' }}>
+                                      Variables: {settings.functionPromptTemplate.variables?.join(', ') || 'None'}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div>
+                            <h4 style={{ fontSize: '14px', fontWeight: '500', color: theme.text, marginBottom: '12px' }}>Model Parameters</h4>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px' }}>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
+                                  Temperature: {settings.functionTemperature}
+                                </label>
+                                <input 
+                                  type="range"
+                                  min="0"
+                                  max="2"
+                                  step="0.1"
+                                  value={settings.functionTemperature}
+                                  onChange={(e) => setSettings({...settings, functionTemperature: parseFloat(e.target.value)})}
+                                  style={{ 
+                                    width: '100%',
+                                    height: '6px',
+                                    borderRadius: '3px',
+                                    backgroundColor: theme.border,
+                                    outline: 'none',
+                                    appearance: 'none'
+                                  }}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
+                                  Top-p: {settings.functionTopP}
+                                </label>
+                                <input 
+                                  type="range"
+                                  min="0"
+                                  max="1"
+                                  step="0.05"
+                                  value={settings.functionTopP}
+                                  onChange={(e) => setSettings({...settings, functionTopP: parseFloat(e.target.value)})}
+                                  style={{ 
+                                    width: '100%',
+                                    height: '6px',
+                                    borderRadius: '3px',
+                                    backgroundColor: theme.border,
+                                    outline: 'none',
+                                    appearance: 'none'
+                                  }}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
+                                  Top-k: {settings.functionTopK}
+                                </label>
+                                <input 
+                                  type="range"
+                                  min="1"
+                                  max="100"
+                                  value={settings.functionTopK}
+                                  onChange={(e) => setSettings({...settings, functionTopK: parseInt(e.target.value)})}
+                                  style={{ 
+                                    width: '100%',
+                                    height: '6px',
+                                    borderRadius: '3px',
+                                    backgroundColor: theme.border,
+                                    outline: 'none',
+                                    appearance: 'none'
+                                  }}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', color: theme.textSecondary, marginBottom: '8px' }}>
+                                  Max Tokens: {settings.functionMaxTokens}
+                                </label>
+                                <input 
+                                  type="range"
+                                  min="1000"
+                                  max="65535"
+                                  step="1000"
+                                  value={settings.functionMaxTokens}
+                                  onChange={(e) => setSettings({...settings, functionMaxTokens: parseInt(e.target.value)})}
+                                  style={{ 
+                                    width: '100%',
+                                    height: '6px',
+                                    borderRadius: '3px',
+                                    backgroundColor: theme.border,
+                                    outline: 'none',
+                                    appearance: 'none'
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -3503,7 +3907,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                 marginBottom: '8px',
                                 fontStyle: 'italic'
                               }}>
-                                {hasEvaluations ? (
+                                {hasEvaluations && latestEvaluation ? (
                                   `${evaluations.length} evaluation${evaluations.length > 1 ? 's' : ''}, last: ${new Date(latestEvaluation.created_at).toLocaleString()}`
                                 ) : (
                                   'No evaluations'
@@ -3865,6 +4269,21 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             </div>
           </div>
         </div>
+      )}
+
+      {/* Customer Modal */}
+      {showCustomersModal && (
+        <CustomerModal
+          isOpen={showCustomersModal}
+          onClose={() => setShowCustomersModal(false)}
+          customers={customers}
+          onAdd={handleAddCustomer}
+          onEdit={handleEditCustomer}
+          onDelete={handleDeleteCustomer}
+          onSetAsDefault={handleSetDefaultCustomer}
+          loading={loadingCustomers}
+          theme={getThemeColors()}
+        />
       )}
     </div>
   )

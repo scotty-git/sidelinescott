@@ -162,6 +162,10 @@ IMPORTANT:
     def get_template_by_id_sync(self, template_id: UUID, db: Session) -> Optional[PromptTemplate]:
         """Get template by ID (sync version for caching)"""
         return db.query(PromptTemplate).filter(PromptTemplate.id == template_id).first()
+    
+    def get_function_template_by_id_sync(self, template_id: UUID, db: Session) -> Optional[FunctionPromptTemplate]:
+        """Get function template by ID (sync version for caching)"""
+        return db.query(FunctionPromptTemplate).filter(FunctionPromptTemplate.id == template_id).first()
 
     async def update_template(self, db: Session, template_id: UUID, 
                             **updates) -> Optional[PromptTemplate]:

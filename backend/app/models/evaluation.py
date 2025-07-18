@@ -51,6 +51,7 @@ class Evaluation(Base):
     conversation = relationship("Conversation", back_populates="evaluations")
     cleaned_turns = relationship("CleanedTurn", back_populates="evaluation", cascade="all, delete-orphan")
     called_functions = relationship("CalledFunction", back_populates="evaluation", cascade="all, delete-orphan")
+    mirrored_customer = relationship("MirroredMockCustomer", back_populates="evaluation", uselist=False, cascade="all, delete-orphan")
     prompt_template_ref = relationship("PromptTemplate", foreign_keys=[prompt_template_id])
     
     def __repr__(self):

@@ -149,7 +149,7 @@ test.describe('Robust SAM6V2 Test', () => {
       'div:has-text("Template")'
     ];
     
-    let promptInfo = [];
+    const promptInfo = [];
     for (const selector of promptSelectors) {
       const element = page.locator(selector);
       if (await element.isVisible().catch(() => false)) {

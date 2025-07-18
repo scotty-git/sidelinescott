@@ -277,6 +277,82 @@ export class APIClient {
       method: 'POST'
     })
   }
+
+  // Customer endpoints
+  async getCustomers(search?: string, limit: number = 50, offset: number = 0) {
+    const params = new URLSearchParams();
+    if (search) params.append('search', search);
+    params.append('limit', limit.toString());
+    params.append('offset', offset.toString());
+    
+    const queryString = params.toString();
+    return this.request(`/api/v1/customers/${queryString ? `?${queryString}` : ''}`);
+  }
+
+  async createCustomer(data: {
+    user_name: string;
+    job_title: string;
+    company_name: string;
+    company_description: string;
+    company_size: string;
+    company_sector: string;
+    is_default?: boolean;
+  }) {
+    return this.request('/api/v1/customers/', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getCustomer(customerId: string) {
+    return this.request(`/api/v1/customers/${customerId}`);
+  }
+
+  async updateCustomer(customerId: string, data: {
+    user_name?: string;
+    job_title?: string;
+    company_name?: string;
+    company_description?: string;
+    company_size?: string;
+    company_sector?: string;
+    is_default?: boolean;
+  }) {
+    return this.request(`/api/v1/customers/${customerId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteCustomer(customerId: string) {
+    return this.request(`/api/v1/customers/${customerId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async setDefaultCustomer(customerId: string) {
+    return this.request(`/api/v1/customers/${customerId}/set-default`, {
+      method: 'POST',
+    });
+  }
+
+  async getDefaultCustomer() {
+    return this.request('/api/v1/customers/default');
+  }
+
+  // Mirrored customer methods for evaluations
+  async getMirroredCustomer(evaluationId: string) {
+    return this.request(`/api/v1/customers/mirrored/${evaluationId}`);
+  }
+
+  async updateBusinessInsights(evaluationId: string, insights: any, appendMode: boolean = true) {
+    return this.request(`/api/v1/customers/mirrored/${evaluationId}/insights`, {
+      method: 'POST',
+      body: JSON.stringify({
+        insights,
+        append_mode: appendMode,
+      }),
+    });
+  }
 }
 
 export const apiClient = new APIClient()

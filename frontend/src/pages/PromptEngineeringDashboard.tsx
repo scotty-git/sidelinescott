@@ -22,9 +22,21 @@ interface PromptTemplate {
   updated_at: string
 }
 
+interface FunctionPromptTemplate {
+  id: string
+  name: string
+  template: string
+  description?: string
+  variables: string[]
+  version: string
+  is_default: boolean
+  created_at: string
+  updated_at: string
+}
+
 interface PromptVariable {
   name: string
-  value: any
+  value: string | number | boolean | object
   data_type: string
   description?: string
 }
@@ -58,7 +70,7 @@ function PromptEngineeringDashboardInner() {
     call_context: '',
     additional_context: ''
   })
-  const [renderedPreview, setRenderedPreview] = useState<RenderedPrompt | null>(null)
+  const [renderedPreview] = useState<RenderedPrompt | null>(null)
 
   // Turn Inspector State (unused - keeping for future functionality)
   // const [selectedTurnId, setSelectedTurnId] = useState('')
@@ -66,15 +78,34 @@ function PromptEngineeringDashboardInner() {
 
   // New dual testing mode state
   const [dataSource, setDataSource] = useState<'test' | 'real' | 'saved'>('test')
-  const [conversations, setConversations] = useState<any[]>([])
+  const [conversations, setConversations] = useState<{id: string; name: string; created_at: string}[]>([])
   const [selectedConversationId, setSelectedConversationId] = useState('')
-  const [conversationTurns, setConversationTurns] = useState<any[]>([])
+  const [conversationTurns, setConversationTurns] = useState<{id: string; speaker: string; raw_text: string; cleaned_text: string}[]>([])
   const [testingMode, setTestingMode] = useState<'single_turn' | 'full_conversation'>('single_turn')
   const [selectedTurnIndex, setSelectedTurnIndex] = useState(0)
   const [customVariable, setCustomVariable] = useState('')
-  const [testConversations, setTestConversations] = useState<any[]>([])
+  const [testConversations, setTestConversations] = useState<{id: string; name: string; description: string; variables: object}[]>([])
   const [selectedTestConversationId, setSelectedTestConversationId] = useState('')
-  const [conversationSimulationResult, setConversationSimulationResult] = useState<any>(null)
+  const [conversationSimulationResult, setConversationSimulationResult] = useState<{
+    mode: string; 
+    results: Array<{
+      turn_index: number;
+      speaker: string;
+      raw_text: string;
+      success: boolean;
+      cleaned_text?: string;
+      context_turns_used?: number;
+      rendered_prompt?: string;
+      token_count?: number;
+      error?: string;
+    }>;
+    summary?: {
+      successful_renders: number;
+      total_turns_tested: number;
+    };
+    token_count?: number;
+    rendered_prompt?: string;
+  } | null>(null)
 
   // Template Library Modal State
   const [showTemplateLibrary, setShowTemplateLibrary] = useState(false)
@@ -102,7 +133,7 @@ function PromptEngineeringDashboardInner() {
   const [hoveredVariable, setHoveredVariable] = useState<string | null>(null)
   
   // Monaco editor ref for drag and drop
-  const [monacoEditor, setMonacoEditor] = useState<any>(null)
+  const [monacoEditor, setMonacoEditor] = useState<{ getPosition: () => any; executeEdits: (source: string, operations: any[]) => void; setPosition: (position: any) => void; focus: () => void } | null>(null)
   
   // Function prompt state
   const [functionPromptName, setFunctionPromptName] = useState('')
@@ -115,7 +146,7 @@ function PromptEngineeringDashboardInner() {
   const [functionValidationTimeoutId, setFunctionValidationTimeoutId] = useState<NodeJS.Timeout | null>(null)
   
   // Function prompt template state
-  const [functionTemplates, setFunctionTemplates] = useState<any[]>([])
+  const [functionTemplates, setFunctionTemplates] = useState<FunctionPromptTemplate[]>([])
   const [currentFunctionTemplateId, setCurrentFunctionTemplateId] = useState<string | null>(null)
 
   const theme = {
@@ -197,7 +228,7 @@ function PromptEngineeringDashboardInner() {
         const firstTemplate = functionTemplates[0]
         setCurrentFunctionTemplateId(firstTemplate.id)
         setFunctionPromptName(firstTemplate.name)
-        setFunctionPromptDescription(firstTemplate.description)
+        setFunctionPromptDescription(firstTemplate.description || '')
         setFunctionPromptContent(firstTemplate.template)
         // Clear validation errors when loading existing template
         setFunctionValidationErrors([])
@@ -236,7 +267,7 @@ function PromptEngineeringDashboardInner() {
   const loadFunctionTemplates = async () => {
     try {
       setLoading(true)
-      const response = await apiClient.getFunctionPromptTemplates() as any[]
+      const response = await apiClient.getFunctionPromptTemplates() as FunctionPromptTemplate[]
       console.log('✅ Function templates loaded successfully:', response.length, 'templates')
       setFunctionTemplates(response)
       
@@ -245,7 +276,7 @@ function PromptEngineeringDashboardInner() {
         const firstTemplate = response[0]
         setCurrentFunctionTemplateId(firstTemplate.id)
         setFunctionPromptName(firstTemplate.name)
-        setFunctionPromptDescription(firstTemplate.description)
+        setFunctionPromptDescription(firstTemplate.description || '')
         setFunctionPromptContent(firstTemplate.template)
         // Clear validation errors when loading existing template
         setFunctionValidationErrors([])
@@ -413,7 +444,7 @@ function PromptEngineeringDashboardInner() {
       
       if (currentFunctionTemplateId) {
         // UPDATE existing function template
-        const response = await apiClient.updateFunctionPromptTemplate(currentFunctionTemplateId, {
+        await apiClient.updateFunctionPromptTemplate(currentFunctionTemplateId, {
           name: functionPromptName,
           description: functionPromptDescription,
           template: functionPromptContent,
@@ -437,7 +468,7 @@ function PromptEngineeringDashboardInner() {
         templateToasts.showSaveSuccess(`Created function prompt "${functionPromptName}"`)
         
         // Set the new template as current and reload
-        setCurrentFunctionTemplateId(response.id)
+        setCurrentFunctionTemplateId((response as FunctionPromptTemplate).id)
         await loadFunctionTemplates()
       }
       
@@ -492,7 +523,7 @@ function PromptEngineeringDashboardInner() {
       templateToasts.showSaveSuccess(`Created function prompt "${functionPromptName}"`)
       
       // Set the new template as current and reload
-      setCurrentFunctionTemplateId(response.id)
+      setCurrentFunctionTemplateId((response as FunctionPromptTemplate).id)
       await loadFunctionTemplates()
       
     } catch (err) {
@@ -576,19 +607,6 @@ function PromptEngineeringDashboardInner() {
     debouncedFunctionValidation(functionPromptName, functionPromptContent, description)
   }
 
-  const renderPreview = async () => {
-    if (!activeTemplate) return
-
-    try {
-      const response = await apiClient.post(`/api/v1/prompt-engineering/templates/${activeTemplate.id}/render`, {
-        template_id: activeTemplate.id,
-        variables: previewVariables
-      }) as RenderedPrompt
-      setRenderedPreview(response)
-    } catch (err) {
-      setError(`Failed to render preview: ${err}`)
-    }
-  }
 
   // Smart Save System - handles both create and update
   const handleSave = async () => {
@@ -722,9 +740,9 @@ function PromptEngineeringDashboardInner() {
       setShowTemplateLibrary(false)
     } else {
       setCurrentFunctionTemplateId(template.id)
-      setFunctionTemplateName(template.name)
-      setFunctionTemplateDescription(template.description || '')
-      setFunctionTemplate(template.template)
+      setFunctionPromptName(template.name)
+      setFunctionPromptDescription(template.description || '')
+      setFunctionPromptContent(template.template)
       setShowTemplateLibrary(false)
       // Clear validation errors when loading existing template
       setFunctionValidationErrors([])
@@ -782,7 +800,7 @@ function PromptEngineeringDashboardInner() {
         await apiClient.createFunctionPromptTemplate({
           name: newName,
           template: template.template,
-          description: template.description,
+          description: template.description || '',
           variables: template.variables
         })
         await loadFunctionTemplates()
@@ -838,7 +856,7 @@ function PromptEngineeringDashboardInner() {
 
   const loadConversations = async () => {
     try {
-      const response = await apiClient.get('/api/v1/conversations') as { conversations: any[] }
+      const response = await apiClient.get('/api/v1/conversations') as { conversations: {id: string; name: string; created_at: string}[] }
       setConversations(response.conversations || [])
     } catch (err) {
       setError(`Failed to load conversations: ${err}`)
@@ -847,7 +865,7 @@ function PromptEngineeringDashboardInner() {
 
   const loadConversationTurns = async (conversationId: string) => {
     try {
-      const response = await apiClient.get(`/api/v1/conversations/${conversationId}/turns`) as { turns: any[] }
+      const response = await apiClient.get(`/api/v1/conversations/${conversationId}/turns`) as { turns: {id: string; speaker: string; raw_text: string; cleaned_text: string}[] }
       setConversationTurns(response.turns || [])
     } catch (err) {
       setError(`Failed to load conversation turns: ${err}`)
@@ -856,7 +874,7 @@ function PromptEngineeringDashboardInner() {
 
   const loadTestConversations = async () => {
     try {
-      const response = await apiClient.get('/api/v1/prompt-engineering/test-conversations') as any[]
+      const response = await apiClient.get('/api/v1/prompt-engineering/test-conversations') as {id: string; name: string; description: string; variables: object}[]
       setTestConversations(response || [])
     } catch (err) {
       setError(`Failed to load test conversations: ${err}`)
@@ -876,7 +894,26 @@ function PromptEngineeringDashboardInner() {
         custom_variable: customVariable
       }
 
-      const response = await apiClient.post(`/api/v1/prompt-engineering/templates/${activeTemplate.id}/simulate/conversation`, payload)
+      const response = await apiClient.post(`/api/v1/prompt-engineering/templates/${activeTemplate.id}/simulate/conversation`, payload) as {
+        mode: string; 
+        results: Array<{
+          turn_index: number;
+          speaker: string;
+          raw_text: string;
+          success: boolean;
+          cleaned_text?: string;
+          context_turns_used?: number;
+          rendered_prompt?: string;
+          token_count?: number;
+          error?: string;
+        }>;
+        summary?: {
+          successful_renders: number;
+          total_turns_tested: number;
+        };
+        token_count?: number;
+        rendered_prompt?: string;
+      }
       setConversationSimulationResult(response)
     } catch (err) {
       setError(`Failed to simulate with conversation: ${err}`)
@@ -1018,7 +1055,7 @@ function PromptEngineeringDashboardInner() {
           ].map(tab => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
+              onClick={() => setActiveTab(tab.id as 'cleaner' | 'function')}
               style={{
                 padding: '10px 16px',
                 backgroundColor: activeTab === tab.id ? theme.bg : 'transparent',
@@ -1726,7 +1763,7 @@ function PromptEngineeringDashboardInner() {
                         <div style={{ marginBottom: '16px', fontSize: '12px' }}>
                           <strong>Summary:</strong> {conversationSimulationResult.summary?.successful_renders}/{conversationSimulationResult.summary?.total_turns_tested} successful renders
                         </div>
-                        {conversationSimulationResult.results?.slice(0, 5).map((result: any, i: number) => (
+                        {conversationSimulationResult.results?.slice(0, 5).map((result, i) => (
                           <div key={i} style={{
                             marginBottom: '12px',
                             padding: '8px',
@@ -1932,7 +1969,7 @@ function PromptEngineeringDashboardInner() {
                       defaultLanguage="text"
                       value={functionPromptContent}
                       onChange={(value) => handleFunctionPromptContentChange(value || '')}
-                      onMount={(editor) => {
+                      onMount={(editor: any) => {
                         setMonacoEditor(editor)
                       }}
                       theme={darkMode ? 'vs-dark' : 'light'}
