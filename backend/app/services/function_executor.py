@@ -39,7 +39,8 @@ class FunctionExecutor:
         function_name: str,
         parameters: Dict[str, Any],
         mirrored_customer: MirroredMockCustomer,
-        db: Session
+        db: Session,
+        persist_to_db: bool = True
     ) -> Dict[str, Any]:
         """Execute a function and return the result with state changes"""
         start_time = time.time()
@@ -63,15 +64,15 @@ class FunctionExecutor:
             
             # Execute the specific function
             if function_name == "update_profile_field":
-                result = await self._execute_update_profile_field(parameters, mirrored_customer, db)
+                result = await self._execute_update_profile_field(parameters, mirrored_customer, db, persist_to_db)
             elif function_name == "log_metric":
-                result = await self._execute_log_metric(parameters, mirrored_customer, db)
+                result = await self._execute_log_metric(parameters, mirrored_customer, db, persist_to_db)
             elif function_name == "record_business_insight":
-                result = await self._execute_record_business_insight(parameters, mirrored_customer, db)
+                result = await self._execute_record_business_insight(parameters, mirrored_customer, db, persist_to_db)
             elif function_name == "log_marketing_channels":
-                result = await self._execute_log_marketing_channels(parameters, mirrored_customer, db)
+                result = await self._execute_log_marketing_channels(parameters, mirrored_customer, db, persist_to_db)
             elif function_name == "initiate_demo_creation":
-                result = await self._execute_initiate_demo_creation(parameters, mirrored_customer, db)
+                result = await self._execute_initiate_demo_creation(parameters, mirrored_customer, db, persist_to_db)
             else:
                 raise ValueError(f"Unknown function: {function_name}")
             
@@ -281,9 +282,10 @@ class FunctionExecutor:
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(customer, "business_insights")
         
-        # Save changes
-        db.commit()
-        db.refresh(customer)
+        # Save changes only if persist_to_db is True
+        if persist_to_db:
+            db.commit()
+            db.refresh(customer)
         
         return {
             'demo_initiated': True,

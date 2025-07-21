@@ -515,7 +515,8 @@ class EvaluationManager:
                 for func_call in function_calls:
                     # Execute function
                     result = await self._execute_single_function(
-                        func_call, evaluation_state, cleaned_result, raw_turn, db
+                        func_call, evaluation_state, cleaned_result, raw_turn, db, 
+                        thought_process=decision.get('thought_process')
                     )
                     executed_functions.append(result)
                     
@@ -592,7 +593,8 @@ class EvaluationManager:
         evaluation_state: EvaluationState,
         cleaned_result: Dict[str, Any],
         raw_turn,
-        db: Session
+        db: Session,
+        thought_process: str = None
     ) -> Dict[str, Any]:
         """Execute a single function and create database record"""
         
@@ -617,7 +619,8 @@ class EvaluationManager:
                 function_name,
                 parameters,
                 execution_result,
-                db
+                db,
+                thought_process=thought_process
             )
             
             return {
@@ -646,10 +649,15 @@ class EvaluationManager:
         function_name: str,
         parameters: Dict[str, Any],
         execution_result: Dict[str, Any],
-        db: Session
+        db: Session,  # Not used anymore, kept for compatibility
+        thought_process: str = None
     ):
-        """Save function call to database asynchronously"""
+        """Save function call to database asynchronously with separate session"""
         def _save_function_call():
+            # Create a new session for this operation
+            from app.core.database import SessionLocal
+            new_db = SessionLocal()
+            
             try:
                 from app.models.called_function import CalledFunction
                 
@@ -661,18 +669,22 @@ class EvaluationManager:
                     result=execution_result.get('result'),
                     executed=execution_result.get('success', False),
                     confidence_score='MEDIUM',  # Default for now
+                    decision_reasoning=thought_process,  # Map thought_process to decision_reasoning
                     processing_time_ms=execution_result.get('execution_time_ms', 0),
                     mock_data_before=execution_result.get('before_state'),
                     mock_data_after=execution_result.get('after_state')
                 )
                 
-                db.add(called_function)
-                db.commit()
+                new_db.add(called_function)
+                new_db.commit()
                 print(f"[EvaluationManager] 💾 Saved function call to database: {function_name}")
                 
             except Exception as e:
                 print(f"[EvaluationManager] ❌ Failed to save function call: {e}")
-                db.rollback()
+                new_db.rollback()
+            finally:
+                # Always close the session
+                new_db.close()
         
         # Execute async without blocking
         self._save_to_db_async(_save_function_call)
