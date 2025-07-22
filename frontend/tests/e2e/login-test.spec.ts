@@ -30,7 +30,7 @@ test.describe('Login Flow', () => {
     await expect(page.locator('text="Lumen Transcript Cleaner"')).toBeVisible();
     await expect(page.locator('text="No Conversation Loaded"')).toBeVisible();
     await expect(page.locator('button:has-text("Load Conversation")')).toBeVisible();
-    await expect(page.locator('text="Understanding the Results:"')).toBeVisible();
+    // Understanding the Results section was removed
     
     // Take a screenshot to verify the login succeeded
     await page.screenshot({ path: 'login-success.png' });

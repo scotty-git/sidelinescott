@@ -19,6 +19,7 @@ from app.models.evaluation import Evaluation
 from app.models.cleaned_turn import CleanedTurn
 from app.models.conversation import Conversation
 from app.models.turn import Turn
+from app.models.called_function import CalledFunction
 from app.schemas.evaluations import (
     CreateEvaluationRequest,
     EvaluationResponse,
@@ -27,7 +28,7 @@ from app.schemas.evaluations import (
     EvaluationDetailsResponse,
     ListEvaluationsResponse
 )
-from app.services.evaluation_manager import EvaluationManager
+from app.services.evaluation_manager import EvaluationManager, FunctionCallingCriticalError
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -218,6 +219,40 @@ async def get_evaluation_details(
         CleanedTurn.evaluation_id == evaluation_uuid
     ).order_by(Turn.turn_sequence.asc()).all()
     
+    # Get function calls for this evaluation grouped by turn_id
+    function_calls = db.query(CalledFunction).filter(
+        CalledFunction.evaluation_id == evaluation_uuid
+    ).order_by(CalledFunction.created_at.asc()).all()
+    
+    # Group function calls by turn_id for easy lookup
+    function_calls_by_turn = {}
+    for fc in function_calls:
+        turn_id = str(fc.turn_id)
+        if turn_id not in function_calls_by_turn:
+            function_calls_by_turn[turn_id] = []
+        # Determine error message based on function name and parameters
+        error_message = None
+        if not fc.executed:
+            if fc.function_name in ['<JSON_PARSE_ERROR>', '<EMPTY_RESPONSE>']:
+                error_message = fc.parameters.get('error', 'Function calling error')
+            else:
+                error_message = "Function execution failed"
+        
+        function_calls_by_turn[turn_id].append({
+            'function_name': fc.function_name,
+            'parameters': fc.parameters,
+            'result': fc.result,
+            'success': fc.executed,
+            'execution_time_ms': fc.processing_time_ms,
+            'error': error_message,
+            'confidence_score': fc.confidence_score,
+            'decision_reasoning': fc.decision_reasoning,
+            'timing_breakdown': fc.timing_breakdown,
+            'mock_data_before': fc.mock_data_before,
+            'mock_data_after': fc.mock_data_after,
+            'created_at': fc.created_at.isoformat()
+        })
+    
     # Get conversation info
     conversation = db.query(Conversation).filter(
         Conversation.id == evaluation.conversation_id
@@ -228,8 +263,31 @@ async def get_evaluation_details(
         Turn.conversation_id == evaluation.conversation_id
     ).count()
     
-    cleaned_turn_responses = [
-        CleanedTurnResponse(
+    cleaned_turn_responses = []
+    for ct in cleaned_turns:
+        turn_id = str(ct.turn_id)
+        turn_function_calls = function_calls_by_turn.get(turn_id, [])
+        
+        # Create function decision metadata if function calls exist
+        function_decision = None
+        if turn_function_calls:
+            total_execution_time = sum(fc.get('execution_time_ms', 0) for fc in turn_function_calls)
+            
+            # Check if there are any parsing errors
+            parsing_errors = [fc for fc in turn_function_calls if fc.get('function_name') in ['<JSON_PARSE_ERROR>', '<EMPTY_RESPONSE>']]
+            error_message = None
+            if parsing_errors:
+                error_message = parsing_errors[0].get('error', 'Function calling error')
+            
+            function_decision = {
+                'thought_process': turn_function_calls[0].get('decision_reasoning') if turn_function_calls else None,
+                'confidence_score': turn_function_calls[0].get('confidence_score') if turn_function_calls else None,
+                'total_execution_time_ms': total_execution_time,
+                'functions_called': len([fc for fc in turn_function_calls if fc.get('function_name') not in ['<JSON_PARSE_ERROR>', '<EMPTY_RESPONSE>']]),
+                'error': error_message
+            }
+        
+        cleaned_turn_responses.append(CleanedTurnResponse(
             id=str(ct.id),
             evaluation_id=str(ct.evaluation_id),
             turn_id=str(ct.turn_id),
@@ -248,10 +306,10 @@ async def get_evaluation_details(
             gemini_prompt=ct.gemini_prompt,
             gemini_response=ct.gemini_response,
             template_variables=ct.template_variables,
-            timing_breakdown=ct.timing_breakdown
-        )
-        for ct in cleaned_turns
-    ]
+            timing_breakdown=ct.timing_breakdown,
+            function_calls=turn_function_calls,
+            function_decision=function_decision
+        ))
     
     # Include prompt template name if available
     prompt_template_name = None
@@ -341,6 +399,10 @@ async def process_turn(
         
         print(f"[EvaluationsAPI] ✅ Turn processed successfully")
         
+        # Use function call data directly from processing result (immediate, no DB race condition)
+        formatted_function_calls = result.get('function_calls', [])
+        function_decision = result.get('function_decision')
+        
         return CleanedTurnResponse(
             id=result['cleaned_turn_id'],
             evaluation_id=result['evaluation_id'],
@@ -361,9 +423,18 @@ async def process_turn(
             gemini_response=result.get('gemini_response'),
             gemini_function_call=result.get('gemini_function_call'),
             template_variables=result.get('template_variables'),
-            timing_breakdown=result.get('timing_breakdown')
+            timing_breakdown=result.get('timing_breakdown'),
+            function_calls=formatted_function_calls,
+            function_decision=function_decision
         )
         
+    except FunctionCallingCriticalError as critical_error:
+        # CRITICAL FUNCTION CALLING ERROR - Return specific error
+        logger.error(f"Critical function calling error: {critical_error}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"🚨 CRITICAL FUNCTION CALLING ERROR: {str(critical_error)}"
+        )
     except Exception as e:
         logger.error(f"Failed to process turn: {e}")
         raise HTTPException(
@@ -464,6 +535,31 @@ async def process_all_turns(
                 )
                 processed_results.append(result)
                 print(f"[EvaluationsAPI] ✅ Turn {i+1} processed successfully")
+                
+            except FunctionCallingCriticalError as critical_error:
+                # CRITICAL FUNCTION CALLING ERROR - STOP ENTIRE EVALUATION
+                print(f"[EvaluationsAPI] 🚨 CRITICAL FUNCTION CALLING ERROR - STOPPING ENTIRE EVALUATION")
+                print(f"[EvaluationsAPI] Error: {critical_error}")
+                
+                # Stop the evaluation immediately
+                await evaluation_manager.stop_evaluation(evaluation_uuid)
+                
+                # Return error immediately - don't continue processing
+                return {
+                    'success': False,
+                    'evaluation_id': str(evaluation_uuid),
+                    'total_turns': len(raw_turns),
+                    'processed_successfully': len(processed_results),
+                    'failed_at_turn': i+1,
+                    'critical_error': str(critical_error),
+                    'message': f"🚨 EVALUATION STOPPED: Critical function calling error at turn {i+1}",
+                    'error_details': {
+                        'turn_id': str(raw_turn.id),
+                        'speaker': raw_turn.speaker,
+                        'error_type': 'FUNCTION_CALLING_CRITICAL_ERROR',
+                        'error_message': str(critical_error)
+                    }
+                }
                 
             except Exception as turn_error:
                 # Check if the error is due to stopped evaluation

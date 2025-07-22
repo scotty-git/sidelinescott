@@ -39,8 +39,7 @@ class FunctionExecutor:
         function_name: str,
         parameters: Dict[str, Any],
         mirrored_customer: MirroredMockCustomer,
-        db: Session,
-        persist_to_db: bool = True
+        db: Session
     ) -> Dict[str, Any]:
         """Execute a function and return the result with state changes"""
         start_time = time.time()
@@ -49,6 +48,22 @@ class FunctionExecutor:
         print(f"[FunctionExecutor] 📋 Parameters: {parameters}")
         
         try:
+            # Reload mirrored_customer from database to ensure it's attached to current session
+            from app.models.mock_customer import MirroredMockCustomer
+            fresh_customer = db.query(MirroredMockCustomer).filter(
+                MirroredMockCustomer.id == mirrored_customer.id
+            ).first()
+            
+            if not fresh_customer:
+                print(f"[FunctionExecutor] ❌ Could not reload mirrored customer from database")
+                return {
+                    'success': False,
+                    'error': "Could not reload customer from database",
+                    'execution_time_ms': 0
+                }
+            
+            # Use the fresh customer object for all operations
+            mirrored_customer = fresh_customer
             # Validate function call
             is_valid, validation_msg = self.function_registry.validate_function_call(function_name, parameters)
             if not is_valid:
@@ -64,15 +79,15 @@ class FunctionExecutor:
             
             # Execute the specific function
             if function_name == "update_profile_field":
-                result = await self._execute_update_profile_field(parameters, mirrored_customer, db, persist_to_db)
+                result = await self._execute_update_profile_field(parameters, mirrored_customer, db)
             elif function_name == "log_metric":
-                result = await self._execute_log_metric(parameters, mirrored_customer, db, persist_to_db)
+                result = await self._execute_log_metric(parameters, mirrored_customer, db)
             elif function_name == "record_business_insight":
-                result = await self._execute_record_business_insight(parameters, mirrored_customer, db, persist_to_db)
+                result = await self._execute_record_business_insight(parameters, mirrored_customer, db)
             elif function_name == "log_marketing_channels":
-                result = await self._execute_log_marketing_channels(parameters, mirrored_customer, db, persist_to_db)
+                result = await self._execute_log_marketing_channels(parameters, mirrored_customer, db)
             elif function_name == "initiate_demo_creation":
-                result = await self._execute_initiate_demo_creation(parameters, mirrored_customer, db, persist_to_db)
+                result = await self._execute_initiate_demo_creation(parameters, mirrored_customer, db)
             else:
                 raise ValueError(f"Unknown function: {function_name}")
             
@@ -282,10 +297,9 @@ class FunctionExecutor:
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(customer, "business_insights")
         
-        # Save changes only if persist_to_db is True
-        if persist_to_db:
-            db.commit()
-            db.refresh(customer)
+        # Save changes to database
+        db.commit()
+        db.refresh(customer)
         
         return {
             'demo_initiated': True,

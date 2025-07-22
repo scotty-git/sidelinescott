@@ -23,6 +23,10 @@ from app.models.user_variable_history import UserVariableHistory
 from app.services.gemini_service import GeminiService
 from app.services.prompt_engineering_service import PromptEngineeringService
 from app.services.function_executor import FunctionExecutor
+
+class FunctionCallingCriticalError(Exception):
+    """Critical function calling error that should stop the entire evaluation"""
+    pass
 from app.services.function_registry import function_registry
 
 logger = logging.getLogger(__name__)
@@ -452,98 +456,165 @@ class EvaluationManager:
                 print(f"[EvaluationManager] ❌ Failed to create mirrored customer, skipping function calls")
                 return []
         
+        function_timing['function_context_start'] = time.time()
+        
+        # Build function calling context
+        context = self._build_function_context(evaluation_state)
+        
+        function_timing['function_context_end'] = time.time()
+        function_timing['function_prompt_start'] = time.time()
+        
+        # Render function prompt template with variables
+        template_variables = {
+            'call_context': context['call_context'],
+            'cleaned_conversation': context['cleaned_conversation'],
+            'available_functions': context['available_functions'],
+            'previous_function_calls': context['previous_function_calls']
+        }
+        
+        rendered_prompt = evaluation_state.function_prompt_template.format(**template_variables)
+        
+        function_timing['function_prompt_end'] = time.time()
+        function_timing['function_gemini_start'] = time.time()
+        
+        # Call Gemini for function decision using same service
+        function_response = await self.gemini_service.clean_conversation_turn(
+            raw_text=cleaned_result['cleaned_text'],
+            speaker=raw_turn.speaker,
+            cleaned_context=[],  # Not used for function calling
+            cleaning_level="full",
+            model_params=None,
+            rendered_prompt=rendered_prompt
+        )
+        
+        function_timing['function_gemini_end'] = time.time()
+        function_timing['function_parse_start'] = time.time()
+        
+        # Parse response expecting JSON with thought_process and function_calls
         try:
-            function_timing['function_context_start'] = time.time()
+            response_text = function_response.get('cleaned_text', '').strip()
+            if not response_text:
+                print(f"[EvaluationManager] ❌ Empty response from function calling Gemini")
+                
+                # Save the empty response error to database
+                error_message = "Empty response from Gemini function calling"
+                self._save_function_call_async(
+                    evaluation_id=evaluation_state.evaluation_id,
+                    turn_id=raw_turn.id,
+                    function_name="<EMPTY_RESPONSE>",
+                    parameters={"error": error_message, "gemini_response": str(function_response)},
+                    execution_result={
+                        'success': False,
+                        'error': error_message,
+                        'execution_time_ms': 0,
+                        'result': None
+                    },
+                    db=db,
+                    thought_process="Gemini returned empty response for function calling"
+                )
+                
+                # EVALUATION PLATFORM: FAIL FAST - STOP EVALUATION  
+                print(f"[EvaluationManager] 🚨 STOPPING EVALUATION - Empty response from Gemini")
+                raise FunctionCallingCriticalError(f"EVALUATION STOPPED: Empty response from Gemini function calling. Response: {function_response}")
+                
+            # Clean the response text - remove markdown code blocks if present
+            clean_response = response_text.strip()
+            if clean_response.startswith('```json'):
+                clean_response = clean_response.replace('```json', '').replace('```', '').strip()
+            elif clean_response.startswith('```'):
+                clean_response = clean_response.replace('```', '').strip()
             
-            # Build function calling context
-            context = self._build_function_context(evaluation_state)
+            decision = json.loads(clean_response)
+            print(f"[EvaluationManager] 🧠 Function decision: {decision.get('thought_process', 'No reasoning provided')}")
+                
+        except json.JSONDecodeError as e:
+            print(f"[EvaluationManager] ❌ Failed to parse function decision JSON: {e}")
+            print(f"[EvaluationManager] Raw response: {response_text}")
             
-            function_timing['function_context_end'] = time.time()
-            function_timing['function_prompt_start'] = time.time()
-            
-            # Render function prompt template with variables
-            template_variables = {
-                'call_context': context['call_context'],
-                'cleaned_conversation': context['cleaned_conversation'],
-                'available_functions': context['available_functions'],
-                'previous_function_calls': context['previous_function_calls']
-            }
-            
-            rendered_prompt = evaluation_state.function_prompt_template.format(**template_variables)
-            
-            function_timing['function_prompt_end'] = time.time()
-            function_timing['function_gemini_start'] = time.time()
-            
-            # Call Gemini for function decision using same service
-            function_response = await self.gemini_service.clean_conversation_turn(
-                raw_text=cleaned_result['cleaned_text'],
-                speaker=raw_turn.speaker,
-                cleaned_context=[],  # Not used for function calling
-                cleaning_level="full",
-                model_params=None,
-                rendered_prompt=rendered_prompt
+            # Save the JSON parsing error to database
+            error_message = f"JSON parsing failed: {str(e)}"
+            self._save_function_call_async(
+                evaluation_id=evaluation_state.evaluation_id,
+                turn_id=raw_turn.id,
+                function_name="<JSON_PARSE_ERROR>",
+                parameters={"error": error_message, "raw_response": response_text},
+                execution_result={
+                    'success': False,
+                    'error': error_message,
+                    'execution_time_ms': 0,
+                    'result': None
+                },
+                db=db,
+                thought_process=f"Failed to parse function decision: {str(e)}"
             )
             
-            function_timing['function_gemini_end'] = time.time()
-            function_timing['function_parse_start'] = time.time()
+            # EVALUATION PLATFORM: FAIL FAST - STOP EVALUATION
+            print(f"[EvaluationManager] 🚨 STOPPING EVALUATION - Function calling JSON parsing failed")
+            raise FunctionCallingCriticalError(f"EVALUATION STOPPED: Function calling JSON parsing failed: {str(e)}. Raw response: {response_text}")
             
-            # Parse response expecting JSON with thought_process and function_calls
-            try:
-                response_text = function_response.get('cleaned_text', '').strip()
-                if not response_text:
-                    print(f"[EvaluationManager] ❌ Empty response from function calling Gemini")
-                    return []
+        function_timing['function_parse_end'] = time.time()
+        function_timing['function_execute_start'] = time.time()
+        
+        # Execute functions if any
+        executed_functions = []
+        function_calls = decision.get('function_calls', [])
+        
+        if function_calls:
+            print(f"[EvaluationManager] 🔧 Executing {len(function_calls)} function calls")
+            
+            for func_call in function_calls:
+                # Execute function
+                result = await self._execute_single_function(
+                    func_call, evaluation_state, cleaned_result, raw_turn, db, 
+                    thought_process=decision.get('thought_process')
+                )
+                executed_functions.append(result)
                 
-                decision = json.loads(response_text)
-                print(f"[EvaluationManager] 🧠 Function decision: {decision.get('thought_process', 'No reasoning provided')}")
-                
-            except json.JSONDecodeError as e:
-                print(f"[EvaluationManager] ❌ Failed to parse function decision JSON: {e}")
-                print(f"[EvaluationManager] Raw response: {response_text}")
-                return []
-            
-            function_timing['function_parse_end'] = time.time()
-            function_timing['function_execute_start'] = time.time()
-            
-            # Execute functions if any
-            executed_functions = []
-            function_calls = decision.get('function_calls', [])
-            
-            if function_calls:
-                print(f"[EvaluationManager] 🔧 Executing {len(function_calls)} function calls")
-                
-                for func_call in function_calls:
-                    # Execute function
-                    result = await self._execute_single_function(
-                        func_call, evaluation_state, cleaned_result, raw_turn, db, 
-                        thought_process=decision.get('thought_process')
-                    )
-                    executed_functions.append(result)
-                    
-                    # Add to function call history in memory (immediate update)
-                    function_data = {
-                        'turn_id': str(raw_turn.id),
-                        'turn_sequence': raw_turn.turn_sequence,
-                        'function_name': func_call['name'],
-                        'parameters': func_call['parameters'],
-                        'result': result.get('result'),
-                        'executed': result.get('success', False),
-                        'confidence_score': 'MEDIUM',  # Default for now
-                        'timestamp': time.time()
-                    }
-                    evaluation_state.add_function_call(function_data)
-            
-            function_timing['function_execute_end'] = time.time()
-            
-            print(f"[EvaluationManager] ✅ Function calling completed: {len(executed_functions)} functions executed")
-            return executed_functions
-            
-        except Exception as e:
-            print(f"[EvaluationManager] ❌ Function calling failed: {e}")
-            logger.error(f"Function calling error: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
+                # Add to function call history in memory (immediate update)
+                function_data = {
+                    'turn_id': str(raw_turn.id),
+                    'turn_sequence': raw_turn.turn_sequence,
+                    'function_name': func_call['name'],
+                    'parameters': func_call['parameters'],
+                    'result': result.get('result'),
+                    'executed': result.get('success', False),
+                    'confidence_score': 'MEDIUM',  # Default for now
+                    'timestamp': time.time()
+                }
+                evaluation_state.add_function_call(function_data)
+        
+        function_timing['function_execute_end'] = time.time()
+        
+        print(f"[EvaluationManager] ✅ Function calling completed: {len(executed_functions)} functions executed")
+        
+        # Analyze function execution results for decision metadata
+        failed_functions = [f for f in executed_functions if not f.get('success', False)]
+        successful_functions = [f for f in executed_functions if f.get('success', False)]
+        
+        # Create decision metadata including error information
+        decision_error = None
+        if failed_functions:
+            failed_details = []
+            for failed in failed_functions:
+                failed_details.append({
+                    'function_name': failed.get('function_name', 'UNKNOWN'),
+                    'error': failed.get('error', 'Unknown error'),
+                    'error_type': failed.get('error_type', 'UnknownError')
+                })
+            decision_error = f"{len(failed_functions)} function(s) failed: {', '.join([f['function_name'] + ': ' + f['error'] for f in failed_details])}"
+        
+        # Return both functions and decision metadata for immediate UI use
+        return {
+            'functions': executed_functions,
+            'decision': {
+                'thought_process': decision.get('thought_process'),
+                'confidence_score': 'HIGH' if not failed_functions else 'LOW',
+                'total_execution_time_ms': sum(f.get('execution_time_ms', 0) for f in executed_functions),
+                'functions_called': len(successful_functions),
+                'functions_failed': len(failed_functions),
+                'error': decision_error
+            }
+        }
     
     def _build_function_context(self, evaluation_state: EvaluationState) -> Dict[str, Any]:
         """Build context for function calling prompt"""
@@ -612,6 +683,12 @@ class EvaluationManager:
                 db=db
             )
             
+            # Check if function execution failed
+            if not execution_result.get('success', False):
+                error_msg = execution_result.get('error', 'Unknown function execution error')
+                print(f"[EvaluationManager] 🚨 STOPPING EVALUATION - Function returned success=False")
+                raise FunctionCallingCriticalError(f"EVALUATION STOPPED: Function {function_name} failed: {error_msg}")
+            
             # Create CalledFunction record in database (async to not block)
             self._save_function_call_async(
                 evaluation_state.evaluation_id,
@@ -623,23 +700,72 @@ class EvaluationManager:
                 thought_process=thought_process
             )
             
+            # Return complete function call data matching API format
             return {
                 'function_name': function_name,
                 'parameters': parameters,
-                'success': execution_result.get('success', False),
                 'result': execution_result.get('result'),
+                'success': execution_result.get('success', False),
                 'execution_time_ms': execution_result.get('execution_time_ms', 0),
+                'error': None,  # No error since execution was successful
+                'confidence_score': 'MEDIUM',  # Default for now
+                'decision_reasoning': thought_process,
+                'timing_breakdown': None,  # Could add detailed timing if needed
+                'mock_data_before': execution_result.get('before_state'),
+                'mock_data_after': execution_result.get('after_state'),
+                'created_at': time.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',  # ISO format timestamp
                 'changes_made': execution_result.get('changes_made', [])
             }
             
         except Exception as e:
             print(f"[EvaluationManager] ❌ Function execution failed: {e}")
+            import traceback
+            error_details = traceback.format_exc()
+            
+            # Create detailed error information for UI display
+            error_data = {
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'full_traceback': error_details,
+                'failed_function_call': func_call,
+                'attempted_function_name': func_call.get('name', func_call.get('function_name', 'UNKNOWN')),
+                'raw_parameters': func_call.get('parameters', {}),
+                'timestamp': time.time()
+            }
+            
+            # Save failed function call to database for evaluation tracking
+            self._save_function_call_async(
+                evaluation_state.evaluation_id,
+                raw_turn.id,
+                f"<EXECUTION_FAILED>",
+                error_data,
+                {
+                    'success': False,
+                    'error': str(e),
+                    'execution_time_ms': 0,
+                    'result': None
+                },
+                db,
+                thought_process=f"Function execution failed: {str(e)}"
+            )
+            
+            # Return error details instead of raising (continue evaluation)
             return {
-                'function_name': function_name,
-                'parameters': parameters,
+                'function_name': error_data['attempted_function_name'],
+                'parameters': error_data['raw_parameters'],
+                'result': None,
                 'success': False,
+                'execution_time_ms': 0,
                 'error': str(e),
-                'execution_time_ms': 0
+                'error_type': error_data['error_type'],
+                'error_details': error_data,
+                'confidence_score': 'LOW',
+                'decision_reasoning': thought_process,
+                'timing_breakdown': None,
+                'mock_data_before': None,
+                'mock_data_after': None,
+                'created_at': time.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',
+                'changes_made': []
             }
     
     def _save_function_call_async(
@@ -816,15 +942,17 @@ class EvaluationManager:
         # Only process function calls for user turns that were successfully cleaned
         if not is_lumen and not is_transcription_error and result.get('cleaned_text'):
             print(f"🔧 FUNCTION CALLING: Processing potential function calls")
-            function_call_results = await self._process_function_calls(
+            function_call_data = await self._process_function_calls(
                 evaluation_state, result, raw_turn, db, timing
             )
             
-            # Add function calls to result
-            result['function_calls'] = function_call_results
+            # Add function calls and decision metadata to result for immediate UI use
+            result['function_calls'] = function_call_data.get('functions', [])
+            result['function_decision'] = function_call_data.get('decision')
         else:
             print(f"🔧 FUNCTION CALLING: Skipped for {raw_turn.speaker} turn")
             result['function_calls'] = []
+            result['function_decision'] = None
         
         timing['function_calling_end'] = time.time()
         

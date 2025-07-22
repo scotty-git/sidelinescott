@@ -25,6 +25,31 @@ interface CleanedTurn {
   turn_sequence?: number  // Actual sequence number from backend (1, 2, 3, ...)
   processing_state?: 'pending' | 'processing' | 'completed' | 'skipped'
   evaluation_id?: string  // Added for export functionality
+  function_calls?: Array<{
+    function_name: string
+    parameters: Record<string, any>
+    result?: Record<string, any>
+    success: boolean
+    execution_time_ms: number
+    error?: string
+    error_type?: string
+    error_details?: {
+      error_type: string
+      error_message: string
+      full_traceback: string
+      failed_function_call: Record<string, any>
+      attempted_function_name: string
+      raw_parameters: Record<string, any>
+      timestamp: number
+    }
+  }>
+  function_decision?: {
+    thought_process?: string
+    confidence_score?: string
+    total_execution_time_ms?: number
+    error?: string
+    raw_response?: string
+  }
   metadata: {
     confidence_score: string
     cleaning_applied: boolean
@@ -100,16 +125,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const toast = useToast()
   
   // Theme helper functions
-  const getFontSize = () => {
-    switch (fontSize) {
-      case 'small': return '12px'
-      case 'large': return '16px'
-      default: return '14px' // medium
-    }
-  }
   
   const getSpacing = (base: number) => {
-    return uiMode === 'compact' ? Math.round(base * 0.6) : base
+    return Math.round(base * 0.7) // Always more compact than before
   }
   
   const getThemeColors = () => {
@@ -161,8 +179,6 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [detailedLogs, setDetailedLogs] = useState<string[]>([])
   const [hideLumenTurns, setHideLumenTurns] = useState(false)
   const [showOnlyCleaned, setShowOnlyCleaned] = useState(false)
-  const [uiMode, setUIMode] = useState<'normal' | 'compact'>('normal')
-  const [fontSize, setFontSize] = useState<'small' | 'medium' | 'large'>('medium')
   const [leftPanelWidth, setLeftPanelWidth] = useState(() => {
     const saved = localStorage.getItem('transcript-cleaner-panel-width')
     return saved ? parseInt(saved) : 6
@@ -191,6 +207,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   // Evaluations modal state
   const [showEvaluationsModal, setShowEvaluationsModal] = useState(false)
   const [selectedConversationForEvaluations, setSelectedConversationForEvaluations] = useState<{ id: string; name: string } | null>(null)
+  
+  // Panel collapse state
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
   
   // Prompt template state
   const [promptTemplates, setPromptTemplates] = useState<{ id: string; name: string; template: string; description?: string; variables?: string[] }[]>([])
@@ -588,7 +607,45 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         // Process individual turn with API call
         const turnResult = await apiCallWithLogging('POST', `/api/v1/evaluations/${evaluationId}/process-turn`, {
           turn_id: rawTurn.id
-        }) as { turn_id: string; raw_speaker: string; raw_text: string; cleaned_text: string; turn_sequence: number; confidence_score: string; cleaning_applied: boolean; cleaning_level: string; timing_breakdown: unknown; corrections: unknown[]; context_detected: string; processing_time_ms: number; ai_model_used: string; gemini_prompt: string; gemini_response: string; created_at: string; gemini_function_call?: { function_call: string; model_config: unknown; prompt: string; response: string; timestamp: number; success: boolean } }
+        }) as { 
+          turn_id: string; 
+          raw_speaker: string; 
+          raw_text: string; 
+          cleaned_text: string; 
+          turn_sequence: number; 
+          confidence_score: string; 
+          cleaning_applied: boolean; 
+          cleaning_level: string; 
+          timing_breakdown: unknown; 
+          corrections: unknown[]; 
+          context_detected: string; 
+          processing_time_ms: number; 
+          ai_model_used: string; 
+          gemini_prompt: string; 
+          gemini_response: string; 
+          created_at: string; 
+          gemini_function_call?: { 
+            function_call: string; 
+            model_config: unknown; 
+            prompt: string; 
+            response: string; 
+            timestamp: number; 
+            success: boolean 
+          };
+          function_calls?: Array<{
+            function_name: string;
+            parameters: Record<string, any>;
+            result?: Record<string, any>;
+            success: boolean;
+            execution_time_ms: number;
+            error?: string;
+          }>;
+          function_decision?: {
+            thought_process?: string;
+            confidence_score?: string;
+            total_execution_time_ms?: number;
+          };
+        }
         
         // Convert to UI format
         const cleanedTurn: CleanedTurn = {
@@ -599,6 +656,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           cleaned_text: turnResult.cleaned_text,
           turn_sequence: turnResult.turn_sequence,
           processing_state: 'completed',
+          function_calls: turnResult.function_calls || [],
+          function_decision: turnResult.function_decision,
           metadata: {
             confidence_score: turnResult.confidence_score,
             cleaning_applied: turnResult.cleaning_applied,
@@ -651,6 +710,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       // Final update - all turns are already in cleanedTurns from real-time processing
       addDetailedLog(`🎉 Real-time processing completed! ${processedTurns.length} turns processed and displayed`)
       
+      // Show success toast
+      toast.showSuccess('Evaluation Complete!', `Successfully processed ${processedTurns.length} turns. All data saved to evaluation database.`)
+      
       // All processing is handled by the evaluation system automatically!
       
     
@@ -658,6 +720,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       addDetailedLog(`❌ Cleaning process failed: ${error.message || error}`)
       console.error('Cleaning error:', error)
       alert(`Cleaning failed: ${error.message || error}`)
+      
+      // Show error toast
+      toast.showError('Evaluation Failed', `Processing failed: ${error.message || error}`)
+      
     } finally {
       setIsProcessing(false)
       setCurrentTurnIndex(0)
@@ -681,6 +747,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       await apiCallWithLogging('POST', `/api/v1/evaluations/${currentEvaluationId}/stop`, {}) as Record<string, unknown>
       addDetailedLog(`✅ Evaluation stopped successfully`)
       
+      // Show stop success toast
+      toast.showInfo('Evaluation Stopped', 'Processing has been stopped. Partial results are available for review.')
+      
       // Keep the processing state but update the UI
       setIsProcessing(false)
       // Keep currentEvaluationId for export functionality even after stopping
@@ -688,7 +757,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     } catch (error: any) {
       addDetailedLog(`❌ Failed to stop evaluation: ${error.message || error}`)
       console.error('Stop error:', error)
-      alert(`Failed to stop evaluation: ${error.message || error}`)
+      toast.showError('Stop Failed', `Unable to stop evaluation: ${error.message || error}`)
     }
   }
 
@@ -1572,42 +1641,80 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
         {/* Left Panel - Input */}
         <div style={{ 
-          width: `${leftPanelWidth}%`, 
+          width: leftPanelCollapsed ? '60px' : `${leftPanelWidth}%`, 
           backgroundColor: theme.bg, 
           borderRight: `1px solid ${theme.border}`, 
           display: 'flex', 
           flexDirection: 'column',
-          minWidth: '15%',
-          maxWidth: '50%'
+          minWidth: leftPanelCollapsed ? '60px' : '15%',
+          maxWidth: leftPanelCollapsed ? '60px' : '50%',
+          transition: 'width 0.3s ease'
         }}>
-          <div style={{ padding: '24px', borderBottom: `1px solid ${theme.border}` }}>
-            <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>
-              {currentConversation ? currentConversation.name : 'Conversation'}
-            </h2>
-            <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>
-              {conversationId && parsedTurns.length > 0 
-                ? `${parsedTurns.length} turns loaded • Ready for cleaning`
-                : 'Load conversations through the Conversations modal'
-              }
-            </p>
-            {/* Evaluation Context */}
-            {currentEvaluationName && (
-              <div style={{ 
-                fontSize: '12px', 
-                color: theme.textSecondary, 
-                marginTop: '8px',
-                padding: '4px 8px',
-                backgroundColor: theme.bgTertiary,
-                borderRadius: '4px',
-                border: `1px solid ${theme.border}`
-              }}>
-                <strong>Evaluation:</strong> {currentEvaluationName}
-                {currentPromptTemplateName && (
-                  <span style={{ marginLeft: '12px' }}>
-                    <strong>Template:</strong> {currentPromptTemplateName}
-                  </span>
+          <div style={{ padding: leftPanelCollapsed ? '12px' : '24px', borderBottom: `1px solid ${theme.border}` }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              {!leftPanelCollapsed && (
+                <h2 style={{ fontSize: '18px', fontWeight: '500', color: theme.text, margin: 0 }}>
+                  {currentConversation ? currentConversation.name : 'Conversation'}
+                </h2>
+              )}
+              <button
+                onClick={() => setLeftPanelCollapsed(!leftPanelCollapsed)}
+                style={{
+                  background: 'none',
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: '4px',
+                  width: '32px',
+                  height: '32px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: theme.textMuted,
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  transition: 'all 0.15s ease',
+                  backgroundColor: theme.bgSecondary
+                }}
+                title={leftPanelCollapsed ? 'Expand panel' : 'Collapse panel'}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = theme.bgTertiary
+                  e.currentTarget.style.borderColor = theme.textMuted
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = theme.bgSecondary
+                  e.currentTarget.style.borderColor = theme.border
+                }}
+              >
+                {leftPanelCollapsed ? '→' : '←'}
+              </button>
+            </div>
+            {!leftPanelCollapsed && (
+              <>
+                <p style={{ fontSize: '14px', color: theme.textMuted, marginTop: '4px', margin: 0 }}>
+                  {conversationId && parsedTurns.length > 0 
+                    ? `${parsedTurns.length} turns loaded • Ready for cleaning`
+                    : 'Load conversations through the Conversations modal'
+                  }
+                </p>
+                {/* Evaluation Context */}
+                {currentEvaluationName && (
+                  <div style={{ 
+                    fontSize: '12px', 
+                    color: theme.textSecondary, 
+                    marginTop: '8px',
+                    padding: '4px 8px',
+                    backgroundColor: theme.bgTertiary,
+                    borderRadius: '4px',
+                    border: `1px solid ${theme.border}`
+                  }}>
+                    <strong>Evaluation:</strong> {currentEvaluationName}
+                    {currentPromptTemplateName && (
+                      <span style={{ marginLeft: '12px' }}>
+                        <strong>Template:</strong> {currentPromptTemplateName}
+                      </span>
+                    )}
+                  </div>
                 )}
-              </div>
+              </>
             )}
           </div>
           
@@ -1617,89 +1724,154 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             display: 'flex',
             flexDirection: 'column'
           }}>
-            {conversationId && parsedTurns.length > 0 ? (
-              // Show conversation turns
+            {leftPanelCollapsed ? (
+              // Show minimal status indicators when collapsed
               <div style={{ 
                 flex: 1,
-                overflowY: 'auto',
-                overflowX: 'hidden',
-                padding: '16px',
-                scrollbarWidth: 'thin',
-                scrollbarColor: `${theme.textMuted} transparent`
-              }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {parsedTurns.map((turn, index) => (
-                      <div key={index} style={{
-                        padding: '10px 12px',
-                        backgroundColor: theme.bgSecondary,
-                        borderRadius: '8px',
-                        fontSize: '12px',
-                        border: `1px solid ${theme.border}`,
-                        transition: 'all 0.2s ease'
-                      }}>
-                        <div style={{ 
-                          fontWeight: '600', 
-                          color: turn.speaker === 'Lumen' ? theme.accent : theme.text,
-                          marginBottom: '6px',
-                          fontSize: '13px'
-                        }}>
-                          #{turn.turn_sequence} {turn.speaker}:
-                        </div>
-                        <div style={{ 
-                          color: theme.textSecondary,
-                          fontFamily: 'monospace',
-                          lineHeight: '1.4',
-                          fontSize: '11px',
-                          wordBreak: 'break-word'
-                        }}>
-                          {turn.raw_text.substring(0, 200)}{turn.raw_text.length > 200 ? '...' : ''}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-            
-            ) : (
-              // Show instruction to load conversation
-              <div style={{ 
-                height: '100%', 
-                display: 'flex', 
+                display: 'flex',
                 flexDirection: 'column',
-                alignItems: 'center', 
+                alignItems: 'center',
                 justifyContent: 'center',
-                textAlign: 'center',
-                padding: '40px 20px'
+                gap: '12px',
+                padding: '16px 8px'
               }}>
-                <div style={{ fontSize: '48px', marginBottom: '16px' }}>💬</div>
-                <h3 style={{ margin: '0 0 8px 0', fontSize: '18px', color: theme.text }}>
-                  No Conversation Loaded
-                </h3>
-                <p style={{ margin: '0 0 20px 0', fontSize: '14px', color: theme.textMuted, lineHeight: '1.5' }}>
-                  Click the "💬 Conversations" button above to create a new conversation or load an existing one.
-                </p>
-                <button
-                  onClick={openConversationsModal}
-                  style={{
-                    padding: '12px 24px',
-                    backgroundColor: theme.accent,
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '8px',
-                    fontSize: '14px',
-                    fontWeight: '600',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                  }}
-                >
-                  💬 Open Conversations
-                </button>
+                {conversationId && parsedTurns.length > 0 ? (
+                  <>
+                    <div style={{ 
+                      fontSize: '24px',
+                      color: theme.accent
+                    }}>
+                      💬
+                    </div>
+                    <div style={{ 
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      color: theme.text,
+                      textAlign: 'center',
+                      writingMode: 'vertical-rl',
+                      textOrientation: 'mixed'
+                    }}>
+                      {parsedTurns.length}
+                    </div>
+                    <div style={{ 
+                      fontSize: '10px',
+                      color: theme.textMuted,
+                      textAlign: 'center',
+                      writingMode: 'vertical-rl',
+                      textOrientation: 'mixed',
+                      lineHeight: '1.2'
+                    }}>
+                      turns
+                    </div>
+                    {isProcessing && (
+                      <div style={{
+                        width: '16px',
+                        height: '16px',
+                        border: `2px solid ${theme.accent}`,
+                        borderTopColor: 'transparent',
+                        borderRadius: '50%',
+                        animation: 'spin 1s linear infinite'
+                      }}></div>
+                    )}
+                  </>
+                ) : (
+                  <div style={{ 
+                    fontSize: '20px',
+                    color: theme.textMuted
+                  }}>
+                    📝
+                  </div>
+                )}
               </div>
+            ) : (
+              // Show full conversation when expanded
+              <>
+                {conversationId && parsedTurns.length > 0 ? (
+                  // Show conversation turns
+                  <div style={{ 
+                    flex: 1,
+                    overflowY: 'auto',
+                    overflowX: 'hidden',
+                    padding: '16px',
+                    scrollbarWidth: 'thin',
+                    scrollbarColor: `${theme.textMuted} transparent`
+                  }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {parsedTurns.map((turn, index) => (
+                          <div key={index} style={{
+                            padding: '10px 12px',
+                            backgroundColor: theme.bgSecondary,
+                            borderRadius: '8px',
+                            fontSize: '12px',
+                            border: `1px solid ${theme.border}`,
+                            transition: 'all 0.2s ease'
+                          }}>
+                            <div style={{ 
+                              fontWeight: '600', 
+                              color: turn.speaker === 'Lumen' ? theme.accent : theme.text,
+                              marginBottom: '6px',
+                              fontSize: '13px'
+                            }}>
+                              #{turn.turn_sequence} {turn.speaker}:
+                            </div>
+                            <div style={{ 
+                              color: theme.textSecondary,
+                              fontFamily: 'monospace',
+                              lineHeight: '1.4',
+                              fontSize: '11px',
+                              wordBreak: 'break-word'
+                            }}>
+                              {turn.raw_text.substring(0, 200)}{turn.raw_text.length > 200 ? '...' : ''}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+            
+                ) : (
+                  // Show instruction to load conversation
+                  <div style={{ 
+                    height: '100%', 
+                    display: 'flex', 
+                    flexDirection: 'column',
+                    alignItems: 'center', 
+                    justifyContent: 'center',
+                    textAlign: 'center',
+                    padding: '40px 20px'
+                  }}>
+                    <div style={{ fontSize: '48px', marginBottom: '16px' }}>💬</div>
+                    <h3 style={{ margin: '0 0 8px 0', fontSize: '18px', color: theme.text }}>
+                      No Conversation Loaded
+                    </h3>
+                    <p style={{ margin: '0 0 20px 0', fontSize: '14px', color: theme.textMuted, lineHeight: '1.5' }}>
+                      Click the "💬 Conversations" button above to create a new conversation or load an existing one.
+                    </p>
+                    <button
+                      onClick={openConversationsModal}
+                      style={{
+                        padding: '12px 24px',
+                        backgroundColor: theme.accent,
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        fontSize: '14px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                      }}
+                    >
+                      💬 Open Conversations
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
           
-          <div style={{ padding: '24px', borderTop: `1px solid ${theme.border}`, backgroundColor: theme.bgTertiary }}>
+          {!leftPanelCollapsed && (
+            <div style={{ padding: '24px', borderTop: `1px solid ${theme.border}`, backgroundColor: theme.bgTertiary }}>
             <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
               <button 
                 onClick={openConversationsModal}
@@ -1756,6 +1928,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
               </div>
             </div>
           </div>
+          )}
         </div>
         
         {/* Drag Handle */}
@@ -1859,28 +2032,6 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                     backgroundColor: theme.bg,
                     flexShrink: 0
                   }}>
-                    {/* Evaluation Status - Show when processing is complete */}
-                    {!isProcessing && cleanedTurns.length > 0 && (
-                      <div style={{ 
-                        display: 'flex', 
-                        gap: '12px', 
-                        marginBottom: '16px',
-                        padding: '16px', 
-                        backgroundColor: '#f0fdf4', 
-                        borderRadius: '8px', 
-                        border: '2px solid #10b981',
-                        alignItems: 'center'
-                      }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontWeight: '600', color: '#166534', marginBottom: '4px' }}>
-                            ✅ Evaluation Complete!
-                          </div>
-                          <div style={{ fontSize: '14px', color: '#16a34a' }}>
-                            All cleaned turns have been automatically saved to the evaluation database.
-                          </div>
-                        </div>
-                      </div>
-                    )}
                     
                     {/* Filter Controls */}
                     <div style={{ 
@@ -2262,40 +2413,6 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                           return true
                         }).length} of {cleanedTurns.length} turns
                       </div>
-                      <div style={{ display: 'flex', gap: '8px', marginLeft: '12px' }}>
-                        <button
-                          onClick={() => setUIMode(uiMode === 'normal' ? 'compact' : 'normal')}
-                          style={{
-                            padding: '6px 12px',
-                            border: `1px solid ${theme.border}`,
-                            borderRadius: '6px',
-                            fontSize: '12px',
-                            fontWeight: '500',
-                            backgroundColor: uiMode === 'compact' ? theme.accent : theme.bgSecondary,
-                            color: uiMode === 'compact' ? 'white' : theme.textSecondary,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          {uiMode === 'compact' ? '✓ ' : ''}Compact
-                        </button>
-                        <select
-                          value={fontSize}
-                          onChange={(e) => setFontSize(e.target.value as any)}
-                          style={{
-                            padding: '6px 8px',
-                            border: `1px solid ${theme.border}`,
-                            borderRadius: '6px',
-                            fontSize: '12px',
-                            backgroundColor: theme.bgSecondary,
-                            color: theme.textSecondary,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          <option value="small">Small</option>
-                          <option value="medium">Medium</option>
-                          <option value="large">Large</option>
-                        </select>
-                      </div>
                     </div>
                   </div>
                 )}
@@ -2313,25 +2430,8 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                     display: 'flex', 
                     flexDirection: 'column', 
                     gap: `${getSpacing(16)}px`, 
-                    fontSize: getFontSize() 
+                    fontSize: '14px' 
                   }}>
-                    {/* Explanation Panel */}
-                    <div style={{ 
-                      backgroundColor: theme.bgTertiary, 
-                      borderRadius: '8px', 
-                      padding: '16px', 
-                      border: `1px solid ${theme.border}`,
-                      fontSize: '14px'
-                    }}>
-                      <div style={{ fontWeight: '600', color: theme.text, marginBottom: '8px' }}>Understanding the Results:</div>
-                      <div style={{ color: theme.textSecondary, lineHeight: '1.5' }}>
-                        • <strong>User turns</strong> (light blue background) are processed by AI for cleaning<br/>
-                        • <strong>Lumen turns</strong> (cyan background) pass through without processing<br/>
-                        • <strong>HIGH confidence</strong> (green) = AI is very confident in cleaning quality<br/>
-                        • <strong>MEDIUM confidence</strong> (yellow) = Moderately confident<br/>
-                        • <strong>LOW confidence</strong> (red) = Review recommended, possible transcription errors
-                      </div>
-                    </div>
                   {/* Live Processing Indicator */}
                   {isProcessing && (
                     <div style={{ 
@@ -2640,8 +2740,15 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                               </div>
                             </div>
                           ) : (
-                            // Show side-by-side comparison for completed processing
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+                            // Show three-card layout for completed processing
+                            <div style={{ 
+                              display: 'grid', 
+                              gridTemplateColumns: window.innerWidth > 1400 ? '1fr 1fr 1fr' : 
+                                                   window.innerWidth > 900 ? '1fr 1fr' :
+                                                   '1fr',
+                              gap: '16px', 
+                              marginBottom: '16px' 
+                            }}>
                               {/* Original Text */}
                               <div style={{ 
                                 backgroundColor: theme.bgTertiary, 
@@ -2741,6 +2848,293 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                   </div>
                                 </div>
                               </div>
+                              
+                              {/* Function Calls Card */}
+                              <div style={{ 
+                                backgroundColor: theme.bg, 
+                                borderRadius: '6px', 
+                                padding: '16px',
+                                border: `2px solid ${
+                                  turn.function_decision?.error ? '#ef4444' :
+                                  (turn.function_calls && turn.function_calls.length > 0) ? theme.accent : 
+                                  theme.border
+                                }`,
+                                gridColumn: window.innerWidth <= 900 ? '1' : 
+                                           window.innerWidth <= 1400 ? '1 / -1' : 
+                                           'auto'
+                              }}>
+                                <div style={{ 
+                                  fontSize: '12px', 
+                                  fontWeight: '600', 
+                                  color: turn.function_decision?.error ? '#ef4444' :
+                                         (turn.function_calls && turn.function_calls.length > 0) ? theme.accent : 
+                                         theme.textMuted, 
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.05em',
+                                  marginBottom: '8px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '8px'
+                                }}>
+                                  FUNCTION CALLS
+                                  {turn.function_decision?.error ? (
+                                    <span style={{
+                                      backgroundColor: '#ef4444',
+                                      color: 'white',
+                                      fontSize: '10px',
+                                      padding: '2px 6px',
+                                      borderRadius: '10px',
+                                      fontWeight: '500'
+                                    }}>
+                                      ERROR
+                                    </span>
+                                  ) : (
+                                    <span style={{
+                                      backgroundColor: (turn.function_calls && turn.function_calls.length > 0) ? theme.accent : theme.textMuted,
+                                      color: 'white',
+                                      fontSize: '10px',
+                                      padding: '2px 6px',
+                                      borderRadius: '10px',
+                                      fontWeight: '500'
+                                    }}>
+                                      {turn.function_calls?.length || 0}
+                                    </span>
+                                  )}
+                                </div>
+                                
+                                {turn.function_decision?.error ? (
+                                  /* Show Error State */
+                                  <div style={{ 
+                                    backgroundColor: '#fef2f2',
+                                    borderRadius: '4px',
+                                    padding: '16px',
+                                    border: `1px solid #fca5a5`
+                                  }}>
+                                    <div style={{ 
+                                      fontSize: '13px',
+                                      fontWeight: '600',
+                                      color: '#dc2626',
+                                      marginBottom: '8px',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '6px'
+                                    }}>
+                                      ⚠️ Function Calling Failed
+                                    </div>
+                                    <div style={{
+                                      fontSize: '12px',
+                                      color: '#b91c1c',
+                                      marginBottom: '12px',
+                                      lineHeight: '1.4'
+                                    }}>
+                                      {turn.function_decision.error}
+                                    </div>
+                                    
+                                    {/* Show raw response if available */}
+                                    {turn.function_decision.raw_response && (
+                                      <details style={{ marginTop: '8px' }}>
+                                        <summary style={{ 
+                                          fontSize: '11px', 
+                                          color: '#7f1d1d', 
+                                          cursor: 'pointer',
+                                          marginBottom: '6px'
+                                        }}>
+                                          View Raw AI Response
+                                        </summary>
+                                        <div style={{
+                                          fontSize: '10px',
+                                          fontFamily: 'monospace',
+                                          color: theme.textSecondary,
+                                          backgroundColor: '#f3f4f6',
+                                          padding: '8px',
+                                          borderRadius: '3px',
+                                          maxHeight: '200px',
+                                          overflowY: 'auto',
+                                          border: `1px solid ${theme.border}`
+                                        }}>
+                                          {turn.function_decision.raw_response}
+                                        </div>
+                                      </details>
+                                    )}
+                                  </div>
+                                ) : turn.function_calls && turn.function_calls.length > 0 ? (
+                                  <div>
+                                    {/* Thought Process */}
+                                    {turn.function_decision?.thought_process && (
+                                      <div style={{ 
+                                        backgroundColor: theme.bgSecondary,
+                                        borderRadius: '4px',
+                                        padding: '12px',
+                                        marginBottom: '12px',
+                                        border: `1px solid ${theme.border}`
+                                      }}>
+                                        <div style={{ 
+                                          fontSize: '11px',
+                                          fontWeight: '600',
+                                          color: theme.textSecondary,
+                                          textTransform: 'uppercase',
+                                          letterSpacing: '0.05em',
+                                          marginBottom: '6px'
+                                        }}>
+                                          AI REASONING
+                                        </div>
+                                        <div style={{
+                                          fontSize: '13px',
+                                          color: theme.text,
+                                          lineHeight: '1.4',
+                                          fontStyle: 'italic'
+                                        }}>
+                                          {turn.function_decision.thought_process}
+                                        </div>
+                                      </div>
+                                    )}
+                                    
+                                    {/* Function Calls List */}
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                      {turn.function_calls.map((func, index) => (
+                                        <div key={index} style={{
+                                          backgroundColor: func.success ? '#f0fdf4' : '#fef2f2',
+                                          border: `1px solid ${func.success ? '#22c55e' : '#ef4444'}`,
+                                          borderRadius: '4px',
+                                          padding: '10px'
+                                        }}>
+                                          <div style={{ 
+                                            display: 'flex', 
+                                            alignItems: 'center', 
+                                            justifyContent: 'space-between',
+                                            marginBottom: '6px'
+                                          }}>
+                                            <span style={{
+                                              fontSize: '13px',
+                                              fontWeight: '600',
+                                              color: func.success ? '#16a34a' : '#dc2626'
+                                            }}>
+                                              {func.function_name}
+                                            </span>
+                                            <span style={{
+                                              fontSize: '11px',
+                                              color: theme.textMuted,
+                                              fontFamily: 'monospace'
+                                            }}>
+                                              {func.execution_time_ms}ms
+                                            </span>
+                                          </div>
+                                          
+                                          {/* Parameters */}
+                                          {Object.keys(func.parameters).length > 0 && (
+                                            <div style={{ marginBottom: '6px' }}>
+                                              <div style={{ fontSize: '10px', color: theme.textMuted, marginBottom: '4px' }}>
+                                                PARAMETERS:
+                                              </div>
+                                              <div style={{
+                                                fontSize: '11px',
+                                                fontFamily: 'monospace',
+                                                color: theme.textSecondary,
+                                                backgroundColor: theme.bgTertiary,
+                                                padding: '4px 6px',
+                                                borderRadius: '2px'
+                                              }}>
+                                                {JSON.stringify(func.parameters, null, 2)}
+                                              </div>
+                                            </div>
+                                          )}
+                                          
+                                          {/* Result or Error */}
+                                          {func.success && func.result && (
+                                            <div>
+                                              <div style={{ fontSize: '10px', color: theme.textMuted, marginBottom: '4px' }}>
+                                                RESULT:
+                                              </div>
+                                              <div style={{
+                                                fontSize: '11px',
+                                                color: '#16a34a',
+                                                fontWeight: '500'
+                                              }}>
+                                                {func.result.message || 'Function executed successfully'}
+                                              </div>
+                                            </div>
+                                          )}
+                                          
+                                          {!func.success && func.error && (
+                                            <div>
+                                              <div style={{ fontSize: '10px', color: theme.textMuted, marginBottom: '4px' }}>
+                                                ERROR:
+                                              </div>
+                                              <div style={{
+                                                fontSize: '11px',
+                                                color: '#dc2626',
+                                                fontWeight: '500',
+                                                marginBottom: '8px'
+                                              }}>
+                                                {func.error_type && `${func.error_type}: `}{func.error}
+                                              </div>
+                                              
+                                              {/* Show detailed error information for debugging */}
+                                              {func.error_details && (
+                                                <details style={{ marginTop: '8px' }}>
+                                                  <summary style={{ 
+                                                    fontSize: '10px', 
+                                                    color: '#7f1d1d', 
+                                                    cursor: 'pointer',
+                                                    marginBottom: '6px'
+                                                  }}>
+                                                    View Error Details
+                                                  </summary>
+                                                  <div style={{
+                                                    fontSize: '10px',
+                                                    fontFamily: 'monospace',
+                                                    color: theme.textSecondary,
+                                                    backgroundColor: '#f3f4f6',
+                                                    padding: '8px',
+                                                    borderRadius: '3px',
+                                                    maxHeight: '300px',
+                                                    overflowY: 'auto',
+                                                    border: `1px solid ${theme.border}`
+                                                  }}>
+                                                    <div style={{ marginBottom: '8px', fontWeight: '600', color: '#dc2626' }}>
+                                                      Failed Function Call:
+                                                    </div>
+                                                    <pre style={{ margin: '0 0 12px 0', fontSize: '9px' }}>
+                                                      {JSON.stringify(func.error_details.failed_function_call, null, 2)}
+                                                    </pre>
+                                                    
+                                                    <div style={{ marginBottom: '8px', fontWeight: '600', color: '#dc2626' }}>
+                                                      Stack Trace:
+                                                    </div>
+                                                    <pre style={{ margin: 0, fontSize: '9px', lineHeight: '1.2' }}>
+                                                      {func.error_details.full_traceback}
+                                                    </pre>
+                                                  </div>
+                                                </details>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div style={{ 
+                                    color: theme.textMuted, 
+                                    lineHeight: '1.6', 
+                                    fontSize: '14px',
+                                    textAlign: 'center',
+                                    padding: '24px 0'
+                                  }}>
+                                    No functions called for this turn
+                                  </div>
+                                )}
+                                
+                                <div style={{ 
+                                  fontSize: '11px', 
+                                  color: theme.textMuted, 
+                                  marginTop: '8px',
+                                  fontFamily: 'monospace',
+                                  textAlign: 'center'
+                                }}>
+                                  Function execution: {turn.function_decision?.total_execution_time_ms || 0}ms
+                                </div>
+                              </div>
                             </div>
                           )}
                           
@@ -2768,10 +3162,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                             <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: `${getSpacing(16)}px`, marginTop: `${getSpacing(16)}px` }}>
                               {/* Only show metadata for User turns, hide for Lumen */}
                               {turn.speaker !== 'Lumen' ? (
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: `${getSpacing(16)}px`, fontSize: getFontSize() }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: `${getSpacing(16)}px`, fontSize: '14px' }}>
                                   <div>
                                     <div style={{ fontWeight: '500', color: theme.text }}>Model:</div>
-                                    <div style={{ color: theme.textMuted, fontFamily: 'monospace', fontSize: 'calc(' + getFontSize() + ' - 2px)' }}>{turn.metadata.ai_model_used || 'bypass'}</div>
+                                    <div style={{ color: theme.textMuted, fontFamily: 'monospace', fontSize: '12px' }}>{turn.metadata.ai_model_used || 'bypass'}</div>
                                   </div>
                                   <div>
                                     <div style={{ fontWeight: '500', color: theme.text }}>Context:</div>
@@ -2783,7 +3177,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                   </div>
                                 </div>
                               ) : (
-                                <div style={{ fontSize: 'calc(' + getFontSize() + ' - 2px)', color: theme.textMuted, fontStyle: 'italic' }}>
+                                <div style={{ fontSize: '12px', color: theme.textMuted, fontStyle: 'italic' }}>
                                   Lumen response - no processing metadata
                                 </div>
                               )}

@@ -65,6 +65,10 @@ class CleanedTurnResponse(BaseModel):
     raw_speaker: str = Field(..., description="Original speaker")
     raw_text: str = Field(..., description="Original raw text")
     turn_sequence: int = Field(..., description="Sequential turn number (1, 2, 3, ...)")
+    
+    # Function calling data
+    function_calls: Optional[List[Dict[str, Any]]] = Field(None, description="Function calls executed for this turn")
+    function_decision: Optional[Dict[str, Any]] = Field(None, description="Function calling decision and metadata")
 
 class EvaluationDetailsResponse(BaseModel):
     """Detailed evaluation response with cleaned turns"""
