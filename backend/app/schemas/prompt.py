@@ -179,6 +179,7 @@ class FunctionPromptTemplate(BaseModel):
     description: str
     template: str
     variables: List[str]
+    custom_function_descriptions: Optional[Dict[str, str]] = None
     version: str = "1.0.0"
     is_default: bool = False
     created_at: datetime
@@ -191,6 +192,7 @@ class CreateFunctionPromptTemplateRequest(BaseModel):
     description: str
     template: str
     variables: List[str]
+    custom_function_descriptions: Optional[Dict[str, str]] = None
 
 
 class UpdateFunctionPromptTemplateRequest(BaseModel):
@@ -199,4 +201,5 @@ class UpdateFunctionPromptTemplateRequest(BaseModel):
     description: Optional[str] = None
     template: Optional[str] = None
     variables: Optional[List[str]] = None
+    custom_function_descriptions: Optional[Dict[str, str]] = None
     is_default: Optional[bool] = None

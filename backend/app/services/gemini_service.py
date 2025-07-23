@@ -16,6 +16,7 @@ import asyncio
 from typing import Dict, List, Any, Optional
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google.protobuf.json_format import MessageToDict
 import requests
 from unittest.mock import patch
 import urllib3
@@ -231,6 +232,60 @@ class GeminiService:
             logger.error(f"Gemini cleaning failed: {e}")
             return self._fallback_response(raw_text, start_time, "api_error")
     
+    async def call_with_native_tools(
+        self,
+        contents: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]], 
+        tool_config: Dict[str, Any],
+        model_params: Dict[str, Any],
+        timeout_seconds: int = 3
+    ) -> Dict[str, Any]:
+        """Call Gemini API using native function calling"""
+        start_time = time.time()
+        
+        # EVALUATION PLATFORM: NO DEFAULTS - use exactly what user configured
+        custom_config = {
+            "temperature": model_params['temperature'],  # Will raise KeyError if missing
+            "top_p": model_params['top_p'],
+            "top_k": model_params['top_k'], 
+            "max_output_tokens": model_params['max_tokens'],
+        }
+        
+        model_name = model_params['model_name']  # Will raise KeyError if missing
+        
+        # Create model with tools and user's exact configuration
+        custom_model = genai.GenerativeModel(
+            model_name=model_name,
+            generation_config=custom_config,
+            safety_settings=self.safety_settings,
+            tools=tools
+        )
+        
+        try:
+            response = await self._call_gemini_with_native_tools(
+                custom_model, contents, tool_config, timeout_seconds,
+                model_config={
+                    'model_name': model_name,
+                    'generation_config': custom_config,
+                    'safety_settings': {k.name: v.name for k, v in self.safety_settings.items()},
+                    'tools': tools,
+                    'tool_config': tool_config
+                }
+            )
+            
+            if not response:
+                raise Exception("Empty response from native function calling API")
+            
+            processing_time = round((time.time() - start_time) * 1000, 2)
+            result = self._parse_native_function_response(response, processing_time, model_params)
+            
+            return result
+            
+        except asyncio.TimeoutError:
+            raise Exception(f"Native function calling API timeout after {timeout_seconds} seconds")
+        except Exception as e:
+            raise Exception(f"Native function calling failed: {e}")
+    
     def _build_cleaning_prompt(
         self, 
         raw_text: str, 
@@ -371,6 +426,202 @@ IMPORTANT:
         except Exception as e:
             logger.error(f"Failed to list models: {e}")
             return []
+    
+    async def _call_gemini_with_native_tools(self, model, contents: List[Dict], tool_config: Dict, timeout_seconds: int, model_config: Dict[str, Any] = None):
+        """Call Gemini API with native tools and capture actual function call"""
+        try:
+            # Wrap the synchronous call in an executor to make it awaitable
+            loop = asyncio.get_event_loop()
+            
+            def _sync_call():
+                return model.generate_content(contents)
+            
+            # Run with timeout
+            response = await asyncio.wait_for(
+                loop.run_in_executor(None, _sync_call),
+                timeout=timeout_seconds
+            )
+            
+            # Capture the actual function call that was made
+            actual_call = {
+                'function_call': f'model.generate_content(contents) with native tools',
+                'model_config': model_config or {},
+                'contents': contents,
+                'response': self._extract_response_content(response),
+                'timestamp': time.time(),
+                'success': True
+            }
+            
+            # Store the actual call for this turn
+            self.captured_code_examples.append(actual_call)
+            
+            return response
+            
+        except Exception as e:
+            # Capture failed call
+            failed_call = {
+                'function_call': f'model.generate_content(contents) with native tools - FAILED',
+                'model_config': model_config or {},
+                'contents': contents,
+                'error': str(e),
+                'timestamp': time.time(),
+                'success': False
+            }
+            self.captured_code_examples.append(failed_call)
+            raise
+    
+    def _extract_response_content(self, response):
+        """Extract content from native function calling response for logging"""
+        try:
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and candidate.content:
+                    parts = candidate.content.parts
+                    if parts:
+                        part = parts[0]
+                        if hasattr(part, 'function_call'):
+                            return f"Function call: {part.function_call.name}"
+                        elif hasattr(part, 'text'):
+                            return part.text[:200]  # First 200 chars
+            return "No extractable content"
+        except:
+            return "Content extraction failed"
+    
+    def _parse_native_function_response(self, response, processing_time: float, model_params: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse native function calling response from Gemini - supports parallel function calls"""
+        try:
+            # 🚨 DEBUG: Show complete raw response structure
+            print(f"[GeminiService] 🔍 RAW RESPONSE DEBUG:")
+            print(f"[GeminiService] 🔍 Response type: {type(response)}")
+            print(f"[GeminiService] 🔍 Response string representation: {str(response)}")
+            print(f"[GeminiService] 🔍 Response dir: {[attr for attr in dir(response) if not attr.startswith('_')]}")
+            
+            if not hasattr(response, 'candidates') or not response.candidates:
+                print(f"[GeminiService] ⛔️ No candidates in response")
+                raise Exception("No candidates in response")
+            
+            print(f"[GeminiService] 🔍 Number of candidates: {len(response.candidates)}")
+            candidate = response.candidates[0]
+            print(f"[GeminiService] 🔍 Candidate type: {type(candidate)}")
+            print(f"[GeminiService] 🔍 Candidate dir: {[attr for attr in dir(candidate) if not attr.startswith('_')]}")
+            
+            if not hasattr(candidate, 'content') or not candidate.content:
+                print(f"[GeminiService] ⛔️ No content in candidate")
+                raise Exception("No content in candidate")
+            
+            print(f"[GeminiService] 🔍 Content type: {type(candidate.content)}")
+            print(f"[GeminiService] 🔍 Content dir: {[attr for attr in dir(candidate.content) if not attr.startswith('_')]}")
+            
+            parts = candidate.content.parts
+            if not parts:
+                print(f"[GeminiService] ⛔️ No parts in content")
+                raise Exception("No parts in content")
+            
+            print(f"[GeminiService] 🔍 Number of parts: {len(parts)}")
+            
+            # Parse all parts to collect multiple function calls
+            function_calls = []
+            text_responses = []
+            
+            for i, part in enumerate(parts):
+                print(f"[GeminiService] 🔍 Part {i} type: {type(part)}")
+                print(f"[GeminiService] 🔍 Part {i} dir: {[attr for attr in dir(part) if not attr.startswith('_')]}")
+                
+                if hasattr(part, 'function_call'):
+                    # Found a function call
+                    function_call = part.function_call
+                    print(f"[GeminiService] 🔍 Function call found: {function_call.name}")
+                    print(f"[GeminiService] 🔍 Function call type: {type(function_call)}")
+                    print(f"[GeminiService] 🔍 Function call dir: {[attr for attr in dir(function_call) if not attr.startswith('_')]}")
+                    print(f"[GeminiService] 🔍 Function call args type: {type(function_call.args)}")
+                    print(f"[GeminiService] 🔍 Function call args str: {str(function_call.args)}")
+                    print(f"[GeminiService] 🔍 Function call args dir: {[attr for attr in dir(function_call.args) if not attr.startswith('_')]}")
+                    
+                    # --- START: Robust, Recursive Proto-to-Dict Converter ---
+                    args_dict = {}
+                    if function_call.args:
+                        def to_dict_recursively(proto_obj):
+                            # Base case: if it's not a collection, return it as is
+                            if not hasattr(proto_obj, 'items') and not hasattr(proto_obj, 'append'):
+                                return proto_obj
+
+                            # If it's dict-like (MapComposite)
+                            if hasattr(proto_obj, 'items'):
+                                return {key: to_dict_recursively(value) for key, value in proto_obj.items()}
+                            
+                            # If it's list-like (RepeatedComposite)
+                            if hasattr(proto_obj, 'append'):
+                                return [to_dict_recursively(item) for item in proto_obj]
+                            
+                            # Fallback for any other type
+                            return str(proto_obj)
+
+                        try:
+                            args_dict = to_dict_recursively(function_call.args)
+                            print(f"[GeminiService] ✅ SUCCESS with recursive conversion: {args_dict}")
+                        except Exception as e:
+                            print(f"[GeminiService] ⛔️ CRITICAL ERROR: Recursive conversion failed: {e}")
+                            args_dict = {}
+                    else:
+                        print(f"[GeminiService] ⛔️ Function call args is None or empty")
+                    # --- END: Robust, Recursive Proto-to-Dict Converter ---
+                    
+                    function_calls.append({
+                        "name": function_call.name,
+                        "args": args_dict
+                    })
+                elif hasattr(part, 'text'):
+                    # Found text response
+                    print(f"[GeminiService] 🔍 Text response found: {part.text[:100]}...")
+                    text_responses.append(part.text)
+                else:
+                    print(f"[GeminiService] 🔍 Unknown part type in response")
+            
+            # Determine response type and format
+            if function_calls:
+                # One or more function calls found
+                if len(function_calls) == 1:
+                    # Single function call - maintain backward compatibility
+                    return {
+                        "function_call": function_calls[0],
+                        "function_calls": function_calls,  # Also provide as array
+                        "metadata": {
+                            "processing_time_ms": processing_time,
+                            "ai_model_used": model_params.get('model_name', 'unknown'),
+                            "response_type": "function_call",
+                            "parallel_calls_count": 1
+                        },
+                        "raw_response": str(response)
+                    }
+                else:
+                    # Multiple parallel function calls
+                    return {
+                        "function_calls": function_calls,
+                        "metadata": {
+                            "processing_time_ms": processing_time,
+                            "ai_model_used": model_params.get('model_name', 'unknown'),
+                            "response_type": "parallel_function_calls",
+                            "parallel_calls_count": len(function_calls)
+                        },
+                        "raw_response": str(response)
+                    }
+            elif text_responses:
+                # Text response(s) only
+                combined_text = " ".join(text_responses)
+                return {
+                    "text_response": combined_text,
+                    "metadata": {
+                        "processing_time_ms": processing_time,
+                        "ai_model_used": model_params.get('model_name', 'unknown'),
+                        "response_type": "text"
+                    },
+                    "raw_response": response
+                }
+            else:
+                raise Exception("No function calls or text found in any parts")
+                
+        except Exception as e:
+            raise Exception(f"Failed to parse native function response: {e}")
     
     def test_connection(self) -> Dict[str, Any]:
         """Test Gemini API connection"""

@@ -94,6 +94,7 @@ class FunctionPromptTemplate(Base):
     description = Column(Text, nullable=False)
     template = Column(Text, nullable=False)
     variables = Column(JSON, nullable=False, default=list)  # List of variable names
+    custom_function_descriptions = Column(JSON, nullable=True, default=dict)  # Custom descriptions for hardcoded functions
     version = Column(String(50), nullable=False, default="1.0.0")
     is_default = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -37,7 +37,7 @@ class EvaluationState:
     
     def __init__(self, evaluation_id: UUID, cleaner_window_size: int = 10, 
                  function_window_size: int = 20, prompt_template: str = None,
-                 function_prompt_template: str = None):
+                 function_prompt_template_data = None):
         self.evaluation_id = evaluation_id
         
         # Cleaner-specific fields
@@ -47,7 +47,7 @@ class EvaluationState:
         
         # Function caller-specific fields
         self.function_window_size = function_window_size
-        self.function_prompt_template = function_prompt_template  # Cache the function template
+        self.function_prompt_template_data = function_prompt_template_data  # Cache the function template data dict
         self.function_call_history: List[Dict[str, Any]] = []  # ALL function calls made
         self.mirrored_customer = None  # Current customer state
         self.business_insights: Dict[str, Any] = {}  # Accumulated insights
@@ -60,7 +60,7 @@ class EvaluationState:
         print(f"[EvaluationState] Function window size: {self.function_window_size}")
         if prompt_template:
             print(f"[EvaluationState] 🎯 Cached cleaner prompt template in memory")
-        if function_prompt_template:
+        if function_prompt_template_data:
             print(f"[EvaluationState] 🎯 Cached function prompt template in memory")
     
     def get_cleaned_sliding_window(self) -> List[Dict[str, Any]]:
@@ -218,12 +218,19 @@ class EvaluationManager:
                 
                 # Get function prompt template from settings
                 function_params = evaluation.settings.get('function_params', {}) if evaluation.settings else {}
+                function_template_data = None
                 if function_params.get('prompt_template_id'):
                     function_template_obj = self.prompt_service.get_function_template_by_id_sync(
                         function_params['prompt_template_id'], db
                     )
                     if function_template_obj:
-                        function_prompt_template = function_template_obj.template
+                        # Extract data from SQLAlchemy object to avoid session binding issues
+                        function_template_data = {
+                            'id': function_template_obj.id,
+                            'name': function_template_obj.name,
+                            'template': function_template_obj.template,
+                            'custom_function_descriptions': function_template_obj.custom_function_descriptions
+                        }
                         print(f"[EvaluationManager] 🎯 Loaded function template for caching: {function_template_obj.name}")
                 
                 # Get window sizes from settings
@@ -236,7 +243,7 @@ class EvaluationManager:
                 cleaner_window_size, 
                 function_window_size,
                 prompt_template,
-                function_prompt_template
+                function_template_data
             )
             
             # Load existing cleaned turns from database to rebuild context
@@ -443,7 +450,7 @@ class EvaluationManager:
         print(f"[EvaluationManager] 🔧 Processing function calls for cleaned text")
         
         # Check if function prompt template is available
-        if not evaluation_state.function_prompt_template:
+        if not evaluation_state.function_prompt_template_data:
             print(f"[EvaluationManager] ❌ No function prompt template available, skipping function calls")
             return {
                 'functions': [],
@@ -469,23 +476,18 @@ class EvaluationManager:
         function_timing['function_context_start'] = time.time()
         
         # Build function calling context
-        context = self._build_function_context(evaluation_state)
+        context = self._build_function_context(evaluation_state, cleaned_result)
         
         function_timing['function_context_end'] = time.time()
-        function_timing['function_prompt_start'] = time.time()
+        function_timing['function_gemini_start'] = time.time()
         
-        # Render function prompt template with variables
+        # Build template variables for function execution (still needed)
         template_variables = {
-            'call_context': context['call_context'],
-            'cleaned_conversation': context['cleaned_conversation'],
-            'available_functions': context['available_functions'],
+            'customer_profile': context['customer_profile'],
+            'previous_cleaned_turns': context['previous_cleaned_turns'],
+            'current_cleaned_turn': context['current_cleaned_turn'],
             'previous_function_calls': context['previous_function_calls']
         }
-        
-        rendered_prompt = evaluation_state.function_prompt_template.format(**template_variables)
-        
-        function_timing['function_prompt_end'] = time.time()
-        function_timing['function_gemini_start'] = time.time()
         
         # EVALUATION PLATFORM: Extract and validate function parameters from user config
         # NO FALLBACK VALUES - fail fast if config is missing or invalid for proper evaluation
@@ -508,14 +510,15 @@ class EvaluationManager:
         
         print(f"[EvaluationManager] 🎯 Using user's function model params: {function_model_params}")
         
-        # Call Gemini for function decision using user's exact configuration
-        function_response = await self.gemini_service.clean_conversation_turn(
-            raw_text=cleaned_result['cleaned_text'],
-            speaker=raw_turn.speaker,
-            cleaned_context=[],  # Not used for function calling
-            cleaning_level="full",
-            model_params=function_model_params,
-            rendered_prompt=rendered_prompt
+        # Build native function calling request
+        native_request = self._build_native_function_call_request(evaluation_state, cleaned_result, settings)
+        
+        # Call Gemini using native function calling API
+        function_response = await self.gemini_service.call_with_native_tools(
+            contents=native_request['contents'],
+            tools=native_request['tools'],
+            tool_config=native_request['tool_config'],
+            model_params=function_model_params
         )
         
         function_timing['function_gemini_end'] = time.time()
@@ -535,67 +538,86 @@ class EvaluationManager:
         
         function_timing['function_parse_start'] = time.time()
         
-        # Parse response expecting JSON with thought_process and function_calls
+        # Parse native function calling response
         try:
-            response_text = function_response.get('cleaned_text', '').strip()
-            if not response_text:
-                print(f"[EvaluationManager] ❌ Empty response from function calling Gemini")
-                
-                # Save the empty response error to database
-                error_message = "Empty response from Gemini function calling"
-                self._save_function_call_async(
-                    evaluation_id=evaluation_state.evaluation_id,
-                    turn_id=raw_turn.id,
-                    function_name="<EMPTY_RESPONSE>",
-                    parameters={"error": error_message, "gemini_response": str(function_response)},
-                    execution_result={
-                        'success': False,
-                        'error': error_message,
-                        'execution_time_ms': 0,
-                        'result': None
-                    },
-                    db=db,
-                    thought_process="Gemini returned empty response for function calling"
-                )
-                
-                # EVALUATION PLATFORM: FAIL FAST - STOP EVALUATION  
-                print(f"[EvaluationManager] 🚨 STOPPING EVALUATION - Empty response from Gemini")
-                raise FunctionCallingCriticalError(f"EVALUATION STOPPED: Empty response from Gemini function calling. Response: {function_response}")
-                
-            # Clean the response text - remove markdown code blocks if present
-            clean_response = response_text.strip()
-            if clean_response.startswith('```json'):
-                clean_response = clean_response.replace('```json', '').replace('```', '').strip()
-            elif clean_response.startswith('```'):
-                clean_response = clean_response.replace('```', '').strip()
+            if not function_response:
+                print(f"[EvaluationManager] ❌ Empty response from native function calling")
+                raise FunctionCallingCriticalError(f"EVALUATION STOPPED: Empty response from native function calling")
             
-            decision = json.loads(clean_response)
-            print(f"[EvaluationManager] 🧠 Function decision: {decision.get('thought_process', 'No reasoning provided')}")
+            # Check response type - now supporting parallel function calls
+            if 'function_calls' in function_response:
+                # Handle multiple function calls (includes single function call arrays)
+                function_calls_array = function_response['function_calls']
+                parallel_count = function_response.get('metadata', {}).get('parallel_calls_count', len(function_calls_array))
                 
-        except json.JSONDecodeError as e:
-            print(f"[EvaluationManager] ❌ Failed to parse function decision JSON: {e}")
-            print(f"[EvaluationManager] Raw response: {response_text}")
-            
-            # Save the JSON parsing error to database
-            error_message = f"JSON parsing failed: {str(e)}"
-            self._save_function_call_async(
-                evaluation_id=evaluation_state.evaluation_id,
-                turn_id=raw_turn.id,
-                function_name="<JSON_PARSE_ERROR>",
-                parameters={"error": error_message, "raw_response": response_text},
-                execution_result={
-                    'success': False,
-                    'error': error_message,
-                    'execution_time_ms': 0,
-                    'result': None
-                },
-                db=db,
-                thought_process=f"Failed to parse function decision: {str(e)}"
-            )
+                print(f"[EvaluationManager] 🔧 Native function calling: {parallel_count} function(s) detected")
+                
+                # Validate and process all function calls
+                valid_function_calls = []
+                for i, func_call in enumerate(function_calls_array):
+                    function_name = func_call.get('name', '').strip()
+                    
+                    if not function_name:
+                        print(f"[EvaluationManager] 🔍 GEMINI API QUIRK: Function #{i+1} has empty name (skipping)")
+                        continue
+                    
+                    print(f"[EvaluationManager] 🔧 Function #{i+1}: {function_name}")
+                    valid_function_calls.append({
+                        'name': function_name,
+                        'parameters': func_call.get('args', {})
+                    })
+                
+                if not valid_function_calls:
+                    print(f"[EvaluationManager] 🔍 All function calls had empty names - treating as no function call")
+                    decision = {'function_calls': []}
+                else:
+                    decision = {'function_calls': valid_function_calls}
+                    
+            elif 'function_call' in function_response:
+                # Backward compatibility - single function call (legacy format)
+                function_call = function_response['function_call']
+                function_name = function_call.get('name', '').strip()
+                
+                # Validate function name is not empty
+                if not function_name:
+                    print(f"[EvaluationManager] 🔍 GEMINI API QUIRK: Returned empty function name (likely means 'no function call')")
+                    print(f"[EvaluationManager] 🔍 Full response object: {function_call}")
+                    print(f"[EvaluationManager] 🔍 This is probably Gemini's way of saying 'no function should be called'")
+                    print(f"[EvaluationManager] 🔍 According to research, this is not the intended API behavior but happens in practice")
+                    print(f"[EvaluationManager] 🔍 Context: Current turn was '{cleaned_result.get('cleaned_text', '')[:100]}...'")
+                    print(f"[EvaluationManager] 🔍 This suggests Gemini analyzed the turn and decided no function was needed")
+                    # Treat as no function call - this is likely what Gemini intended
+                    decision = {
+                        'function_calls': []
+                    }
+                else:
+                    print(f"[EvaluationManager] 🔧 Native function call detected: {function_name}")
+                    
+                    # Create decision object with function call (no thought_process with native API)
+                    decision = {
+                        'function_calls': [{
+                            'name': function_name,
+                            'parameters': function_call['args']
+                        }]
+                    }
+                
+            elif 'text_response' in function_response:
+                # Model returned text instead of function call (decided not to call any function)
+                print(f"[EvaluationManager] 💭 Native API returned text (no function call): {function_response['text_response'][:100]}...")
+                decision = {
+                    'function_calls': []
+                }
+                
+            else:
+                print(f"[EvaluationManager] ❌ Unknown response format from native function calling")
+                raise FunctionCallingCriticalError(f"EVALUATION STOPPED: Unknown response format from native function calling: {function_response}")
+                
+        except Exception as e:
+            print(f"[EvaluationManager] ❌ Failed to parse native function response: {e}")
             
             # EVALUATION PLATFORM: FAIL FAST - STOP EVALUATION
-            print(f"[EvaluationManager] 🚨 STOPPING EVALUATION - Function calling JSON parsing failed")
-            raise FunctionCallingCriticalError(f"EVALUATION STOPPED: Function calling JSON parsing failed: {str(e)}. Raw response: {response_text}")
+            print(f"[EvaluationManager] 🚨 STOPPING EVALUATION - Native function calling parsing failed")
+            raise FunctionCallingCriticalError(f"EVALUATION STOPPED: Native function calling parsing failed: {str(e)}")
             
         function_timing['function_parse_end'] = time.time()
         function_timing['function_execute_start'] = time.time()
@@ -611,9 +633,9 @@ class EvaluationManager:
                 # Execute function with function decision data
                 result = await self._execute_single_function(
                     func_call, evaluation_state, cleaned_result, raw_turn, db, 
-                    thought_process=decision.get('thought_process'),
+                    thought_process=None,  # Native function calling doesn't provide thought_process
                     function_decision_captured_call=function_decision_captured_call,
-                    template_variables=template_variables,
+                    template_variables=template_variables,  # Still need the context variables
                     function_timing=function_timing
                 )
                 executed_functions.append(result)
@@ -655,7 +677,7 @@ class EvaluationManager:
         result = {
             'functions': executed_functions,
             'decision': {
-                'thought_process': decision.get('thought_process'),
+                'thought_process': None,  # Native function calling doesn't provide thought_process
                 'confidence_score': 'HIGH' if not failed_functions else 'LOW',
                 'total_execution_time_ms': sum(f.get('execution_time_ms', 0) for f in executed_functions),
                 'functions_called': len(successful_functions),
@@ -675,7 +697,7 @@ class EvaluationManager:
         
         return result
     
-    def _build_function_context(self, evaluation_state: EvaluationState) -> Dict[str, Any]:
+    def _build_function_context(self, evaluation_state: EvaluationState, cleaned_result: Dict[str, Any]) -> Dict[str, Any]:
         """Build context for function calling prompt"""
         
         # Get cleaned conversation with function-specific window size
@@ -710,12 +732,109 @@ class EvaluationManager:
         else:
             call_context = {}
         
+        # Get custom function descriptions - REQUIRED for evaluation platform
+        if not evaluation_state.function_prompt_template_data or 'custom_function_descriptions' not in evaluation_state.function_prompt_template_data:
+            raise ValueError("EVALUATION PLATFORM: Function template with custom_function_descriptions required")
+            
+        custom_descriptions = evaluation_state.function_prompt_template_data['custom_function_descriptions']
+        if not custom_descriptions:
+            raise ValueError("EVALUATION PLATFORM: custom_function_descriptions cannot be empty")
+            
         return {
-            'call_context': json.dumps(call_context, indent=2),
-            'cleaned_conversation': conversation_str,
-            'available_functions': self.function_registry.get_functions_catalog(),
+            'customer_profile': json.dumps(call_context, indent=2),
+            'previous_cleaned_turns': conversation_str,
+            'current_cleaned_turn': cleaned_result.get('cleaned_text', ''),
             'previous_function_calls': previous_calls_str
         }
+    
+    def _build_native_function_call_request(self, evaluation_state: EvaluationState, cleaned_result: Dict[str, Any], settings: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Build the complete request for Google's native function calling API"""
+        
+        # Get context data 
+        context = self._build_function_context(evaluation_state, cleaned_result)
+        
+        # Add additional_context if provided in settings
+        if settings and 'user_variables' in settings:
+            user_variables = settings['user_variables']
+            if 'additional_context' in user_variables:
+                context['additional_context'] = user_variables['additional_context']
+        
+        # Use the stored template and render it with variables
+        template = evaluation_state.function_prompt_template_data['template']
+        
+        try:
+            conversation_content = template.format(**context)
+        except KeyError as e:
+            print(f"[EvaluationManager] ❌ Function template variable error: {e}")
+            # Fallback to template without variable substitution
+            conversation_content = template
+
+        # Build contents array with the conversation data
+        contents = [{
+            "role": "user",
+            "parts": [{"text": conversation_content}]
+        }]
+        
+        # Transform function registry to Google's format
+        tools = self._transform_tools_to_native_declarations(evaluation_state)
+        
+        # Debug: Log function declarations being sent
+        print(f"[EvaluationManager] 🔧 Sending {len(tools[0]['function_declarations']) if tools and tools[0].get('function_declarations') else 0} function declarations to Google API")
+        if tools and tools[0].get('function_declarations'):
+            for func_decl in tools[0]['function_declarations']:
+                print(f"[EvaluationManager] 🔧 Function: {func_decl.get('name', 'UNNAMED')} - {func_decl.get('description', 'NO_DESC')[:50]}...")
+        
+        # Build complete request
+        return {
+            "contents": contents,
+            "tools": tools,
+            "tool_config": {
+                "function_calling_config": {
+                    "mode": "AUTO"
+                }
+            }
+        }
+    
+    def _transform_tools_to_native_declarations(self, evaluation_state: EvaluationState) -> List[Dict[str, Any]]:
+        """Transform function registry to Google's native FunctionDeclaration format"""
+        # Get custom function descriptions - REQUIRED for evaluation platform
+        if not evaluation_state.function_prompt_template_data or 'custom_function_descriptions' not in evaluation_state.function_prompt_template_data:
+            raise ValueError("EVALUATION PLATFORM: Function template with custom_function_descriptions required")
+            
+        custom_descriptions = evaluation_state.function_prompt_template_data['custom_function_descriptions']
+        if not custom_descriptions:
+            raise ValueError("EVALUATION PLATFORM: custom_function_descriptions cannot be empty")
+            
+        function_catalog = self.function_registry.get_functions_catalog(custom_descriptions)
+        
+        # Parse the JSON string catalog
+        import json
+        if isinstance(function_catalog, str):
+            functions = json.loads(function_catalog)
+        else:
+            functions = function_catalog
+        
+        function_declarations = []
+        
+        for func in functions:
+            # Transform parameters to Google's schema format
+            parameters = func.get('parameters', {})
+            
+            # Convert to Google's native format
+            google_parameters = {
+                "type": "OBJECT",
+                "properties": parameters.get('properties', {}),
+                "required": parameters.get('required', [])
+            }
+            
+            # Use description as variable (ready for future UI configuration)
+            function_declarations.append({
+                "name": func['name'],
+                "description": func['description'],  # This will become configurable variable
+                "parameters": google_parameters
+            })
+        
+        return [{"function_declarations": function_declarations}]
     
     async def _execute_single_function(
         self,
@@ -754,8 +873,27 @@ class EvaluationManager:
             # Add function decision data to execution result before saving
             if function_decision_captured_call:
                 execution_result['function_decision_prompt'] = function_decision_captured_call.get('prompt')
-                execution_result['function_decision_response'] = function_decision_captured_call.get('response')
-                execution_result['function_decision_gemini_call'] = function_decision_captured_call
+                
+                # The 'response' and the entire 'gemini_http_request' can contain unserializable proto objects.
+                # We must ensure they are converted to strings or clean dicts before being passed to the DB save function.
+                
+                # Sanitize the 'response' part
+                raw_response = function_decision_captured_call.get('response')
+                execution_result['function_decision_response'] = str(raw_response) if raw_response else None
+
+                # Create a DEEP COPY and sanitize the entire captured call for the database
+                def sanitize_for_json(data):
+                    if isinstance(data, dict):
+                        return {k: sanitize_for_json(v) for k, v in data.items()}
+                    if isinstance(data, list):
+                        return [sanitize_for_json(i) for i in data]
+                    # Add specific checks for known proto objects if needed, otherwise convert to string
+                    if hasattr(data, '_pb'): # A good heuristic for proto objects
+                        return str(data)
+                    return data
+                
+                sanitized_call = sanitize_for_json(function_decision_captured_call.copy())
+                execution_result['function_decision_gemini_call'] = sanitized_call
             
             # Add template variables and timing data
             if template_variables:
@@ -766,8 +904,8 @@ class EvaluationManager:
             # Add function template ID if available
             if hasattr(evaluation_state, 'function_prompt_template_id'):
                 execution_result['function_template_id'] = evaluation_state.function_prompt_template_id
-            elif hasattr(evaluation_state, 'function_prompt_template') and hasattr(evaluation_state.function_prompt_template, 'id'):
-                execution_result['function_template_id'] = evaluation_state.function_prompt_template.id
+            elif evaluation_state.function_prompt_template_data and 'id' in evaluation_state.function_prompt_template_data:
+                execution_result['function_template_id'] = evaluation_state.function_prompt_template_data['id']
             
             # Create CalledFunction record in database (async to not block)
             self._save_function_call_async(

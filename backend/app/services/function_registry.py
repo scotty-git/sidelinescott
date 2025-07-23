@@ -92,14 +92,24 @@ class FunctionRegistry:
             }
         }
     
-    def get_functions_catalog(self) -> str:
-        """Get the functions catalog formatted for the prompt"""
+    def get_functions_catalog(self, custom_descriptions: Dict[str, str] = None) -> str:
+        """Get the functions catalog formatted for the prompt
+        
+        Args:
+            custom_descriptions: Required dict mapping function names to custom descriptions
+        """
+        if not custom_descriptions:
+            raise ValueError("EVALUATION PLATFORM: custom_descriptions required - no defaults")
+            
         catalog = []
         
         for func_name, func_spec in self.functions.items():
+            if func_name not in custom_descriptions:
+                raise ValueError(f"EVALUATION PLATFORM: Missing custom description for function '{func_name}'")
+                
             catalog_entry = {
                 "name": func_name,
-                "description": func_spec["description"],
+                "description": custom_descriptions[func_name],
                 "parameters": func_spec["parameters"]
             }
             catalog.append(catalog_entry)

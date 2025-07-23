@@ -32,6 +32,7 @@ interface FunctionPromptTemplate {
   is_default: boolean
   created_at: string
   updated_at: string
+  custom_function_descriptions?: Record<string, string>
 }
 
 interface PromptVariable {
@@ -67,7 +68,7 @@ function PromptEngineeringDashboardInner() {
     conversation_context: 'User: Hey there\nLumen: Hello! How can I help you today?',
     raw_text: 'So umm, like, I was thinking we could maybe, you know, try to...',
     cleaning_level: 'full',
-    call_context: '',
+    customer_profile: '',
     additional_context: ''
   })
   const [renderedPreview] = useState<RenderedPrompt | null>(null)
@@ -148,6 +149,31 @@ function PromptEngineeringDashboardInner() {
   // Function prompt template state
   const [functionTemplates, setFunctionTemplates] = useState<FunctionPromptTemplate[]>([])
   const [currentFunctionTemplateId, setCurrentFunctionTemplateId] = useState<string | null>(null)
+  const [customFunctionDescriptions, setCustomFunctionDescriptions] = useState<Record<string, string>>({})
+
+  // Available functions from the function registry - exact definitions
+  const AVAILABLE_FUNCTIONS = [
+    { 
+      name: 'update_profile_field', 
+      defaultDescription: 'Updates a single, specific field in the prospect\'s company or contact profile. Use this ONLY when the user provides a direct correction or addition to a known fact about them.' 
+    },
+    { 
+      name: 'log_metric', 
+      defaultDescription: 'Logs a specific quantitative metric about the business. Use this when the user states a number related to their operations.' 
+    },
+    { 
+      name: 'record_business_insight', 
+      defaultDescription: 'Records a key qualitative insight, problem, goal, or motivation shared by the user. Use this to capture the \'why\' behind their interest or the challenges they face.' 
+    },
+    { 
+      name: 'log_marketing_channels', 
+      defaultDescription: 'Logs the marketing or lead generation channels the user mentions.' 
+    },
+    { 
+      name: 'initiate_demo_creation', 
+      defaultDescription: 'Call this ONLY when the user gives explicit, positive, and unambiguous consent to create the demo, such as \'Yes, I\'m ready\' or \'Let\'s do it\'.' 
+    }
+  ]
 
   const theme = {
     bg: darkMode ? '#1f2937' : '#ffffff',
@@ -230,6 +256,7 @@ function PromptEngineeringDashboardInner() {
         setFunctionPromptName(firstTemplate.name)
         setFunctionPromptDescription(firstTemplate.description || '')
         setFunctionPromptContent(firstTemplate.template)
+        setCustomFunctionDescriptions(firstTemplate.custom_function_descriptions || {})
         // Clear validation errors when loading existing template
         setFunctionValidationErrors([])
         setFunctionValidationWarnings([])
@@ -278,6 +305,7 @@ function PromptEngineeringDashboardInner() {
         setFunctionPromptName(firstTemplate.name)
         setFunctionPromptDescription(firstTemplate.description || '')
         setFunctionPromptContent(firstTemplate.template)
+        setCustomFunctionDescriptions(firstTemplate.custom_function_descriptions || {})
         // Clear validation errors when loading existing template
         setFunctionValidationErrors([])
         setFunctionValidationWarnings([])
@@ -366,7 +394,7 @@ function PromptEngineeringDashboardInner() {
         errors.push({ field: 'description', type: 'required', message: 'Function prompt description is required' })
       }
       
-      const requiredVars = ['cleaned_conversation', 'call_context', 'available_functions', 'previous_function_calls']
+      const requiredVars = ['previous_cleaned_turns', 'customer_profile', 'current_cleaned_turn', 'previous_function_calls']
       const missingRequired = requiredVars.filter(varName => 
         !content.includes(`{${varName}}`)
       )
@@ -407,6 +435,7 @@ function PromptEngineeringDashboardInner() {
     setFunctionPromptName('')
     setFunctionPromptDescription('')
     setFunctionPromptContent('')
+    setCustomFunctionDescriptions({})
     setFunctionValidationErrors([])
     setFunctionValidationWarnings([])
   }
@@ -448,7 +477,8 @@ function PromptEngineeringDashboardInner() {
           name: functionPromptName,
           description: functionPromptDescription,
           template: functionPromptContent,
-          variables: detectedVariables
+          variables: detectedVariables,
+          custom_function_descriptions: customFunctionDescriptions
         })
         
         templateToasts.showSaveSuccess(`Updated function prompt "${functionPromptName}"`)
@@ -462,7 +492,8 @@ function PromptEngineeringDashboardInner() {
           name: functionPromptName,
           description: functionPromptDescription,
           template: functionPromptContent,
-          variables: detectedVariables
+          variables: detectedVariables,
+          custom_function_descriptions: customFunctionDescriptions
         })
         
         templateToasts.showSaveSuccess(`Created function prompt "${functionPromptName}"`)
@@ -517,7 +548,8 @@ function PromptEngineeringDashboardInner() {
         name: functionPromptName,
         description: functionPromptDescription,
         template: functionPromptContent,
-        variables: detectedVariables
+        variables: detectedVariables,
+        custom_function_descriptions: customFunctionDescriptions
       })
       
       templateToasts.showSaveSuccess(`Created function prompt "${functionPromptName}"`)
@@ -739,10 +771,12 @@ function PromptEngineeringDashboardInner() {
       setTemplateDescription(template.description || '')
       setShowTemplateLibrary(false)
     } else {
-      setCurrentFunctionTemplateId(template.id)
-      setFunctionPromptName(template.name)
-      setFunctionPromptDescription(template.description || '')
-      setFunctionPromptContent(template.template)
+      const funcTemplate = template as FunctionPromptTemplate
+      setCurrentFunctionTemplateId(funcTemplate.id)
+      setFunctionPromptName(funcTemplate.name)
+      setFunctionPromptDescription(funcTemplate.description || '')
+      setFunctionPromptContent(funcTemplate.template)
+      setCustomFunctionDescriptions(funcTemplate.custom_function_descriptions || {})
       setShowTemplateLibrary(false)
       // Clear validation errors when loading existing template
       setFunctionValidationErrors([])
@@ -797,11 +831,13 @@ function PromptEngineeringDashboardInner() {
         })
         await loadTemplates()
       } else {
+        const funcTemplate = template as FunctionPromptTemplate
         await apiClient.createFunctionPromptTemplate({
           name: newName,
-          template: template.template,
-          description: template.description || '',
-          variables: template.variables
+          template: funcTemplate.template,
+          description: funcTemplate.description || '',
+          variables: funcTemplate.variables,
+          custom_function_descriptions: funcTemplate.custom_function_descriptions || {}
         })
         await loadFunctionTemplates()
       }
@@ -1469,12 +1505,12 @@ function PromptEngineeringDashboardInner() {
 
                 <div style={{ marginBottom: '12px' }}>
                   <label style={{ display: 'block', fontSize: '12px', color: theme.textMuted, marginBottom: '4px' }}>
-                    call_context <span style={{ color: theme.warning }}>(optional)</span>
+                    customer_profile <span style={{ color: theme.warning }}>(optional)</span>
                   </label>
                   <textarea
-                    value={previewVariables.call_context}
-                    onChange={(e) => setPreviewVariables({...previewVariables, call_context: e.target.value})}
-                    placeholder="Business context from prequalification flow..."
+                    value={previewVariables.customer_profile}
+                    onChange={(e) => setPreviewVariables({...previewVariables, customer_profile: e.target.value})}
+                    placeholder="Customer profile and business context..."
                     style={{
                       width: '100%',
                       height: '60px',
@@ -2071,9 +2107,9 @@ function PromptEngineeringDashboardInner() {
                     <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', color: theme.text }}>Available Variables</h4>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', position: 'relative' }}>
                       {[
-                        { name: 'cleaned_conversation', required: true, tooltip: 'REQUIRED: The full cleaned conversation history from the cleaner model, formatted as speaker-turn pairs' },
-                        { name: 'call_context', required: true, tooltip: 'REQUIRED: User profile and business context including current user data (name, title, company) and permissions' },
-                        { name: 'available_functions', required: true, tooltip: 'REQUIRED: JSON schema of callable functions with parameters, descriptions, and usage examples' },
+                        { name: 'previous_cleaned_turns', required: true, tooltip: 'REQUIRED: The previous cleaned conversation history from earlier turns, formatted as speaker-turn pairs' },
+                        { name: 'customer_profile', required: true, tooltip: 'REQUIRED: Customer profile and business context including user data (name, title, company) and current state' },
+                        { name: 'current_cleaned_turn', required: true, tooltip: 'REQUIRED: The current turn being analyzed for function calling - the cleaned text from this specific turn' },
                         { name: 'previous_function_calls', required: true, tooltip: 'REQUIRED: History of functions already called in this session to avoid duplicates and maintain state' },
                         { name: 'additional_context', required: false, tooltip: 'OPTIONAL: Free-form context for custom business rules, special instructions, or testing scenarios' }
                       ].map((variable) => (
@@ -2185,6 +2221,71 @@ function PromptEngineeringDashboardInner() {
                   </div>
                 </div>
 
+                {/* Function Descriptions Card */}
+                <div style={{ 
+                  backgroundColor: theme.bg,
+                  borderRadius: '8px',
+                  border: `1px solid ${theme.border}`,
+                  padding: '16px'
+                }}>
+                  <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: theme.text }}>Function Descriptions</h4>
+                  <div style={{ fontSize: '11px', color: theme.textMuted, marginBottom: '12px' }}>
+                    Define how each function should be called by the AI.
+                  </div>
+                  
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '300px', overflowY: 'auto' }}>
+                    {AVAILABLE_FUNCTIONS.map((func) => (
+                      <div key={func.name} style={{
+                        padding: '8px',
+                        backgroundColor: theme.bgTertiary,
+                        borderRadius: '4px',
+                        border: `1px solid ${theme.border}`
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                          <label style={{ fontSize: '11px', fontWeight: 'bold', color: theme.text }}>
+                            {func.name}
+                          </label>
+                          <button
+                            onClick={() => setCustomFunctionDescriptions(prev => ({ ...prev, [func.name]: func.defaultDescription }))}
+                            style={{
+                              padding: '2px 6px',
+                              fontSize: '9px',
+                              backgroundColor: theme.bg,
+                              border: `1px solid ${theme.border}`,
+                              borderRadius: '3px',
+                              cursor: 'pointer',
+                              color: theme.textMuted
+                            }}
+                            title="Load default description"
+                          >
+                            Reset to Default
+                          </button>
+                        </div>
+                        <textarea
+                          value={customFunctionDescriptions[func.name] || ''}
+                          onChange={(e) => setCustomFunctionDescriptions(prev => ({
+                            ...prev,
+                            [func.name]: e.target.value
+                          }))}
+                          placeholder={func.defaultDescription}
+                          style={{
+                            width: '100%',
+                            minHeight: '50px',
+                            padding: '6px',
+                            fontSize: '10px',
+                            backgroundColor: theme.bg,
+                            border: `1px solid ${theme.border}`,
+                            borderRadius: '3px',
+                            color: theme.text,
+                            resize: 'vertical',
+                            fontFamily: 'monospace',
+                            lineHeight: '1.3'
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
 
                 {/* Testing Instructions Card */}
                 <div style={{ 

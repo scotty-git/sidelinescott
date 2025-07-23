@@ -246,6 +246,7 @@ export class APIClient {
     description: string
     template: string
     variables: string[]
+    custom_function_descriptions?: Record<string, string>
   }) {
     return this.request('/api/v1/prompt-engineering/function-templates', {
       method: 'POST',
@@ -259,6 +260,7 @@ export class APIClient {
     template?: string
     variables?: string[]
     is_default?: boolean
+    custom_function_descriptions?: Record<string, string>
   }) {
     return this.request(`/api/v1/prompt-engineering/function-templates/${templateId}`, {
       method: 'PUT',
