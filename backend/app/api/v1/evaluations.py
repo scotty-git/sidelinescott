@@ -79,6 +79,19 @@ async def create_evaluation(
                     detail="Invalid prompt_template_id format"
                 )
         
+        # Extract function_template_id from settings if provided
+        function_template_id = None
+        if evaluation_data.settings and 'function_params' in evaluation_data.settings:
+            function_params = evaluation_data.settings['function_params']
+            if function_params.get('prompt_template_id'):
+                try:
+                    function_template_id = UUID(function_params['prompt_template_id'])
+                except ValueError:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Invalid function_template_id format"
+                    )
+        
         evaluation = await evaluation_manager.create_evaluation(
             conversation_id=conversation_uuid,
             name=evaluation_data.name,
@@ -86,6 +99,7 @@ async def create_evaluation(
             description=evaluation_data.description,
             prompt_template=evaluation_data.prompt_template,
             prompt_template_id=prompt_template_id,
+            function_template_id=function_template_id,
             settings=evaluation_data.settings,
             db=db
         )
@@ -197,7 +211,8 @@ async def get_evaluation_details(
     print(f"[DEBUG] Querying database for evaluation...")
     from sqlalchemy.orm import joinedload
     evaluation = db.query(Evaluation).options(
-        joinedload(Evaluation.prompt_template_ref)
+        joinedload(Evaluation.prompt_template_ref),
+        joinedload(Evaluation.function_template_ref)
     ).filter(
         Evaluation.id == evaluation_uuid,
         Evaluation.user_id == user_uuid
@@ -220,9 +235,15 @@ async def get_evaluation_details(
     ).order_by(Turn.turn_sequence.asc()).all()
     
     # Get function calls for this evaluation grouped by turn_id
-    function_calls = db.query(CalledFunction).filter(
+    print(f"[DEBUG] Querying function calls for evaluation_uuid: {evaluation_uuid}")
+    from sqlalchemy.orm import joinedload
+    from app.models.prompt_template import FunctionPromptTemplate
+    function_calls = db.query(CalledFunction).options(
+        joinedload(CalledFunction.function_template)
+    ).filter(
         CalledFunction.evaluation_id == evaluation_uuid
     ).order_by(CalledFunction.created_at.asc()).all()
+    print(f"[DEBUG] Found {len(function_calls)} function calls for evaluation")
     
     # Group function calls by turn_id for easy lookup
     function_calls_by_turn = {}
@@ -250,7 +271,13 @@ async def get_evaluation_details(
             'timing_breakdown': fc.timing_breakdown,
             'mock_data_before': fc.mock_data_before,
             'mock_data_after': fc.mock_data_after,
-            'created_at': fc.created_at.isoformat()
+            'created_at': fc.created_at.isoformat(),
+            'function_template': {
+                'id': str(fc.function_template.id) if fc.function_template else None,
+                'name': fc.function_template.name if fc.function_template else None,
+                'template': fc.function_template.template if fc.function_template else None,
+                'description': fc.function_template.description if fc.function_template else None
+            } if fc.function_template else None
         })
     
     # Get conversation info
@@ -268,9 +295,31 @@ async def get_evaluation_details(
         turn_id = str(ct.turn_id)
         turn_function_calls = function_calls_by_turn.get(turn_id, [])
         
+        # Get function decision Gemini call from database (independent of processed function calls)
+        function_decision_gemini_call = None
+        first_function_call = next((fc_obj for fc_obj in function_calls if str(fc_obj.turn_id) == turn_id), None)
+        print(f"[DEBUG] Turn {turn_id}: first_function_call = {first_function_call.function_name if first_function_call else None}")
+        if first_function_call and first_function_call.gemini_http_request:
+            raw_gemini_data = first_function_call.gemini_http_request
+            print(f"[DEBUG] Turn {turn_id}: raw_gemini_data keys = {list(raw_gemini_data.keys()) if raw_gemini_data else None}")
+            
+            # Transform raw gemini_http_request into frontend-expected format
+            if raw_gemini_data:
+                function_decision_gemini_call = {
+                    'prompt': raw_gemini_data.get('prompt', raw_gemini_data.get('conversation_content', 'No prompt available')),
+                    'response': raw_gemini_data.get('response', 'No response available'),
+                    'function_call': raw_gemini_data.get('function_call', ''),
+                    'model_config': raw_gemini_data.get('model_config', {}),
+                    'contents': raw_gemini_data.get('contents', []),
+                    'timestamp': raw_gemini_data.get('timestamp', 0),
+                    'success': raw_gemini_data.get('success', False)
+                }
+                print(f"[DEBUG] Turn {turn_id}: transformed function_decision_gemini_call with prompt length = {len(function_decision_gemini_call['prompt']) if function_decision_gemini_call['prompt'] else 0}")
+        else:
+            print(f"[DEBUG] Turn {turn_id}: No gemini_http_request data found")
+
         # Create function decision metadata if function calls exist
         function_decision = None
-        function_decision_gemini_call = None
         if turn_function_calls:
             total_execution_time = sum(fc.get('execution_time_ms', 0) for fc in turn_function_calls)
             
@@ -287,11 +336,17 @@ async def get_evaluation_details(
                 'functions_called': len([fc for fc in turn_function_calls if fc.get('function_name') not in ['<JSON_PARSE_ERROR>', '<EMPTY_RESPONSE>']]),
                 'error': error_message
             }
-            
-            # Get function decision Gemini call from the first function call's gemini_http_request
-            first_function_call = next((fc_obj for fc_obj in function_calls if str(fc_obj.turn_id) == turn_id), None)
-            if first_function_call and first_function_call.gemini_http_request:
-                function_decision_gemini_call = first_function_call.gemini_http_request
+        
+        print(f"[DEBUG] Turn {turn_id}: About to create CleanedTurnResponse")
+        print(f"[DEBUG] Turn {turn_id}: function_decision_gemini_call = {function_decision_gemini_call is not None}")
+        if function_decision_gemini_call:
+            print(f"[DEBUG] Turn {turn_id}: function_decision_gemini_call type = {type(function_decision_gemini_call)}")
+            try:
+                import json
+                json.dumps(function_decision_gemini_call)
+                print(f"[DEBUG] Turn {turn_id}: function_decision_gemini_call is JSON serializable")
+            except Exception as e:
+                print(f"[DEBUG] Turn {turn_id}: function_decision_gemini_call JSON serialization ERROR: {e}")
         
         cleaned_turn_responses.append(CleanedTurnResponse(
             id=str(ct.id),
@@ -324,6 +379,19 @@ async def get_evaluation_details(
         prompt_template_name = evaluation.prompt_template_ref.name
         print(f"[DEBUG] Found prompt template name from relationship: {prompt_template_name}")
     
+    # Include function template name if available
+    function_template_name = None
+    function_template_data = None
+    if evaluation.function_template_ref:
+        function_template_name = evaluation.function_template_ref.name
+        function_template_data = {
+            'id': str(evaluation.function_template_ref.id),
+            'name': evaluation.function_template_ref.name,
+            'template': evaluation.function_template_ref.template,
+            'description': evaluation.function_template_ref.description
+        }
+        print(f"[DEBUG] Found function template name from relationship: {function_template_name}")
+    
     evaluation_response = EvaluationResponse(
         id=str(evaluation.id),
         conversation_id=str(evaluation.conversation_id),
@@ -331,6 +399,7 @@ async def get_evaluation_details(
         description=evaluation.description,
         prompt_template=evaluation.prompt_template,
         prompt_template_id=str(evaluation.prompt_template_id) if evaluation.prompt_template_id else None,
+        function_template_id=str(evaluation.function_template_id) if evaluation.function_template_id else None,
         settings=evaluation.settings or {},
         user_id=str(evaluation.user_id),
         status=evaluation.status,
@@ -344,6 +413,13 @@ async def get_evaluation_details(
         evaluation_response.settings['prompt_template_name'] = prompt_template_name
     elif prompt_template_name:
         evaluation_response.settings = {'prompt_template_name': prompt_template_name}
+    
+    # Add function template data to settings for frontend access
+    if function_template_name and function_template_data:
+        if not evaluation_response.settings:
+            evaluation_response.settings = {}
+        evaluation_response.settings['function_template_name'] = function_template_name
+        evaluation_response.settings['function_template'] = function_template_data
     
     return EvaluationDetailsResponse(
         evaluation=evaluation_response,
@@ -725,7 +801,11 @@ async def export_evaluation(
         )
     
     # Get evaluation with prompt template info
-    evaluation = db.query(Evaluation).filter(
+    from sqlalchemy.orm import joinedload
+    evaluation = db.query(Evaluation).options(
+        joinedload(Evaluation.prompt_template_ref),
+        joinedload(Evaluation.function_template_ref)
+    ).filter(
         Evaluation.id == evaluation_uuid,
         Evaluation.user_id == user_uuid
     ).first()
@@ -792,6 +872,17 @@ async def export_evaluation(
             "template": evaluation.prompt_template
         }
     
+    # Build function template info
+    function_template_data = None
+    if evaluation.function_template_ref:
+        ft = evaluation.function_template_ref
+        function_template_data = {
+            "id": str(ft.id),
+            "name": ft.name,
+            "template": ft.template,
+            "description": ft.description
+        }
+    
     # Build export data
     export_data = {
         "export_metadata": {
@@ -806,7 +897,8 @@ async def export_evaluation(
             "created_at": evaluation.created_at.isoformat(),
             "updated_at": evaluation.updated_at.isoformat(),
             "settings": {k: v for k, v in (evaluation.settings or {}).items() if k != "user_variables"},
-            "prompt_template": prompt_template_data
+            "prompt_template": prompt_template_data,
+            "function_template": function_template_data
         },
         "conversation": {
             "id": str(conversation.id),

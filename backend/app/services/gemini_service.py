@@ -16,7 +16,6 @@ import asyncio
 from typing import Dict, List, Any, Optional
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-from google.protobuf.json_format import MessageToDict
 import requests
 from unittest.mock import patch
 import urllib3
@@ -447,7 +446,8 @@ IMPORTANT:
                 'function_call': f'model.generate_content(contents) with native tools',
                 'model_config': model_config or {},
                 'contents': contents,
-                'response': self._extract_response_content(response),
+                'response': str(response),  # Store full response for inspection
+                'response_summary': self._extract_response_content(response),  # Keep summary for logging
                 'timestamp': time.time(),
                 'success': True
             }

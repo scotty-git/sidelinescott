@@ -39,6 +39,7 @@ class Evaluation(Base):
     description = Column(Text, nullable=True)
     prompt_template = Column(Text, nullable=True)  # The actual prompt template used (deprecated - use prompt_template_id)
     prompt_template_id = Column(UUID(as_uuid=True), ForeignKey("prompt_templates.id"), nullable=True)  # Reference to prompt template
+    function_template_id = Column(UUID(as_uuid=True), ForeignKey("function_prompt_templates.id"), nullable=True)  # Reference to function template
     settings = Column(JSON, nullable=True)  # cleaning_level, model_params, sliding_window, etc.
     user_id = Column(UUID(as_uuid=True), nullable=False)  # Supabase Auth user ID (no FK constraint)
     status = Column(String(50), default="active", nullable=False)  # active, completed, archived
@@ -53,6 +54,7 @@ class Evaluation(Base):
     called_functions = relationship("CalledFunction", back_populates="evaluation", cascade="all, delete-orphan")
     mirrored_customer = relationship("MirroredMockCustomer", back_populates="evaluation", uselist=False, cascade="all, delete-orphan")
     prompt_template_ref = relationship("PromptTemplate", foreign_keys=[prompt_template_id])
+    function_template_ref = relationship("FunctionPromptTemplate", foreign_keys=[function_template_id])
     
     def __repr__(self):
         return f"<Evaluation(id={self.id}, name='{self.name}', conversation_id={self.conversation_id})>"

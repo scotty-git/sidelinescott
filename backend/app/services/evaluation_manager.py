@@ -156,8 +156,8 @@ class EvaluationManager:
     
     async def create_evaluation(self, conversation_id: UUID, name: str, user_id: UUID, 
                               description: str = None, prompt_template: str = None, 
-                              prompt_template_id: UUID = None, settings: Dict[str, Any] = None, 
-                              db: Session = None) -> Evaluation:
+                              prompt_template_id: UUID = None, function_template_id: UUID = None,
+                              settings: Dict[str, Any] = None, db: Session = None) -> Evaluation:
         """Create a new evaluation for a conversation"""
         print(f"[EvaluationManager] Creating new evaluation: '{name}' for conversation {conversation_id}")
         
@@ -176,6 +176,7 @@ class EvaluationManager:
             description=description,
             prompt_template=prompt_template,
             prompt_template_id=prompt_template_id,
+            function_template_id=function_template_id,
             settings=settings or {},
             user_id=user_id,
             status="active"
@@ -525,6 +526,10 @@ class EvaluationManager:
         
         # Capture the actual function decision Gemini call data
         function_decision_captured_call = self.gemini_service.get_latest_captured_call()
+        
+        # EVALUATION PLATFORM: Add the actual prompt to captured call data
+        if function_decision_captured_call and 'conversation_content' in native_request:
+            function_decision_captured_call['prompt'] = native_request['conversation_content']
         print(f"[DEBUG] ======== FUNCTION DECISION CAPTURE DEBUG ========")
         print(f"[DEBUG] Function decision captured call data: {function_decision_captured_call}")
         print(f"[DEBUG] Total captured calls in service: {len(self.gemini_service.captured_code_examples)}")
@@ -792,7 +797,8 @@ class EvaluationManager:
                 "function_calling_config": {
                     "mode": "AUTO"
                 }
-            }
+            },
+            "conversation_content": conversation_content  # Include the actual prompt for logging
         }
     
     def _transform_tools_to_native_declarations(self, evaluation_state: EvaluationState) -> List[Dict[str, Any]]:

@@ -50,6 +50,15 @@ interface CleanedTurn {
     error?: string
     raw_response?: string
   }
+  function_decision_gemini_call?: {
+    prompt?: string
+    response?: string
+    function_call?: string
+    model_config?: Record<string, any>
+    contents?: Array<any>
+    timestamp?: number
+    success?: boolean
+  }
   metadata: {
     confidence_score: string
     cleaning_applied: boolean
@@ -190,6 +199,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const [currentPromptTemplateName, setCurrentPromptTemplateName] = useState<string | null>(null)
   const [showCopySuccess, setShowCopySuccess] = useState(false)
   const [copyCompactLoading, setCopyCompactLoading] = useState(false)
+  const [showEvaluationInfoModal, setShowEvaluationInfoModal] = useState(false)
+  const [modalFunctionTemplateName, setModalFunctionTemplateName] = useState<string | null>(null)
+  const [exportDropdownOpen, setExportDropdownOpen] = useState(false)
   const [selectedTab, setSelectedTab] = useState<'results' | 'api' | 'logs' | 'cleaner-config' | 'function-config'>('results')
   const [darkMode, setDarkMode] = useState(() => {
     const saved = localStorage.getItem('transcript-cleaner-dark-mode')
@@ -677,6 +689,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           processing_state: 'completed',
           function_calls: turnResult.function_calls || [],
           function_decision: turnResult.function_decision,
+          function_decision_gemini_call: turnResult.function_decision_gemini_call,
           metadata: {
             confidence_score: turnResult.confidence_score,
             cleaning_applied: turnResult.cleaning_applied,
@@ -1094,6 +1107,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         // IMPORTANT: Include function call data from evaluation loading
         function_calls: (cleanedTurn as any).function_calls || [],
         function_decision: (cleanedTurn as any).function_decision || null,
+        function_decision_gemini_call: (cleanedTurn as any).function_decision_gemini_call || null,
         created_at: cleanedTurn.created_at
       }))
       
@@ -1286,6 +1300,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         // IMPORTANT: Include function call data from evaluation loading
         function_calls: (cleanedTurn as any).function_calls || [],
         function_decision: (cleanedTurn as any).function_decision || null,
+        function_decision_gemini_call: (cleanedTurn as any).function_decision_gemini_call || null,
         created_at: cleanedTurn.created_at
       }))
       
@@ -2152,36 +2167,51 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                         </div>
                       )}
                       
-                      {/* Evaluation Context Indicator */}
+                      {/* Evaluation Info Button */}
                       {currentEvaluationName && (
-                        <div style={{ 
-                          fontSize: '12px', 
-                          color: theme.textSecondary,
-                          padding: '6px 12px',
-                          backgroundColor: theme.bgTertiary,
-                          borderRadius: '4px',
-                          border: `1px solid ${theme.border}`,
-                          marginBottom: '8px'
-                        }}>
-                          <span style={{ fontWeight: '500' }}>Prompt:</span> {currentPromptTemplateName || 'No template'}
-                          {currentPromptTemplateName && (
-                            <span style={{ marginLeft: '12px' }}>
-                              • <span style={{ fontWeight: '500' }}>Template:</span> {currentPromptTemplateName}
-                            </span>
-                          )}
-                          {currentEvaluationId && (
-                            <span 
-                              style={{ 
-                                marginLeft: '12px', 
-                                fontFamily: 'monospace',
-                                fontSize: '10px',
-                                opacity: 0.7
-                              }}
-                              title={`Full ID: ${currentEvaluationId}`}
-                            >
-                              • ID: {currentEvaluationId.slice(0, 8)}...
-                            </span>
-                          )}
+                        <div style={{ marginBottom: '8px' }}>
+                          <button
+                            onClick={async () => {
+                              setShowEvaluationInfoModal(true)
+                              setModalFunctionTemplateName(null) // Reset
+                              
+                              // Fetch function template name from export data
+                              if (currentEvaluationId) {
+                                try {
+                                  const exportData = await apiClient.exportEvaluation(currentEvaluationId)
+                                  const functionTemplateName = exportData.evaluation.function_template?.name || 'No function template'
+                                  setModalFunctionTemplateName(functionTemplateName)
+                                } catch (error) {
+                                  console.error('Failed to fetch function template name:', error)
+                                  setModalFunctionTemplateName('Failed to load')
+                                }
+                              }
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              padding: '6px',
+                              borderRadius: '4px',
+                              color: theme.textSecondary,
+                              fontSize: '16px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              transition: 'all 0.2s ease'
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.backgroundColor = theme.bgTertiary
+                              e.currentTarget.style.color = theme.text
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.backgroundColor = 'transparent'
+                              e.currentTarget.style.color = theme.textSecondary
+                            }}
+                            title="View evaluation details"
+                          >
+                            ℹ️
+                          </button>
                         </div>
                       )}
                       
@@ -2287,8 +2317,422 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                         </button>
                       )}
                       
-                      {/* Copy Compact Button */}
+                      {/* Copy Compact Button with Dropdown */}
                       {cleanedTurns.length > 0 && !isProcessing && (
+                        <div className="relative inline-block">
+                          <button
+                            onClick={() => setExportDropdownOpen(!exportDropdownOpen)}
+                            style={{
+                              padding: '6px 12px',
+                              fontSize: '14px',
+                              borderRadius: '4px',
+                              border: 'none',
+                              backgroundColor: '#3b82f6',
+                              color: 'white',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              opacity: copyCompactLoading ? 0.7 : 1,
+                              marginLeft: '8px',
+                              transition: 'background-color 0.2s'
+                            }}
+                          >
+                            {copyCompactLoading ? '⏳ Copying...' : (showCopySuccess ? '✅ Copied!' : '📋 Copy Compact')}
+                            <span style={{ fontSize: '10px' }}>▼</span>
+                          </button>
+                          
+                          {exportDropdownOpen && (
+                            <div 
+                              className="absolute right-0 mt-1 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-md shadow-lg z-50"
+                              onMouseLeave={() => setExportDropdownOpen(false)}
+                            >
+                              <button
+                                onClick={async () => {
+                                  setExportDropdownOpen(false);
+                                  // Execute the existing copy compact logic for cleaning with full fallback
+                                  if (copyCompactLoading) return
+                                  setCopyCompactLoading(true)
+                                  
+                                  const evaluationId = currentEvaluationId || cleanedTurns[0]?.evaluation_id
+                                  if (!evaluationId) {
+                                    alert('No evaluation data available to copy')
+                                    setCopyCompactLoading(false)
+                                    return
+                                  }
+                                  
+                                  console.log('[Copy Compact Cleaning] Starting copy operation...')
+                                  
+                                  try {
+                                    // CRITICAL: Start clipboard operation immediately to preserve user gesture
+                                    const clipboardPromise = (async () => {
+                                      console.log('[Copy Compact Cleaning] Fetching export data...')
+                                      const exportData = await apiClient.exportEvaluation(evaluationId)
+                                      console.log('[Copy Compact Cleaning] Export data received:', exportData.evaluation.name)
+                                      
+                                      // Create compact version
+                                      const compactData = {
+                                        compact_export: {
+                                          exported_at: new Date().toISOString(),
+                                          conversation_name: currentConversation?.name || 'Unknown Conversation',
+                                          evaluation_name: currentEvaluationName || exportData.evaluation.name,
+                                          evaluation_id: evaluationId,
+                                          prompt_template_name: exportData.evaluation.prompt_template?.name || currentPromptTemplateName || 'No template',
+                                          turns: exportData.turns.map((turn: any) => ({
+                                            sequence: turn.sequence,
+                                            speaker: turn.speaker,
+                                            raw_text: turn.raw_text,
+                                            cleaned_text: turn.cleaned_data.cleaned_text
+                                          }))
+                                        }
+                                      }
+                                      
+                                      const jsonString = JSON.stringify(compactData, null, 2)
+                                      console.log('[Copy Compact Cleaning] JSON prepared, length:', jsonString.length)
+                                      return { jsonString, exportData, compactData }
+                                    })()
+                                    
+                                    // Use modern clipboard with ClipboardItem to handle large data
+                                    if (navigator.clipboard && window.ClipboardItem) {
+                                      const clipboardItem = new ClipboardItem({
+                                        'text/plain': clipboardPromise.then(result => 
+                                          new Blob([result.jsonString], { type: 'text/plain' })
+                                        )
+                                      })
+                                      
+                                      await navigator.clipboard.write([clipboardItem])
+                                      const result = await clipboardPromise
+                                      console.log('[Copy Compact Cleaning] ClipboardItem write successful')
+                                      
+                                      setShowCopySuccess(true)
+                                      setTimeout(() => setShowCopySuccess(false), 3000)
+                                      addDetailedLog(`📋 Copied cleaning compact JSON: ${result.exportData.evaluation.name} (${result.compactData.compact_export.turns.length} turns)`)
+                                      
+                                    } else {
+                                      // Fallback: Direct approach for older browsers
+                                      const result = await clipboardPromise
+                                      
+                                      // Try direct clipboard write
+                                      if (navigator.clipboard) {
+                                        await navigator.clipboard.writeText(result.jsonString)
+                                        console.log('[Copy Compact Cleaning] Direct clipboard write successful')
+                                      } else {
+                                        // Legacy fallback
+                                        const textarea = document.createElement('textarea')
+                                        textarea.value = result.jsonString
+                                        textarea.style.position = 'fixed'
+                                        textarea.style.left = '-999999px'
+                                        textarea.style.top = '-999999px'
+                                        document.body.appendChild(textarea)
+                                        textarea.focus()
+                                        textarea.select()
+                                        
+                                        const successful = document.execCommand('copy')
+                                        document.body.removeChild(textarea)
+                                        
+                                        if (!successful) {
+                                          throw new Error('Legacy clipboard method failed')
+                                        }
+                                        console.log('[Copy Compact Cleaning] Legacy clipboard write successful')
+                                      }
+                                      
+                                      setShowCopySuccess(true)
+                                      setTimeout(() => setShowCopySuccess(false), 3000)
+                                      addDetailedLog(`📋 Copied cleaning compact JSON: ${result.exportData.evaluation.name} (${result.compactData.compact_export.turns.length} turns)`)
+                                    }
+                                    
+                                  } catch (error: any) {
+                                    console.error('[Copy Compact Cleaning] Failed:', error)
+                                    
+                                    // Final fallback: Try to get the data and use document.execCommand
+                                    try {
+                                      console.log('[Copy Compact Cleaning] Attempting final fallback...')
+                                      const exportData = await apiClient.exportEvaluation(evaluationId)
+                                      const compactData = {
+                                        compact_export: {
+                                          exported_at: new Date().toISOString(),
+                                          conversation_name: currentConversation?.name || 'Unknown Conversation',
+                                          evaluation_name: exportData.evaluation.name,
+                                          evaluation_id: evaluationId,
+                                          prompt_template_name: exportData.evaluation.prompt_template?.name || currentPromptTemplateName || 'No template',
+                                          turns: exportData.turns.map((turn: any) => ({
+                                            sequence: turn.sequence,
+                                            speaker: turn.speaker,
+                                            raw_text: turn.raw_text,
+                                            cleaned_text: turn.cleaned_data.cleaned_text
+                                          }))
+                                        }
+                                      }
+                                      
+                                      const jsonString = JSON.stringify(compactData, null, 2)
+                                      const textarea = document.createElement('textarea')
+                                      textarea.value = jsonString
+                                      textarea.style.position = 'fixed'
+                                      textarea.style.left = '-999999px'
+                                      textarea.style.top = '-999999px'
+                                      document.body.appendChild(textarea)
+                                      textarea.focus()
+                                      textarea.select()
+                                      
+                                      const success = document.execCommand('copy')
+                                      document.body.removeChild(textarea)
+                                      
+                                      if (success) {
+                                        console.log('[Copy Compact Cleaning] Final fallback successful')
+                                        setShowCopySuccess(true)
+                                        setTimeout(() => setShowCopySuccess(false), 3000)
+                                        addDetailedLog(`📋 Copied cleaning compact JSON (fallback): ${exportData.evaluation.name}`)
+                                      } else {
+                                        throw new Error('All clipboard methods exhausted')
+                                      }
+                                    } catch (fallbackError: any) {
+                                      console.error('[Copy Compact Cleaning] All methods failed:', fallbackError)
+                                      alert(`❌ Copy failed: ${error.message}\n\nData size may be too large (${Math.round((error.data?.length || 500000) / 1024)}KB).\n\nTry using the Export button instead.`)
+                                      addDetailedLog(`❌ Copy Compact Cleaning failed completely: ${error.message}`)
+                                    }
+                                  } finally {
+                                    setCopyCompactLoading(false)
+                                  }
+                                }}
+                                className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200"
+                              >
+                                🧹 Cleaning
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  setExportDropdownOpen(false);
+                                  // Execute function calling export with full fallback system
+                                  if (copyCompactLoading) return
+                                  setCopyCompactLoading(true)
+                                  
+                                  const evaluationId = currentEvaluationId || cleanedTurns[0]?.evaluation_id
+                                  if (!evaluationId) {
+                                    alert('No evaluation data available to copy')
+                                    setCopyCompactLoading(false)
+                                    return
+                                  }
+                                  
+                                  console.log('[Copy Compact Function] Starting copy operation...')
+                                  
+                                  try {
+                                    // CRITICAL: Start clipboard operation immediately to preserve user gesture
+                                    const clipboardPromise = (async () => {
+                                      console.log('[Copy Compact Function] Fetching export data...')
+                                      const exportData = await apiClient.exportEvaluation(evaluationId)
+                                      console.log('[Copy Compact Function] Export data received:', exportData.evaluation.name)
+                                      
+                                      // Get function template prompt and tools from a turn with function calls
+                                      const turnWithFunctions = cleanedTurns.find(turn => 
+                                        turn.function_decision_gemini_call && 
+                                        turn.function_decision_gemini_call.model_config?.tools
+                                      )
+                                      
+                                      const functionTemplate = turnWithFunctions?.function_decision_gemini_call?.prompt || "No function template available"
+                                      const availableTools = turnWithFunctions?.function_decision_gemini_call?.model_config?.tools || []
+                                      
+                                      // Get the function template from evaluation data (loaded once per evaluation)
+                                      const functionTemplateData = exportData.evaluation.function_template
+                                      const functionPromptTemplate = functionTemplateData?.template || "No function template available"
+                                      const functionPromptTemplateName = functionTemplateData?.name || "Unknown Function Template"
+                                      
+                                      // Get all tools with proper structure
+                                      const allTools = availableTools.flatMap(toolGroup => 
+                                        toolGroup.function_declarations || [toolGroup]
+                                      ).map(tool => `- ${tool.name}: ${tool.description || 'No description'} | Parameters: ${JSON.stringify(tool.parameters?.properties || {})}`).join('\n')
+                                      
+                                      // Create compact turns for ALL turns (not just User)
+                                      const compactTurns = cleanedTurns.map((turn, index) => {
+                                        const functionResults = turn.function_calls && turn.function_calls.length > 0 
+                                          ? turn.function_calls.map(fc => `${fc.function_name}(${JSON.stringify(fc.parameters)}) -> ${fc.success ? 'SUCCESS' : 'FAILED'}`).join(', ')
+                                          : 'none'
+                                        
+                                        return `Turn ${index + 1} [${turn.speaker}]: "${turn.cleaned_text}" | Functions: ${functionResults} | Latency: ${turn.metadata?.processing_time_ms || 0}ms`
+                                      })
+                                      
+                                      const functionCompactData = `═══════════════════════════════════════════════════════════════════
+FUNCTION CALLING COMPACT REPORT
+═══════════════════════════════════════════════════════════════════
+Evaluation: ${currentEvaluationName || exportData.evaluation.name}
+Conversation: ${currentConversation?.name || 'Unknown'}
+Prompt Name: ${functionPromptTemplateName}
+Total Turns: ${cleanedTurns.length}
+Export Date: ${new Date().toISOString()}
+
+═══════════════════════════════════════════════════════════════════
+FUNCTION CALLING PROMPT TEMPLATE
+═══════════════════════════════════════════════════════════════════
+${functionPromptTemplate}
+
+═══════════════════════════════════════════════════════════════════
+AVAILABLE TOOLS
+═══════════════════════════════════════════════════════════════════
+${allTools || 'No tools available'}
+
+═══════════════════════════════════════════════════════════════════
+CONVERSATION TURNS
+═══════════════════════════════════════════════════════════════════
+${compactTurns.join('\n')}
+
+═══════════════════════════════════════════════════════════════════`
+                                      
+                                      console.log('[Copy Compact Function] Compact text prepared, length:', functionCompactData.length)
+                                      return { jsonString: functionCompactData, exportData, functionCompactData }
+                                    })()
+                                    
+                                    // Use modern clipboard with ClipboardItem to handle large data
+                                    if (navigator.clipboard && window.ClipboardItem) {
+                                      const clipboardItem = new ClipboardItem({
+                                        'text/plain': clipboardPromise.then(result => 
+                                          new Blob([result.jsonString], { type: 'text/plain' })
+                                        )
+                                      })
+                                      
+                                      await navigator.clipboard.write([clipboardItem])
+                                      const result = await clipboardPromise
+                                      console.log('[Copy Compact Function] ClipboardItem write successful')
+                                      
+                                      setShowCopySuccess(true)
+                                      setTimeout(() => setShowCopySuccess(false), 3000)
+                                      const turnCount = cleanedTurns.filter(turn => turn.speaker === 'User').length
+                                      addDetailedLog(`📋 Copied function calling compact report: ${result.exportData.evaluation.name} (${turnCount} user turns)`)
+                                      
+                                    } else {
+                                      // Fallback: Direct approach for older browsers
+                                      const result = await clipboardPromise
+                                      
+                                      // Try direct clipboard write
+                                      if (navigator.clipboard) {
+                                        await navigator.clipboard.writeText(result.jsonString)
+                                        console.log('[Copy Compact Function] Direct clipboard write successful')
+                                      } else {
+                                        // Legacy fallback
+                                        const textarea = document.createElement('textarea')
+                                        textarea.value = result.jsonString
+                                        textarea.style.position = 'fixed'
+                                        textarea.style.left = '-999999px'
+                                        textarea.style.top = '-999999px'
+                                        document.body.appendChild(textarea)
+                                        textarea.focus()
+                                        textarea.select()
+                                        
+                                        const successful = document.execCommand('copy')
+                                        document.body.removeChild(textarea)
+                                        
+                                        if (!successful) {
+                                          throw new Error('Legacy clipboard method failed')
+                                        }
+                                        console.log('[Copy Compact Function] Legacy clipboard write successful')
+                                      }
+                                      
+                                      setShowCopySuccess(true)
+                                      setTimeout(() => setShowCopySuccess(false), 3000)
+                                      const turnCount = cleanedTurns.filter(turn => turn.speaker === 'User').length
+                                      addDetailedLog(`📋 Copied function calling compact report: ${result.exportData.evaluation.name} (${turnCount} user turns)`)
+                                    }
+                                    
+                                  } catch (error: any) {
+                                    console.error('[Copy Compact Function] Failed:', error)
+                                    
+                                    // Final fallback: Try to get the data and use document.execCommand
+                                    try {
+                                      console.log('[Copy Compact Function] Attempting final fallback...')
+                                      const exportData = await apiClient.exportEvaluation(evaluationId)
+                                      
+                                      // Get function template prompt and tools from a turn with function calls
+                                      const turnWithFunctions = cleanedTurns.find(turn => 
+                                        turn.function_decision_gemini_call && 
+                                        turn.function_decision_gemini_call.model_config?.tools
+                                      )
+                                      
+                                      const functionTemplate = turnWithFunctions?.function_decision_gemini_call?.prompt || "No function template available"
+                                      const availableTools = turnWithFunctions?.function_decision_gemini_call?.model_config?.tools || []
+                                      
+                                      // Get the function template from evaluation data (fallback)
+                                      const functionTemplateDataFallback = exportData.evaluation.function_template
+                                      const functionPromptTemplateFallback = functionTemplateDataFallback?.template || "No function template available"
+                                      const functionPromptTemplateNameFallback = functionTemplateDataFallback?.name || "Unknown Function Template"
+                                      
+                                      // Get all tools with proper structure
+                                      const allToolsFallback = availableTools.flatMap(toolGroup => 
+                                        toolGroup.function_declarations || [toolGroup]
+                                      ).map(tool => `- ${tool.name}: ${tool.description || 'No description'} | Parameters: ${JSON.stringify(tool.parameters?.properties || {})}`).join('\n')
+                                      
+                                      // Create compact turns for ALL turns (not just User)
+                                      const compactTurnsFallback = cleanedTurns.map((turn, index) => {
+                                        const functionResults = turn.function_calls && turn.function_calls.length > 0 
+                                          ? turn.function_calls.map(fc => `${fc.function_name}(${JSON.stringify(fc.parameters)}) -> ${fc.success ? 'SUCCESS' : 'FAILED'}`).join(', ')
+                                          : 'none'
+                                        
+                                        return `Turn ${index + 1} [${turn.speaker}]: "${turn.cleaned_text}" | Functions: ${functionResults} | Latency: ${turn.metadata?.processing_time_ms || 0}ms`
+                                      })
+                                      
+                                      const functionCompactData = `═══════════════════════════════════════════════════════════════════
+FUNCTION CALLING COMPACT REPORT
+═══════════════════════════════════════════════════════════════════
+Evaluation: ${exportData.evaluation.name}
+Conversation: ${currentConversation?.name || 'Unknown'}
+Prompt Name: ${functionPromptTemplateNameFallback}
+Total Turns: ${cleanedTurns.length}
+Export Date: ${new Date().toISOString()}
+
+═══════════════════════════════════════════════════════════════════
+FUNCTION CALLING PROMPT TEMPLATE
+═══════════════════════════════════════════════════════════════════
+${functionPromptTemplateFallback}
+
+═══════════════════════════════════════════════════════════════════
+AVAILABLE TOOLS
+═══════════════════════════════════════════════════════════════════
+${allToolsFallback || 'No tools available'}
+
+═══════════════════════════════════════════════════════════════════
+CONVERSATION TURNS
+═══════════════════════════════════════════════════════════════════
+${compactTurnsFallback.join('\n')}
+
+═══════════════════════════════════════════════════════════════════`
+                                      
+                                      const jsonString = functionCompactData
+                                      const textarea = document.createElement('textarea')
+                                      textarea.value = jsonString
+                                      textarea.style.position = 'fixed'
+                                      textarea.style.left = '-999999px'
+                                      textarea.style.top = '-999999px'
+                                      document.body.appendChild(textarea)
+                                      textarea.focus()
+                                      textarea.select()
+                                      
+                                      const success = document.execCommand('copy')
+                                      document.body.removeChild(textarea)
+                                      
+                                      if (success) {
+                                        console.log('[Copy Compact Function] Final fallback successful')
+                                        setShowCopySuccess(true)
+                                        setTimeout(() => setShowCopySuccess(false), 3000)
+                                        addDetailedLog(`📋 Copied function calling compact JSON (fallback): ${exportData.evaluation.name}`)
+                                      } else {
+                                        throw new Error('All clipboard methods exhausted')
+                                      }
+                                    } catch (fallbackError: any) {
+                                      console.error('[Copy Compact Function] All methods failed:', fallbackError)
+                                      alert(`❌ Copy failed: ${error.message}\n\nData size may be too large (${Math.round((error.data?.length || 500000) / 1024)}KB).\n\nTry using the Export button instead.`)
+                                      addDetailedLog(`❌ Copy Compact Function failed completely: ${error.message}`)
+                                    }
+                                  } finally {
+                                    setCopyCompactLoading(false)
+                                  }
+                                }}
+                                className="w-full px-4 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200"
+                              >
+                                ⚙️ Function Calling
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      
+                      {/* Old Copy Compact Button - Remove this entire section */}
+                      {false && cleanedTurns.length > 0 && !isProcessing && (
                         <button
                           onClick={async () => {
                             // Prevent multiple rapid clicks and show loading
@@ -4839,6 +5283,142 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                   <div style={{ fontSize: '14px' }}>Create your first evaluation by clicking "Start New"</div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Evaluation Info Modal */}
+      {showEvaluationInfoModal && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000
+          }}
+          onClick={() => setShowEvaluationInfoModal(false)}
+        >
+          <div 
+            style={{
+              backgroundColor: darkMode ? '#1a1a1a' : '#ffffff',
+              border: `1px solid ${theme.border}`,
+              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)',
+              borderRadius: '8px',
+              padding: '24px',
+              maxWidth: '600px',
+              width: '90%',
+              maxHeight: '80vh',
+              overflow: 'auto'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ margin: 0, color: theme.text, fontSize: '18px', fontWeight: '600' }}>
+                Evaluation Details
+              </h2>
+              <button
+                onClick={() => setShowEvaluationInfoModal(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '20px',
+                  cursor: 'pointer',
+                  color: theme.textSecondary,
+                  padding: '4px'
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {/* Evaluation Info */}
+              <div>
+                <h3 style={{ margin: '0 0 8px 0', color: theme.text, fontSize: '14px', fontWeight: '600' }}>
+                  Evaluation
+                </h3>
+                <div style={{ backgroundColor: theme.bgSecondary, padding: '12px', borderRadius: '6px', fontSize: '13px' }}>
+                  <div style={{ marginBottom: '6px' }}>
+                    <span style={{ color: theme.textSecondary, fontWeight: '500' }}>Name:</span>{' '}
+                    <span style={{ color: theme.text }}>{currentEvaluationName}</span>
+                  </div>
+                  <div>
+                    <span style={{ color: theme.textSecondary, fontWeight: '500' }}>ID:</span>{' '}
+                    <span style={{ color: theme.text, fontFamily: 'monospace', fontSize: '12px' }}>{currentEvaluationId}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Conversation Info */}
+              {currentConversation && (
+                <div>
+                  <h3 style={{ margin: '0 0 8px 0', color: theme.text, fontSize: '14px', fontWeight: '600' }}>
+                    Conversation
+                  </h3>
+                  <div style={{ backgroundColor: theme.bgSecondary, padding: '12px', borderRadius: '6px', fontSize: '13px' }}>
+                    <div style={{ marginBottom: '6px' }}>
+                      <span style={{ color: theme.textSecondary, fontWeight: '500' }}>Name:</span>{' '}
+                      <span style={{ color: theme.text }}>{currentConversation.name}</span>
+                    </div>
+                    <div>
+                      <span style={{ color: theme.textSecondary, fontWeight: '500' }}>ID:</span>{' '}
+                      <span style={{ color: theme.text, fontFamily: 'monospace', fontSize: '12px' }}>{currentConversation.id}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Prompt Template Info */}
+              {currentPromptTemplateName && (
+                <div>
+                  <h3 style={{ margin: '0 0 8px 0', color: theme.text, fontSize: '14px', fontWeight: '600' }}>
+                    Cleaning Template
+                  </h3>
+                  <div style={{ backgroundColor: theme.bgSecondary, padding: '12px', borderRadius: '6px', fontSize: '13px' }}>
+                    <span style={{ color: theme.text }}>{currentPromptTemplateName}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Function Template Info */}
+              <div>
+                <h3 style={{ margin: '0 0 8px 0', color: theme.text, fontSize: '14px', fontWeight: '600' }}>
+                  Function Template
+                </h3>
+                <div style={{ backgroundColor: theme.bgSecondary, padding: '12px', borderRadius: '6px', fontSize: '13px' }}>
+                  <span style={{ color: theme.text }}>
+                    {modalFunctionTemplateName || 'Loading...'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Stats */}
+              <div>
+                <h3 style={{ margin: '0 0 8px 0', color: theme.text, fontSize: '14px', fontWeight: '600' }}>
+                  Statistics
+                </h3>
+                <div style={{ backgroundColor: theme.bgSecondary, padding: '12px', borderRadius: '6px', fontSize: '13px' }}>
+                  <div style={{ marginBottom: '6px' }}>
+                    <span style={{ color: theme.textSecondary, fontWeight: '500' }}>Total Turns:</span>{' '}
+                    <span style={{ color: theme.text }}>{cleanedTurns.length}</span>
+                  </div>
+                  <div style={{ marginBottom: '6px' }}>
+                    <span style={{ color: theme.textSecondary, fontWeight: '500' }}>Cleaned Turns:</span>{' '}
+                    <span style={{ color: theme.text }}>{cleanedTurns.filter(t => t.metadata.cleaning_applied).length}</span>
+                  </div>
+                  <div>
+                    <span style={{ color: theme.textSecondary, fontWeight: '500' }}>Function Calls:</span>{' '}
+                    <span style={{ color: theme.text }}>{cleanedTurns.reduce((acc, t) => acc + (t.function_calls?.length || 0), 0)}</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

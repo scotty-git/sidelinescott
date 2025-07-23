@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Copy, Clock, Brain, Code, AlertCircle } from 'lucide-react';
+import { X, Copy, Clock, Brain, Code, AlertCircle, Settings, Play } from 'lucide-react';
 import { apiClient } from '../lib/api';
 
 interface TurnData {
@@ -31,6 +31,25 @@ interface TurnData {
     ai_model_used: string;
     gemini_prompt?: string;
     gemini_response?: string;
+  };
+  function_calls?: Array<{
+    function_name: string;
+    parameters: Record<string, any>;
+    result: any;
+    success: boolean;
+    confidence_score: string;
+  }>;
+  function_decision?: {
+    reasoning: string;
+    calls_count: number;
+    processing_time_ms: number;
+  };
+  function_decision_gemini_call?: {
+    prompt: string;
+    response: string;
+    model_config: Record<string, any>;
+    timestamp: number;
+    success: boolean;
   };
   created_at: string;
 }
@@ -86,6 +105,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'cleaning' | 'functions'>('cleaning');
 
   const fetchGeminiDetails = async () => {
     console.log('[GeminiQueryInspector] Starting fetch for:', { conversationId, turnId });
@@ -206,6 +226,37 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
           </button>
         </div>
 
+        {/* Tab Navigation */}
+        <div className="flex border-b border-gray-200 dark:border-gray-700">
+          <button
+            onClick={() => setActiveTab('cleaning')}
+            className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'cleaning'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+            }`}
+          >
+            <Brain className="w-4 h-4 inline mr-2" />
+            Cleaning
+          </button>
+          <button
+            onClick={() => setActiveTab('functions')}
+            className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'functions'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+            }`}
+          >
+            <Settings className="w-4 h-4 inline mr-2" />
+            Function Calling
+            {turnData?.function_calls && turnData.function_calls.length > 0 && (
+              <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded-full">
+                {turnData.function_calls.length}
+              </span>
+            )}
+          </button>
+        </div>
+
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
           {loading && (
@@ -222,7 +273,7 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
             </div>
           )}
 
-          {details && !loading && (
+          {details && !loading && activeTab === 'cleaning' && (
             <div className="space-y-6">
               {/* Turn Info */}
               <div className="bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg">
@@ -467,6 +518,261 @@ export const GeminiQueryInspector: React.FC<GeminiQueryInspectorProps> = ({
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* Function Calling Tab */}
+          {details && !loading && activeTab === 'functions' && (
+            <div className="space-y-6">
+              {/* Turn Info */}
+              <div className="bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg">
+                <h3 className="font-medium text-gray-900 dark:text-white mb-2">
+                  Turn Information
+                </h3>
+                <div className="space-y-1 text-sm">
+                  <p className="text-gray-600 dark:text-gray-400">
+                    <span className="font-medium">Speaker:</span> {details.speaker}
+                  </p>
+                  <p className="text-gray-600 dark:text-gray-400">
+                    <span className="font-medium">Turn ID:</span> {details.turn_id}
+                  </p>
+                  <p className="text-gray-600 dark:text-gray-400">
+                    <span className="font-medium">Created:</span>{' '}
+                    {new Date(details.created_at).toLocaleString()}
+                  </p>
+                </div>
+              </div>
+
+              {/* Function Decision Process */}
+              {(() => {
+                console.log('[GeminiQueryInspector] Function calling debug:', {
+                  hasTurnData: !!turnData,
+                  hasFunctionDecisionGeminiCall: !!turnData?.function_decision_gemini_call,
+                  functionDecisionKeys: turnData?.function_decision_gemini_call ? Object.keys(turnData.function_decision_gemini_call) : null,
+                  turnDataKeys: turnData ? Object.keys(turnData) : null
+                });
+                return turnData?.function_decision_gemini_call;
+              })() ? (
+                <>
+                  {/* Function Decision Prompt */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                        <Code className="w-4 h-4" />
+                        Function Decision Prompt
+                      </h3>
+                      <button
+                        onClick={() => copyToClipboard(turnData.function_decision_gemini_call?.prompt || '', 'function-prompt')}
+                        className="text-sm text-blue-500 hover:text-blue-600 flex items-center gap-1"
+                      >
+                        <Copy className="w-4 h-4" />
+                        {copiedSection === 'function-prompt' ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                    <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-y-auto text-sm whitespace-pre-wrap break-words max-h-[400px]">
+                      {turnData.function_decision_gemini_call.prompt || 'No function decision prompt available'}
+                    </pre>
+                  </div>
+
+                  {/* Gemini Function Response */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                        <Brain className="w-4 h-4" />
+                        Gemini Function Decision Response
+                      </h3>
+                      <button
+                        onClick={() => copyToClipboard(
+                          formatJSON(turnData.function_decision_gemini_call?.response || null),
+                          'function-response'
+                        )}
+                        className="text-sm text-blue-500 hover:text-blue-600 flex items-center gap-1"
+                      >
+                        <Copy className="w-4 h-4" />
+                        {copiedSection === 'function-response' ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                    <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-y-auto text-sm whitespace-pre-wrap break-words max-h-[400px]">
+                      {turnData.function_decision_gemini_call.response ? 
+                        formatJSON(turnData.function_decision_gemini_call.response) : 
+                        'No function decision response available'
+                      }
+                    </pre>
+                  </div>
+
+                  {/* Available Functions (Tools) */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                        <Settings className="w-4 h-4" />
+                        Available Functions (Tools)
+                      </h3>
+                      <button
+                        onClick={() => copyToClipboard(
+                          formatJSON(JSON.stringify(turnData.function_decision_gemini_call?.model_config?.tools || [])),
+                          'function-tools'
+                        )}
+                        className="text-sm text-blue-500 hover:text-blue-600 flex items-center gap-1"
+                      >
+                        <Copy className="w-4 h-4" />
+                        {copiedSection === 'function-tools' ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                    <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-y-auto text-sm whitespace-pre-wrap break-words max-h-[400px]">
+                      {turnData.function_decision_gemini_call?.model_config?.tools ? 
+                        formatJSON(JSON.stringify(turnData.function_decision_gemini_call.model_config.tools, null, 2)) : 
+                        'No tools configuration available'
+                      }
+                    </pre>
+                  </div>
+
+                  {/* Function Decision Timing */}
+                  {turnData.function_decision && (
+                    <div>
+                      <h3 className="font-medium text-gray-900 dark:text-white flex items-center gap-2 mb-3">
+                        <Clock className="w-4 h-4" />
+                        Function Decision Timing
+                      </h3>
+                      <div className="bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg">
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                          <div>
+                            <p className="text-gray-600 dark:text-gray-400">
+                              <span className="font-medium">Total Execution Time:</span>{' '}
+                              {turnData.function_decision.total_execution_time_ms || 0}ms
+                            </p>
+                            <p className="text-gray-600 dark:text-gray-400">
+                              <span className="font-medium">Functions Called:</span>{' '}
+                              {turnData.function_decision.functions_called || 0}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-gray-600 dark:text-gray-400">
+                              <span className="font-medium">Functions Failed:</span>{' '}
+                              {turnData.function_decision.functions_failed || 0}
+                            </p>
+                            <p className="text-gray-600 dark:text-gray-400">
+                              <span className="font-medium">Decision Confidence:</span>{' '}
+                              <span className={`font-medium ${
+                                turnData.function_decision.confidence_score === 'HIGH' 
+                                  ? 'text-green-600 dark:text-green-400' 
+                                  : turnData.function_decision.confidence_score === 'MEDIUM'
+                                  ? 'text-yellow-600 dark:text-yellow-400'
+                                  : 'text-red-600 dark:text-red-400'
+                              }`}>
+                                {turnData.function_decision.confidence_score || 'N/A'}
+                              </span>
+                            </p>
+                          </div>
+                        </div>
+                        {turnData.function_decision.error && (
+                          <div className="mt-3 p-3 bg-red-50 dark:bg-red-900/20 rounded">
+                            <p className="text-red-700 dark:text-red-300 text-sm">
+                              <span className="font-medium">Error:</span> {turnData.function_decision.error}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="bg-yellow-50 dark:bg-yellow-900/20 p-4 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <AlertCircle className="w-5 h-5 text-yellow-500" />
+                    <p className="text-yellow-700 dark:text-yellow-300">
+                      No function decision data available for this turn. This may be a Lumen turn or a turn where no functions were called.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Executed Functions */}
+              {turnData?.function_calls && turnData.function_calls.length > 0 ? (
+                <div>
+                  <h3 className="font-medium text-gray-900 dark:text-white flex items-center gap-2 mb-4">
+                    <Play className="w-4 h-4" />
+                    Executed Functions ({turnData.function_calls.length})
+                  </h3>
+                  <div className="space-y-4">
+                    {turnData.function_calls.map((funcCall, idx) => (
+                      <div key={idx} className="bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                            <Code className="w-4 h-4" />
+                            {funcCall.function_name}
+                          </h4>
+                          <div className="flex items-center gap-2">
+                            <span className={`px-2 py-1 text-xs rounded-full ${
+                              funcCall.success 
+                                ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                                : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                            }`}>
+                              {funcCall.success ? 'Executed' : 'Failed'}
+                            </span>
+                            <span className={`px-2 py-1 text-xs rounded-full ${
+                              funcCall.confidence_score === 'HIGH' 
+                                ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                                : funcCall.confidence_score === 'MEDIUM'
+                                ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
+                                : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+                            }`}>
+                              {funcCall.confidence_score}
+                            </span>
+                          </div>
+                        </div>
+                        
+                        {/* Parameters */}
+                        <div className="mb-3">
+                          <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Parameters:</p>
+                          <pre className="bg-gray-900 text-gray-100 p-3 rounded text-xs whitespace-pre-wrap break-words">
+                            {JSON.stringify(funcCall.parameters, null, 2)}
+                          </pre>
+                        </div>
+                        
+                        {/* Result */}
+                        <div>
+                          <p className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Result:</p>
+                          <pre className="bg-gray-900 text-gray-100 p-3 rounded text-xs whitespace-pre-wrap break-words">
+                            {funcCall.result ? JSON.stringify(funcCall.result, null, 2) : 'No result data'}
+                          </pre>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <Settings className="w-5 h-5 text-gray-400" />
+                    <p className="text-gray-600 dark:text-gray-400">
+                      No functions were executed for this turn.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Function Decision Metadata */}
+              {turnData?.function_decision && (
+                <div className="bg-gray-50 dark:bg-gray-900/50 p-4 rounded-lg">
+                  <h3 className="font-medium text-gray-900 dark:text-white mb-3">
+                    Function Decision Metadata
+                  </h3>
+                  <div className="space-y-2 text-sm">
+                    <p className="text-gray-600 dark:text-gray-400">
+                      <span className="font-medium">Decision Reasoning:</span>{' '}
+                      {turnData.function_decision.thought_process || 'N/A'}
+                    </p>
+                    <p className="text-gray-600 dark:text-gray-400">
+                      <span className="font-medium">Functions Called:</span>{' '}
+                      {turnData.function_decision.functions_called || 0}
+                    </p>
+                    <p className="text-gray-600 dark:text-gray-400">
+                      <span className="font-medium">Processing Time:</span>{' '}
+                      {turnData.function_decision.total_execution_time_ms || 0}ms
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

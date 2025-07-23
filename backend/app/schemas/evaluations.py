@@ -25,6 +25,7 @@ class EvaluationResponse(BaseModel):
     description: Optional[str] = Field(None, description="Evaluation description")
     prompt_template: Optional[str] = Field(None, description="Prompt template used")
     prompt_template_id: Optional[str] = Field(None, description="ID of the prompt template used")
+    function_template_id: Optional[str] = Field(None, description="ID of the function template used")
     settings: Dict[str, Any] = Field(default={}, description="Evaluation settings")
     user_id: str = Field(..., description="User who created this evaluation")
     status: str = Field(..., description="Evaluation status")
