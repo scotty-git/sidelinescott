@@ -69,6 +69,7 @@ class CleanedTurnResponse(BaseModel):
     # Function calling data
     function_calls: Optional[List[Dict[str, Any]]] = Field(None, description="Function calls executed for this turn")
     function_decision: Optional[Dict[str, Any]] = Field(None, description="Function calling decision and metadata")
+    function_decision_gemini_call: Optional[Dict[str, Any]] = Field(None, description="Captured Gemini call for function decision")
 
 class EvaluationDetailsResponse(BaseModel):
     """Detailed evaluation response with cleaned turns"""

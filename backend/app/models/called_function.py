@@ -63,6 +63,7 @@ class CalledFunction(Base):
     function_template_id = Column(UUID(as_uuid=True), ForeignKey("function_prompt_templates.id"), nullable=True)
     gemini_prompt = Column(Text, nullable=True)
     gemini_response = Column(Text, nullable=True)
+    gemini_http_request = Column(JSON, nullable=True)  # Captured HTTP request to Google for function decision
     template_variables = Column(JSON, nullable=True)
     
     # Mock data state tracking

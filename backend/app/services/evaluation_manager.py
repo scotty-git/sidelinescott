@@ -433,17 +433,23 @@ class EvaluationManager:
         cleaned_result: Dict[str, Any],
         raw_turn,
         db: Session,
-        timing: Dict[str, float]
-    ) -> List[Dict[str, Any]]:
+        timing: Dict[str, float],
+        settings: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
         """Process function calls after cleaning"""
         function_timing = timing or {}
+        function_decision_captured_call = None  # Initialize to ensure it's available in return
         
         print(f"[EvaluationManager] 🔧 Processing function calls for cleaned text")
         
         # Check if function prompt template is available
         if not evaluation_state.function_prompt_template:
             print(f"[EvaluationManager] ❌ No function prompt template available, skipping function calls")
-            return []
+            return {
+                'functions': [],
+                'decision': None,
+                'function_decision_gemini_call': None
+            }
         
         # Ensure mirrored customer exists - create if needed
         if not evaluation_state.mirrored_customer:
@@ -454,7 +460,11 @@ class EvaluationManager:
                 print(f"[EvaluationManager] ✅ Created mirrored customer: {mirrored_customer.company_name}")
             else:
                 print(f"[EvaluationManager] ❌ Failed to create mirrored customer, skipping function calls")
-                return []
+                return {
+                    'functions': [],
+                    'decision': None,
+                    'function_decision_gemini_call': None
+                }
         
         function_timing['function_context_start'] = time.time()
         
@@ -477,17 +487,52 @@ class EvaluationManager:
         function_timing['function_prompt_end'] = time.time()
         function_timing['function_gemini_start'] = time.time()
         
-        # Call Gemini for function decision using same service
+        # EVALUATION PLATFORM: Extract and validate function parameters from user config
+        # NO FALLBACK VALUES - fail fast if config is missing or invalid for proper evaluation
+        if not settings:
+            raise ValueError("Settings are required for function calling evaluation but were not provided")
+        
+        function_params = settings.get('function_params')
+        if not function_params:
+            raise ValueError("function_params are required in settings for function calling evaluation but were not found")
+        
+        # Build model parameters from user's explicit configuration
+        # NO DEFAULTS - use exactly what the user configured for evaluation accuracy
+        function_model_params = {
+            'model_name': function_params['model_name'],  # Will raise KeyError if missing
+            'temperature': function_params['temperature'],  # Will raise KeyError if missing
+            'top_p': function_params['top_p'],  # Will raise KeyError if missing
+            'top_k': function_params['top_k'],  # Will raise KeyError if missing
+            'max_tokens': function_params['max_tokens']  # Will raise KeyError if missing
+        }
+        
+        print(f"[EvaluationManager] 🎯 Using user's function model params: {function_model_params}")
+        
+        # Call Gemini for function decision using user's exact configuration
         function_response = await self.gemini_service.clean_conversation_turn(
             raw_text=cleaned_result['cleaned_text'],
             speaker=raw_turn.speaker,
             cleaned_context=[],  # Not used for function calling
             cleaning_level="full",
-            model_params=None,
+            model_params=function_model_params,
             rendered_prompt=rendered_prompt
         )
         
         function_timing['function_gemini_end'] = time.time()
+        
+        # Capture the actual function decision Gemini call data
+        function_decision_captured_call = self.gemini_service.get_latest_captured_call()
+        print(f"[DEBUG] ======== FUNCTION DECISION CAPTURE DEBUG ========")
+        print(f"[DEBUG] Function decision captured call data: {function_decision_captured_call}")
+        print(f"[DEBUG] Total captured calls in service: {len(self.gemini_service.captured_code_examples)}")
+        print(f"[DEBUG] All captured calls: {[call.get('function_call', 'Unknown') for call in self.gemini_service.captured_code_examples]}")
+        if function_decision_captured_call:
+            print(f"[DEBUG] ✅ GOT CAPTURED CALL - prompt preview: {function_decision_captured_call.get('prompt', '')[:200]}...")
+            print(f"[DEBUG] ✅ GOT CAPTURED CALL - function_call: {function_decision_captured_call.get('function_call')}")
+        else:
+            print(f"[DEBUG] ❌ NO CAPTURED CALL FOUND for function decision")
+        print(f"[DEBUG] ==================================================")
+        
         function_timing['function_parse_start'] = time.time()
         
         # Parse response expecting JSON with thought_process and function_calls
@@ -563,10 +608,13 @@ class EvaluationManager:
             print(f"[EvaluationManager] 🔧 Executing {len(function_calls)} function calls")
             
             for func_call in function_calls:
-                # Execute function
+                # Execute function with function decision data
                 result = await self._execute_single_function(
                     func_call, evaluation_state, cleaned_result, raw_turn, db, 
-                    thought_process=decision.get('thought_process')
+                    thought_process=decision.get('thought_process'),
+                    function_decision_captured_call=function_decision_captured_call,
+                    template_variables=template_variables,
+                    function_timing=function_timing
                 )
                 executed_functions.append(result)
                 
@@ -604,7 +652,7 @@ class EvaluationManager:
             decision_error = f"{len(failed_functions)} function(s) failed: {', '.join([f['function_name'] + ': ' + f['error'] for f in failed_details])}"
         
         # Return both functions and decision metadata for immediate UI use
-        return {
+        result = {
             'functions': executed_functions,
             'decision': {
                 'thought_process': decision.get('thought_process'),
@@ -613,8 +661,19 @@ class EvaluationManager:
                 'functions_called': len(successful_functions),
                 'functions_failed': len(failed_functions),
                 'error': decision_error
-            }
+            },
+            'function_decision_gemini_call': function_decision_captured_call  # Include the captured Gemini call data
         }
+        
+        print(f"[DEBUG] ======== FUNCTION PROCESSING RETURN DEBUG ========")
+        print(f"[DEBUG] Returning function_decision_gemini_call: {result['function_decision_gemini_call'] is not None}")
+        if result['function_decision_gemini_call']:
+            print(f"[DEBUG] ✅ RETURNING CAPTURED CALL - function_call: {result['function_decision_gemini_call'].get('function_call')}")
+        else:
+            print(f"[DEBUG] ❌ RETURNING NULL for function_decision_gemini_call")
+        print(f"[DEBUG] =====================================================")
+        
+        return result
     
     def _build_function_context(self, evaluation_state: EvaluationState) -> Dict[str, Any]:
         """Build context for function calling prompt"""
@@ -665,7 +724,10 @@ class EvaluationManager:
         cleaned_result: Dict[str, Any],
         raw_turn,
         db: Session,
-        thought_process: str = None
+        thought_process: str = None,
+        function_decision_captured_call: Dict[str, Any] = None,
+        template_variables: Dict[str, Any] = None,
+        function_timing: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Execute a single function and create database record"""
         
@@ -688,6 +750,24 @@ class EvaluationManager:
                 error_msg = execution_result.get('error', 'Unknown function execution error')
                 print(f"[EvaluationManager] 🚨 STOPPING EVALUATION - Function returned success=False")
                 raise FunctionCallingCriticalError(f"EVALUATION STOPPED: Function {function_name} failed: {error_msg}")
+            
+            # Add function decision data to execution result before saving
+            if function_decision_captured_call:
+                execution_result['function_decision_prompt'] = function_decision_captured_call.get('prompt')
+                execution_result['function_decision_response'] = function_decision_captured_call.get('response')
+                execution_result['function_decision_gemini_call'] = function_decision_captured_call
+            
+            # Add template variables and timing data
+            if template_variables:
+                execution_result['template_variables'] = template_variables
+            if function_timing:
+                execution_result['timing_breakdown'] = function_timing
+            
+            # Add function template ID if available
+            if hasattr(evaluation_state, 'function_prompt_template_id'):
+                execution_result['function_template_id'] = evaluation_state.function_prompt_template_id
+            elif hasattr(evaluation_state, 'function_prompt_template') and hasattr(evaluation_state.function_prompt_template, 'id'):
+                execution_result['function_template_id'] = evaluation_state.function_prompt_template.id
             
             # Create CalledFunction record in database (async to not block)
             self._save_function_call_async(
@@ -798,7 +878,15 @@ class EvaluationManager:
                     decision_reasoning=thought_process,  # Map thought_process to decision_reasoning
                     processing_time_ms=execution_result.get('execution_time_ms', 0),
                     mock_data_before=execution_result.get('before_state'),
-                    mock_data_after=execution_result.get('after_state')
+                    mock_data_after=execution_result.get('after_state'),
+                    # Include function decision Gemini call data
+                    gemini_prompt=execution_result.get('function_decision_prompt'),
+                    gemini_response=execution_result.get('function_decision_response'),
+                    gemini_http_request=execution_result.get('function_decision_gemini_call'),
+                    # Include missing fields
+                    template_variables=execution_result.get('template_variables'),
+                    timing_breakdown=execution_result.get('timing_breakdown'),
+                    function_template_id=execution_result.get('function_template_id')
                 )
                 
                 new_db.add(called_function)
@@ -943,16 +1031,18 @@ class EvaluationManager:
         if not is_lumen and not is_transcription_error and result.get('cleaned_text'):
             print(f"🔧 FUNCTION CALLING: Processing potential function calls")
             function_call_data = await self._process_function_calls(
-                evaluation_state, result, raw_turn, db, timing
+                evaluation_state, result, raw_turn, db, timing, settings
             )
             
             # Add function calls and decision metadata to result for immediate UI use
             result['function_calls'] = function_call_data.get('functions', [])
             result['function_decision'] = function_call_data.get('decision')
+            result['function_decision_gemini_call'] = function_call_data.get('function_decision_gemini_call')
         else:
             print(f"🔧 FUNCTION CALLING: Skipped for {raw_turn.speaker} turn")
             result['function_calls'] = []
             result['function_decision'] = None
+            result['function_decision_gemini_call'] = None
         
         timing['function_calling_end'] = time.time()
         

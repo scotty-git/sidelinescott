@@ -104,6 +104,25 @@ interface TurnAPIGroup {
     timestamp: number
     success: boolean
   }
+  // Function calling steps (steps 5-8)
+  functionDecisionCall?: {
+    function_call: string
+    model_config: unknown
+    prompt: string
+    response: string
+    timestamp: number
+    success: boolean
+    latency_ms: number
+  }
+  functionExecutions?: Array<{
+    function_name: string
+    parameters: Record<string, any>
+    result?: Record<string, any>
+    success: boolean
+    execution_time_ms: number
+    error?: string
+    timestamp: number
+  }>
 }
 
 interface ProcessingStats {
@@ -695,7 +714,26 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             response: turnResult.gemini_function_call.response,
             timestamp: turnResult.gemini_function_call.timestamp,
             success: turnResult.gemini_function_call.success
-          } : undefined
+          } : undefined,
+          // Add function calling data (steps 5-8)
+          functionDecisionCall: turnResult.function_decision_gemini_call ? {
+            function_call: 'generateContent (function decision)',
+            model_config: turnResult.function_decision_gemini_call.model_config,
+            prompt: turnResult.function_decision_gemini_call.prompt,
+            response: turnResult.function_decision_gemini_call.response,
+            timestamp: turnResult.function_decision_gemini_call.timestamp,
+            success: turnResult.function_decision_gemini_call.success,
+            latency_ms: turnResult.function_decision_gemini_call.latency_ms || 0
+          } : undefined,
+          functionExecutions: turnResult.function_calls ? turnResult.function_calls.map((funcCall: any) => ({
+            function_name: funcCall.function_name,
+            parameters: funcCall.parameters,
+            result: funcCall.result,
+            success: funcCall.success,
+            execution_time_ms: funcCall.execution_time_ms,
+            error: funcCall.error,
+            timestamp: Date.now() // Will be updated when we get actual timestamps from backend
+          })) : undefined
         }
         
         setTurnAPIGroups(prev => [...prev, turnAPIGroup])
@@ -1053,6 +1091,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           gemini_prompt: cleanedTurn.gemini_prompt,
           gemini_response: cleanedTurn.gemini_response
         },
+        // IMPORTANT: Include function call data from evaluation loading
+        function_calls: (cleanedTurn as any).function_calls || [],
+        function_decision: (cleanedTurn as any).function_decision || null,
         created_at: cleanedTurn.created_at
       }))
       
@@ -1094,15 +1135,40 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             response: cleanedTurn.gemini_response,
             timestamp: Date.now(),
             success: true
-          } : undefined
+          } : undefined,
+          // Add function calling data from loaded evaluation
+          functionDecisionCall: (cleanedTurn as any).function_decision_gemini_call ? {
+            function_call: 'generateContent (function decision)',
+            model_config: (cleanedTurn as any).function_decision_gemini_call.model_config,
+            prompt: (cleanedTurn as any).function_decision_gemini_call.prompt,
+            response: (cleanedTurn as any).function_decision_gemini_call.response,
+            timestamp: (cleanedTurn as any).function_decision_gemini_call.timestamp,
+            success: (cleanedTurn as any).function_decision_gemini_call.success,
+            latency_ms: (cleanedTurn as any).function_decision_gemini_call.latency_ms || 0
+          } : undefined,
+          functionExecutions: (cleanedTurn as any).function_calls ? (cleanedTurn as any).function_calls.map((funcCall: any) => ({
+            function_name: funcCall.function_name,
+            parameters: funcCall.parameters,
+            result: funcCall.result,
+            success: funcCall.success,
+            execution_time_ms: funcCall.execution_time_ms,
+            error: funcCall.error,
+            timestamp: Date.now()
+          })) : undefined
         }
       })
       
       setLoadingProgress('Finalizing UI...')
+      
+      // Count function calls for logging
+      const totalFunctionCalls = cleaned.reduce((total, turn) => total + (turn.function_calls?.length || 0), 0)
+      const turnsWithFunctions = cleaned.filter(turn => turn.function_calls && turn.function_calls.length > 0)
+      
       setCleanedTurns(cleaned)
       setTurnAPIGroups(reconstructedTurnAPIGroups)
       setSelectedTab('results')
       addDetailedLog(`✅ Loaded ${cleaned.length} cleaned turns from evaluation: ${latestEvaluation.name}`)
+      addDetailedLog(`📊 Function calls: ${totalFunctionCalls} calls across ${turnsWithFunctions.length} turns`)
       addDetailedLog(`✅ Reconstructed ${reconstructedTurnAPIGroups.length} API log entries for inspection`)
       
     } catch (error: any) {
@@ -1217,6 +1283,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           gemini_prompt: cleanedTurn.gemini_prompt,
           gemini_response: cleanedTurn.gemini_response
         },
+        // IMPORTANT: Include function call data from evaluation loading
+        function_calls: (cleanedTurn as any).function_calls || [],
+        function_decision: (cleanedTurn as any).function_decision || null,
         created_at: cleanedTurn.created_at
       }))
       
@@ -1258,14 +1327,38 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             response: cleanedTurn.gemini_response,
             timestamp: Date.now(),
             success: true
-          } : undefined
+          } : undefined,
+          // Add function calling data from loaded evaluation
+          functionDecisionCall: (cleanedTurn as any).function_decision_gemini_call ? {
+            function_call: 'generateContent (function decision)',
+            model_config: (cleanedTurn as any).function_decision_gemini_call.model_config,
+            prompt: (cleanedTurn as any).function_decision_gemini_call.prompt,
+            response: (cleanedTurn as any).function_decision_gemini_call.response,
+            timestamp: (cleanedTurn as any).function_decision_gemini_call.timestamp,
+            success: (cleanedTurn as any).function_decision_gemini_call.success,
+            latency_ms: (cleanedTurn as any).function_decision_gemini_call.latency_ms || 0
+          } : undefined,
+          functionExecutions: (cleanedTurn as any).function_calls ? (cleanedTurn as any).function_calls.map((funcCall: any) => ({
+            function_name: funcCall.function_name,
+            parameters: funcCall.parameters,
+            result: funcCall.result,
+            success: funcCall.success,
+            execution_time_ms: funcCall.execution_time_ms,
+            error: funcCall.error,
+            timestamp: Date.now()
+          })) : undefined
         }
       })
+      
+      // Count function calls for logging
+      const totalFunctionCalls = cleaned.reduce((total, turn) => total + (turn.function_calls?.length || 0), 0)
+      const turnsWithFunctions = cleaned.filter(turn => turn.function_calls && turn.function_calls.length > 0)
       
       setCleanedTurns(cleaned)
       setTurnAPIGroups(reconstructedTurnAPIGroups)
       setSelectedTab('results')
       addDetailedLog(`✅ Loaded ${cleaned.length} cleaned turns from evaluation: ${evaluation.name}`)
+      addDetailedLog(`📊 Function calls: ${totalFunctionCalls} calls across ${turnsWithFunctions.length} turns`)
       addDetailedLog(`✅ Reconstructed ${reconstructedTurnAPIGroups.length} API log entries for inspection`)
       
     } catch (error) {
@@ -3247,6 +3340,27 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                             <div style={{ fontSize: '12px', color: theme.textMuted, fontFamily: 'monospace' }}>
                               4. Backend → Frontend: {turnGroup.backendResponse.status} ({turnGroup.backendResponse.latency_ms}ms)
                             </div>
+                            {/* Function calling steps */}
+                            {turnGroup.functionDecisionCall && (
+                              <div style={{ fontSize: '12px', color: theme.textMuted, fontFamily: 'monospace' }}>
+                                5. Backend → Google: {turnGroup.functionDecisionCall.function_call} ({turnGroup.functionDecisionCall.latency_ms}ms)
+                              </div>
+                            )}
+                            {turnGroup.functionDecisionCall && (
+                              <div style={{ fontSize: '12px', color: theme.textMuted, fontFamily: 'monospace' }}>
+                                6. Google → Backend: Function decision (success: {turnGroup.functionDecisionCall.success ? 'true' : 'false'})
+                              </div>
+                            )}
+                            {turnGroup.functionExecutions && turnGroup.functionExecutions.length > 0 && (
+                              <div style={{ fontSize: '12px', color: theme.textMuted, fontFamily: 'monospace' }}>
+                                7. Backend → Functions: Executing {turnGroup.functionExecutions.length} function(s) ({turnGroup.functionExecutions.reduce((total, func) => total + func.execution_time_ms, 0)}ms total)
+                              </div>
+                            )}
+                            {turnGroup.functionExecutions && turnGroup.functionExecutions.length > 0 && (
+                              <div style={{ fontSize: '12px', color: theme.textMuted, fontFamily: 'monospace' }}>
+                                8. Functions → Backend: Results ({turnGroup.functionExecutions.filter(f => f.success).length} successful, {turnGroup.functionExecutions.filter(f => !f.success).length} failed)
+                              </div>
+                            )}
                           </div>
 
                           {/* Four Separate Dropdowns for API Detail Levels */}
@@ -3356,6 +3470,62 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                 </pre>
                               </div>
                             </details>
+
+                            {/* 5. Function Decision Call */}
+                            {turnGroup.functionDecisionCall && (
+                              <details style={{ border: `1px solid ${theme.border}`, borderRadius: '6px', padding: '12px' }}>
+                                <summary style={{ fontSize: '14px', fontWeight: '500', color: theme.text, cursor: 'pointer', marginBottom: '8px' }}>
+                                  🟣 5. Function Decision Call
+                                </summary>
+                                <div style={{ marginTop: '8px', padding: '8px', backgroundColor: theme.bg, borderRadius: '4px' }}>
+                                  <pre style={{ 
+                                    fontSize: '11px', 
+                                    fontFamily: 'monospace', 
+                                    color: theme.text,
+                                    margin: 0,
+                                    overflowX: 'auto',
+                                    maxHeight: '150px'
+                                  }}>
+                                    {JSON.stringify({
+                                      function_call: turnGroup.functionDecisionCall.function_call,
+                                      model_config: turnGroup.functionDecisionCall.model_config,
+                                      latency_ms: turnGroup.functionDecisionCall.latency_ms,
+                                      success: turnGroup.functionDecisionCall.success,
+                                      prompt_preview: typeof turnGroup.functionDecisionCall.prompt === 'string' ? turnGroup.functionDecisionCall.prompt.substring(0, 200) + '...' : 'No prompt',
+                                      response_preview: typeof turnGroup.functionDecisionCall.response === 'string' ? turnGroup.functionDecisionCall.response.substring(0, 200) + '...' : 'No response'
+                                    }, null, 2)}
+                                  </pre>
+                                </div>
+                              </details>
+                            )}
+
+                            {/* 6. Function Executions */}
+                            {turnGroup.functionExecutions && turnGroup.functionExecutions.length > 0 && (
+                              <details style={{ border: `1px solid ${theme.border}`, borderRadius: '6px', padding: '12px' }}>
+                                <summary style={{ fontSize: '14px', fontWeight: '500', color: theme.text, cursor: 'pointer', marginBottom: '8px' }}>
+                                  🟡 6. Function Executions ({turnGroup.functionExecutions.length} functions)
+                                </summary>
+                                <div style={{ marginTop: '8px', padding: '8px', backgroundColor: theme.bg, borderRadius: '4px' }}>
+                                  <pre style={{ 
+                                    fontSize: '11px', 
+                                    fontFamily: 'monospace', 
+                                    color: theme.text,
+                                    margin: 0,
+                                    overflowX: 'auto',
+                                    maxHeight: '300px'
+                                  }}>
+                                    {JSON.stringify(turnGroup.functionExecutions.map(func => ({
+                                      function_name: func.function_name,
+                                      parameters: func.parameters,
+                                      success: func.success,
+                                      execution_time_ms: func.execution_time_ms,
+                                      error: func.error,
+                                      result_preview: func.result ? JSON.stringify(func.result).substring(0, 100) + '...' : 'No result'
+                                    })), null, 2)}
+                                  </pre>
+                                </div>
+                              </details>
+                            )}
                           </div>
                         </div>
                       ))}

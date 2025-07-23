@@ -270,6 +270,7 @@ async def get_evaluation_details(
         
         # Create function decision metadata if function calls exist
         function_decision = None
+        function_decision_gemini_call = None
         if turn_function_calls:
             total_execution_time = sum(fc.get('execution_time_ms', 0) for fc in turn_function_calls)
             
@@ -286,6 +287,11 @@ async def get_evaluation_details(
                 'functions_called': len([fc for fc in turn_function_calls if fc.get('function_name') not in ['<JSON_PARSE_ERROR>', '<EMPTY_RESPONSE>']]),
                 'error': error_message
             }
+            
+            # Get function decision Gemini call from the first function call's gemini_http_request
+            first_function_call = next((fc_obj for fc_obj in function_calls if str(fc_obj.turn_id) == turn_id), None)
+            if first_function_call and first_function_call.gemini_http_request:
+                function_decision_gemini_call = first_function_call.gemini_http_request
         
         cleaned_turn_responses.append(CleanedTurnResponse(
             id=str(ct.id),
@@ -308,7 +314,8 @@ async def get_evaluation_details(
             template_variables=ct.template_variables,
             timing_breakdown=ct.timing_breakdown,
             function_calls=turn_function_calls,
-            function_decision=function_decision
+            function_decision=function_decision,
+            function_decision_gemini_call=function_decision_gemini_call
         ))
     
     # Include prompt template name if available
@@ -425,7 +432,8 @@ async def process_turn(
             template_variables=result.get('template_variables'),
             timing_breakdown=result.get('timing_breakdown'),
             function_calls=formatted_function_calls,
-            function_decision=function_decision
+            function_decision=function_decision,
+            function_decision_gemini_call=result.get('function_decision_gemini_call')
         )
         
     except FunctionCallingCriticalError as critical_error:
