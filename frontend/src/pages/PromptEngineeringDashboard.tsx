@@ -150,6 +150,7 @@ function PromptEngineeringDashboardInner() {
   const [functionTemplates, setFunctionTemplates] = useState<FunctionPromptTemplate[]>([])
   const [currentFunctionTemplateId, setCurrentFunctionTemplateId] = useState<string | null>(null)
   const [customFunctionDescriptions, setCustomFunctionDescriptions] = useState<Record<string, string>>({})
+  const [hasFunctionUnsavedChanges, setHasFunctionUnsavedChanges] = useState(false)
 
   // Available functions from the function registry - exact definitions
   const AVAILABLE_FUNCTIONS = [
@@ -256,10 +257,24 @@ function PromptEngineeringDashboardInner() {
         setFunctionPromptName(firstTemplate.name)
         setFunctionPromptDescription(firstTemplate.description || '')
         setFunctionPromptContent(firstTemplate.template)
-        setCustomFunctionDescriptions(firstTemplate.custom_function_descriptions || {})
+        
+        // Load function descriptions with defaults if empty
+        const loadedDescriptions = firstTemplate.custom_function_descriptions || {}
+        const descriptionsWithDefaults = { ...loadedDescriptions }
+        
+        // Fill in any missing function descriptions with defaults
+        AVAILABLE_FUNCTIONS.forEach(func => {
+          if (!descriptionsWithDefaults[func.name]) {
+            descriptionsWithDefaults[func.name] = func.defaultDescription
+          }
+        })
+        
+        setCustomFunctionDescriptions(descriptionsWithDefaults)
+        
         // Clear validation errors when loading existing template
         setFunctionValidationErrors([])
         setFunctionValidationWarnings([])
+        setHasFunctionUnsavedChanges(false) // Reset unsaved changes for existing template
       }
     }
   }, [activeTab, templates, functionTemplates])
@@ -305,10 +320,24 @@ function PromptEngineeringDashboardInner() {
         setFunctionPromptName(firstTemplate.name)
         setFunctionPromptDescription(firstTemplate.description || '')
         setFunctionPromptContent(firstTemplate.template)
-        setCustomFunctionDescriptions(firstTemplate.custom_function_descriptions || {})
+        
+        // Load function descriptions with defaults if empty
+        const loadedDescriptions = firstTemplate.custom_function_descriptions || {}
+        const descriptionsWithDefaults = { ...loadedDescriptions }
+        
+        // Fill in any missing function descriptions with defaults
+        AVAILABLE_FUNCTIONS.forEach(func => {
+          if (!descriptionsWithDefaults[func.name]) {
+            descriptionsWithDefaults[func.name] = func.defaultDescription
+          }
+        })
+        
+        setCustomFunctionDescriptions(descriptionsWithDefaults)
+        
         // Clear validation errors when loading existing template
         setFunctionValidationErrors([])
         setFunctionValidationWarnings([])
+        setHasFunctionUnsavedChanges(false) // Reset unsaved changes for existing template
       }
       
     } catch (err) {
@@ -372,12 +401,15 @@ function PromptEngineeringDashboardInner() {
   }
 
   // Function prompt validation functions  
-  const debouncedFunctionValidation = (name: string, content: string, description: string) => {
+  const debouncedFunctionValidation = (name: string, content: string, description: string, funcDescriptions?: Record<string, string>) => {
     if (functionValidationTimeoutId) {
       clearTimeout(functionValidationTimeoutId)
     }
     
     const timeoutId = setTimeout(() => {
+      // Use passed descriptions or current state
+      const descriptionsToValidate = funcDescriptions || customFunctionDescriptions
+      
       // Simple validation for function prompt (using proper ValidationError/ValidationWarning types)
       const errors: ValidationError[] = []
       const warnings: ValidationWarning[] = []
@@ -392,6 +424,19 @@ function PromptEngineeringDashboardInner() {
       
       if (!description.trim()) {
         errors.push({ field: 'description', type: 'required', message: 'Function prompt description is required' })
+      }
+      
+      // Validate function descriptions are not empty
+      const emptyFunctions = AVAILABLE_FUNCTIONS.filter(func => 
+        !descriptionsToValidate[func.name] || !descriptionsToValidate[func.name].trim()
+      )
+      
+      if (emptyFunctions.length > 0) {
+        errors.push({ 
+          field: 'function_descriptions', 
+          type: 'required', 
+          message: `Function descriptions cannot be empty for: ${emptyFunctions.map(f => f.name).join(', ')}` 
+        })
       }
       
       const requiredVars = ['previous_cleaned_turns', 'customer_profile', 'current_cleaned_turn', 'previous_function_calls']
@@ -435,9 +480,17 @@ function PromptEngineeringDashboardInner() {
     setFunctionPromptName('')
     setFunctionPromptDescription('')
     setFunctionPromptContent('')
-    setCustomFunctionDescriptions({})
+    
+    // Initialize with default function descriptions for new prompts
+    const defaultDescriptions: Record<string, string> = {}
+    AVAILABLE_FUNCTIONS.forEach(func => {
+      defaultDescriptions[func.name] = func.defaultDescription
+    })
+    setCustomFunctionDescriptions(defaultDescriptions)
+    
     setFunctionValidationErrors([])
     setFunctionValidationWarnings([])
+    setHasFunctionUnsavedChanges(false)
   }
 
   // Save function prompt template
@@ -585,7 +638,7 @@ function PromptEngineeringDashboardInner() {
     return variables
   }
 
-  // Track unsaved changes
+  // Track unsaved changes for cleaner templates
   useEffect(() => {
     setHasUnsavedChanges(
       currentTemplateId ? (
@@ -597,6 +650,34 @@ function PromptEngineeringDashboardInner() {
       )
     )
   }, [templateName, editingTemplate, templateDescription, currentTemplateId, templates])
+
+  // Track unsaved changes for function templates
+  useEffect(() => {
+    if (currentFunctionTemplateId) {
+      const currentTemplate = functionTemplates.find(t => t.id === currentFunctionTemplateId)
+      if (currentTemplate) {
+        const hasNameChange = currentTemplate.name !== functionPromptName
+        const hasDescriptionChange = (currentTemplate.description || '') !== functionPromptDescription
+        const hasContentChange = currentTemplate.template !== functionPromptContent
+        
+        // Check if function descriptions have changed
+        const originalDescriptions = currentTemplate.custom_function_descriptions || {}
+        const hasFunctionDescriptionChange = AVAILABLE_FUNCTIONS.some(func => {
+          const original = originalDescriptions[func.name] || func.defaultDescription
+          const current = customFunctionDescriptions[func.name] || ''
+          return original !== current
+        })
+        
+        setHasFunctionUnsavedChanges(hasNameChange || hasDescriptionChange || hasContentChange || hasFunctionDescriptionChange)
+      }
+    } else {
+      // For new templates, check if any field has content
+      const hasContent = functionPromptName.trim() !== '' || 
+                        functionPromptDescription.trim() !== '' || 
+                        functionPromptContent.trim() !== ''
+      setHasFunctionUnsavedChanges(hasContent)
+    }
+  }, [functionPromptName, functionPromptDescription, functionPromptContent, customFunctionDescriptions, currentFunctionTemplateId, functionTemplates])
 
   // Template CRUD operations with validation
   const handleTemplateNameChange = (name: string) => {
@@ -637,6 +718,17 @@ function PromptEngineeringDashboardInner() {
   const handleFunctionPromptDescriptionChange = (description: string) => {
     setFunctionPromptDescription(description)
     debouncedFunctionValidation(functionPromptName, functionPromptContent, description)
+  }
+
+  const handleFunctionDescriptionChange = (functionName: string, description: string) => {
+    const updatedDescriptions = {
+      ...customFunctionDescriptions,
+      [functionName]: description
+    }
+    setCustomFunctionDescriptions(updatedDescriptions)
+    
+    // Re-run validation with the updated descriptions immediately
+    debouncedFunctionValidation(functionPromptName, functionPromptContent, functionPromptDescription, updatedDescriptions)
   }
 
 
@@ -776,11 +868,25 @@ function PromptEngineeringDashboardInner() {
       setFunctionPromptName(funcTemplate.name)
       setFunctionPromptDescription(funcTemplate.description || '')
       setFunctionPromptContent(funcTemplate.template)
-      setCustomFunctionDescriptions(funcTemplate.custom_function_descriptions || {})
+      
+      // Load function descriptions with defaults if empty
+      const loadedDescriptions = funcTemplate.custom_function_descriptions || {}
+      const descriptionsWithDefaults = { ...loadedDescriptions }
+      
+      // Fill in any missing function descriptions with defaults
+      AVAILABLE_FUNCTIONS.forEach(func => {
+        if (!descriptionsWithDefaults[func.name]) {
+          descriptionsWithDefaults[func.name] = func.defaultDescription
+        }
+      })
+      
+      setCustomFunctionDescriptions(descriptionsWithDefaults)
       setShowTemplateLibrary(false)
+      
       // Clear validation errors when loading existing template
       setFunctionValidationErrors([])
       setFunctionValidationWarnings([])
+      setHasFunctionUnsavedChanges(false) // Reset unsaved changes flag
     }
   }
 
@@ -1911,14 +2017,14 @@ function PromptEngineeringDashboardInner() {
                   </button>
                   <button
                     onClick={handleSaveFunctionPrompt}
-                    disabled={loading || functionValidationErrors.length > 0}
+                    disabled={loading || functionValidationErrors.length > 0 || !hasFunctionUnsavedChanges}
                     style={{
                       padding: '6px 12px',
-                      backgroundColor: (loading || functionValidationErrors.length > 0) ? theme.bgTertiary : theme.success,
-                      color: (loading || functionValidationErrors.length > 0) ? theme.textMuted : 'white',
+                      backgroundColor: (loading || functionValidationErrors.length > 0 || !hasFunctionUnsavedChanges) ? theme.bgTertiary : theme.success,
+                      color: (loading || functionValidationErrors.length > 0 || !hasFunctionUnsavedChanges) ? theme.textMuted : 'white',
                       border: 'none',
                       borderRadius: '4px',
-                      cursor: (loading || functionValidationErrors.length > 0) ? 'not-allowed' : 'pointer',
+                      cursor: (loading || functionValidationErrors.length > 0 || !hasFunctionUnsavedChanges) ? 'not-allowed' : 'pointer',
                       fontSize: '12px',
                       opacity: loading ? 0.6 : 1
                     }}
@@ -2263,18 +2369,14 @@ function PromptEngineeringDashboardInner() {
                         </div>
                         <textarea
                           value={customFunctionDescriptions[func.name] || ''}
-                          onChange={(e) => setCustomFunctionDescriptions(prev => ({
-                            ...prev,
-                            [func.name]: e.target.value
-                          }))}
-                          placeholder={func.defaultDescription}
+                          onChange={(e) => handleFunctionDescriptionChange(func.name, e.target.value)}
                           style={{
                             width: '100%',
                             minHeight: '50px',
                             padding: '6px',
                             fontSize: '10px',
                             backgroundColor: theme.bg,
-                            border: `1px solid ${theme.border}`,
+                            border: `1px solid ${(!customFunctionDescriptions[func.name] || !customFunctionDescriptions[func.name].trim()) ? theme.error : theme.border}`,
                             borderRadius: '3px',
                             color: theme.text,
                             resize: 'vertical',

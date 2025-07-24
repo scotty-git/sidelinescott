@@ -1,7 +1,7 @@
 // Template validation utility with comprehensive error handling
 
 export interface ValidationError {
-  field: 'name' | 'template' | 'variables' | 'description'
+  field: 'name' | 'template' | 'variables' | 'description' | 'function_descriptions'
   type: 'required' | 'duplicate' | 'invalid_syntax' | 'missing_variable' | 'too_long' | 'invalid_characters'
   message: string
   line?: number

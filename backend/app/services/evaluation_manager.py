@@ -237,7 +237,15 @@ class EvaluationManager:
                 # Get window sizes from settings
                 if evaluation.settings:
                     cleaner_window_size = evaluation.settings.get('sliding_window', cleaner_window_size)
-                    function_window_size = evaluation.settings.get('function_sliding_window', function_window_size)
+                    
+                    # Check function_params for window_size first, then fallback to legacy setting
+                    function_params = evaluation.settings.get('function_params', {})
+                    if 'window_size' in function_params:
+                        function_window_size = function_params['window_size']
+                        print(f"[EvaluationManager] 🎯 Using function window size from function_params: {function_window_size}")
+                    else:
+                        function_window_size = evaluation.settings.get('function_sliding_window', function_window_size)
+                        print(f"[EvaluationManager] 🎯 Using function window size from legacy setting: {function_window_size}")
             
             self.active_evaluations[evaluation_id] = EvaluationState(
                 evaluation_id, 

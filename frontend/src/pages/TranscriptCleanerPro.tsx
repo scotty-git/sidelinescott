@@ -3,6 +3,7 @@ import { apiClient } from '../lib/api' // TypeScript refresh
 import { GeminiQueryInspector } from '../components/GeminiQueryInspector'
 import { VariableInput } from '../components/VariableInput'
 import { CustomerModal } from '../components/CustomerModal'
+import { EvaluationConfigModal } from '../components/EvaluationConfigModal'
 import { useToast } from '../components/ToastNotification'
 
 interface ParsedTurn {
@@ -238,6 +239,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   // Evaluations modal state
   const [showEvaluationsModal, setShowEvaluationsModal] = useState(false)
   const [selectedConversationForEvaluations, setSelectedConversationForEvaluations] = useState<{ id: string; name: string } | null>(null)
+  
+  // Evaluation Config Modal state
+  const [showEvaluationConfigModal, setShowEvaluationConfigModal] = useState(false)
+  const [evaluationConfigData, setEvaluationConfigData] = useState<any>(null)
   
   // Panel collapse state
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
@@ -541,7 +546,52 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
     loadFunctionPromptTemplates()
   }, [])
 
+  // Prepare config data for the evaluation modal
+  const prepareEvaluationConfig = () => {
+    return {
+      evaluation: {
+        id: '',
+        name: `Evaluation ${new Date().toLocaleString()}`,
+        description: `Auto-created evaluation with ${settings.cleaningLevel} cleaning`,
+        created_at: new Date().toISOString()
+      },
+      cleanerConfig: {
+        templateName: settings.promptTemplate?.name || 'Default System Prompt',
+        templateDescription: settings.promptTemplate?.description,
+        slidingWindow: settings.slidingWindow,
+        cleaningLevel: settings.cleaningLevel,
+        modelName: settings.modelName,
+        temperature: settings.temperature,
+        topP: settings.topP,
+        topK: settings.topK,
+        maxTokens: settings.maxTokens
+      },
+      functionConfig: {
+        templateName: settings.functionPromptTemplate?.name || 'Default Function Prompt',
+        templateDescription: settings.functionPromptTemplate?.description,
+        slidingWindow: settings.functionWindowSize,
+        modelName: settings.functionModelName,
+        temperature: settings.functionTemperature,
+        topP: settings.functionTopP,
+        topK: settings.functionTopK,
+        maxTokens: settings.functionMaxTokens
+      }
+    }
+  }
 
+  // Show evaluation config modal before starting
+  const showEvaluationConfigBeforeStart = () => {
+    if (!conversationId) {
+      addDetailedLog(`❌ Cannot start cleaning: No conversation selected`)
+      return
+    }
+
+    const config = prepareEvaluationConfig()
+    setEvaluationConfigData(config)
+    setShowEvaluationConfigModal(true)
+  }
+
+  // The actual cleaning logic (moved from startCleaning)
   const startCleaning = async () => {
     if (!conversationId) {
       addDetailedLog(`❌ Cannot start cleaning: No conversation selected`)
@@ -676,6 +726,16 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
             confidence_score?: string;
             total_execution_time_ms?: number;
           };
+          function_decision_gemini_call?: {
+            prompt?: string;
+            response?: string;
+            function_call?: string;
+            model_config?: Record<string, any>;
+            contents?: Array<any>;
+            timestamp?: number;
+            success?: boolean;
+            latency_ms?: number;
+          };
         }
         
         // Convert to UI format
@@ -732,10 +792,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           functionDecisionCall: turnResult.function_decision_gemini_call ? {
             function_call: 'generateContent (function decision)',
             model_config: turnResult.function_decision_gemini_call.model_config,
-            prompt: turnResult.function_decision_gemini_call.prompt,
-            response: turnResult.function_decision_gemini_call.response,
-            timestamp: turnResult.function_decision_gemini_call.timestamp,
-            success: turnResult.function_decision_gemini_call.success,
+            prompt: turnResult.function_decision_gemini_call.prompt || '',
+            response: turnResult.function_decision_gemini_call.response || '',
+            timestamp: turnResult.function_decision_gemini_call.timestamp || Date.now(),
+            success: turnResult.function_decision_gemini_call.success || false,
             latency_ms: turnResult.function_decision_gemini_call.latency_ms || 0
           } : undefined,
           functionExecutions: turnResult.function_calls ? turnResult.function_calls.map((funcCall: any) => ({
@@ -922,6 +982,59 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
   const openEvaluationsModal = (conversation: { id: string; name: string }) => {
     setSelectedConversationForEvaluations(conversation)
     setShowEvaluationsModal(true)
+  }
+
+  // Function to show evaluation config modal
+  const showEvaluationConfig = async (evaluation: { id: string; name: string }) => {
+    try {
+      // Fetch evaluation details
+      const evaluationDetails = await apiClient.getEvaluationDetails(evaluation.id) as any
+      console.log('Evaluation details for config:', evaluationDetails)
+      
+      // Extract settings
+      const evaluation_data = evaluationDetails.evaluation
+      const settings = evaluation_data.settings || {}
+      const modelParams = settings.model_params || {}
+      const functionParams = settings.function_params || {}
+      
+      // Build config object
+      const config = {
+        evaluation: {
+          id: evaluation.id,
+          name: evaluation.name,
+          description: evaluation_data.description || 'No description',
+          created_at: evaluation_data.created_at || new Date().toISOString()
+        },
+        cleanerConfig: {
+          templateName: evaluation_data.prompt_template?.name || evaluation_data.prompt_template_name || 'Default Template',
+          templateDescription: evaluation_data.prompt_template?.description || 'No description',
+          slidingWindow: settings.sliding_window || 10,
+          cleaningLevel: settings.cleaning_level || 'full',
+          modelName: modelParams.model_name || 'gemini-2.5-flash-lite-preview-06-17',
+          temperature: modelParams.temperature || 0.1,
+          topP: modelParams.top_p || 0.95,
+          topK: modelParams.top_k || 40,
+          maxTokens: modelParams.max_tokens || 65535
+        },
+        functionConfig: {
+          templateName: evaluation_data.function_template?.name || 'Default Function Template',
+          templateDescription: evaluation_data.function_template?.description || 'No description',
+          slidingWindow: functionParams.window_size || 20,
+          modelName: functionParams.model_name || 'gemini-2.5-flash-lite-preview-06-17',
+          temperature: functionParams.temperature || 0.1,
+          topP: functionParams.top_p || 0.95,
+          topK: functionParams.top_k || 40,
+          maxTokens: functionParams.max_tokens || 65535
+        }
+      }
+      
+      setEvaluationConfigData(config)
+      setShowEvaluationConfigModal(true)
+      
+    } catch (error) {
+      console.error('Failed to fetch evaluation config:', error)
+      alert('Failed to load evaluation configuration')
+    }
   }
 
   // Customer management functions
@@ -2002,7 +2115,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                 💬 Load Conversation
               </button>
               <button 
-                onClick={isProcessing ? stopCleaning : startCleaning}
+                onClick={isProcessing ? stopCleaning : showEvaluationConfigBeforeStart}
                 disabled={parsedTurns.length === 0 && !isProcessing}
                 style={{
                   flex: 1,
@@ -2536,9 +2649,9 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
                                       const functionPromptTemplateName = functionTemplateData?.name || "Unknown Function Template"
                                       
                                       // Get all tools with proper structure
-                                      const allTools = availableTools.flatMap(toolGroup => 
+                                      const allTools = availableTools.flatMap((toolGroup: any) => 
                                         toolGroup.function_declarations || [toolGroup]
-                                      ).map(tool => `- ${tool.name}: ${tool.description || 'No description'} | Parameters: ${JSON.stringify(tool.parameters?.properties || {})}`).join('\n')
+                                      ).map((tool: any) => `- ${tool.name}: ${tool.description || 'No description'} | Parameters: ${JSON.stringify(tool.parameters?.properties || {})}`).join('\n')
                                       
                                       // Create compact turns for ALL turns (not just User)
                                       const compactTurns = cleanedTurns.map((turn, index) => {
@@ -2653,9 +2766,9 @@ ${compactTurns.join('\n')}
                                       const functionPromptTemplateNameFallback = functionTemplateDataFallback?.name || "Unknown Function Template"
                                       
                                       // Get all tools with proper structure
-                                      const allToolsFallback = availableTools.flatMap(toolGroup => 
+                                      const allToolsFallback = availableTools.flatMap((toolGroup: any) => 
                                         toolGroup.function_declarations || [toolGroup]
-                                      ).map(tool => `- ${tool.name}: ${tool.description || 'No description'} | Parameters: ${JSON.stringify(tool.parameters?.properties || {})}`).join('\n')
+                                      ).map((tool: any) => `- ${tool.name}: ${tool.description || 'No description'} | Parameters: ${JSON.stringify(tool.parameters?.properties || {})}`).join('\n')
                                       
                                       // Create compact turns for ALL turns (not just User)
                                       const compactTurnsFallback = cleanedTurns.map((turn, index) => {
@@ -4664,7 +4777,28 @@ ${compactTurnsFallback.join('\n')}
         <GeminiQueryInspector
           conversationId={conversationId}
           turnId={inspectedTurn.turn_id}
-          turnData={inspectedTurn}
+          turnData={{
+            ...inspectedTurn,
+            function_calls: inspectedTurn.function_calls?.map(call => ({
+              function_name: call.function_name,
+              parameters: call.parameters,
+              result: call.result ?? {},
+              success: call.success,
+              confidence_score: 'UNKNOWN'
+            })),
+            function_decision: inspectedTurn.function_decision ? {
+              reasoning: inspectedTurn.function_decision.thought_process || 'No reasoning provided',
+              calls_count: inspectedTurn.function_calls?.length ?? 0,
+              processing_time_ms: inspectedTurn.function_decision.total_execution_time_ms || 0
+            } : undefined,
+            function_decision_gemini_call: inspectedTurn.function_decision_gemini_call ? {
+              prompt: inspectedTurn.function_decision_gemini_call.prompt || '',
+              response: inspectedTurn.function_decision_gemini_call.response || '',
+              model_config: inspectedTurn.function_decision_gemini_call.model_config || {},
+              timestamp: inspectedTurn.function_decision_gemini_call.timestamp || Date.now(),
+              success: inspectedTurn.function_decision_gemini_call.success || false
+            } : undefined
+          }}
           isOpen={inspectorOpen}
           onClose={() => {
             setInspectorOpen(false)
@@ -5422,6 +5556,20 @@ ${compactTurnsFallback.join('\n')}
             </div>
           </div>
         </div>
+      )}
+
+      {/* Evaluation Config Modal */}
+      {showEvaluationConfigModal && evaluationConfigData && (
+        <EvaluationConfigModal
+          isOpen={showEvaluationConfigModal}
+          onClose={() => setShowEvaluationConfigModal(false)}
+          onConfirm={() => {
+            setShowEvaluationConfigModal(false)
+            startCleaning()
+          }}
+          config={evaluationConfigData}
+          theme={getThemeColors()}
+        />
       )}
 
       {/* Customer Modal */}
