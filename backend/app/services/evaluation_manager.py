@@ -11,6 +11,7 @@ import asyncio
 import json
 from typing import Dict, List, Optional, Any
 from uuid import UUID
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +20,7 @@ from app.models.evaluation import Evaluation
 from app.models.cleaned_turn import CleanedTurn
 from app.models.conversation import Conversation
 from app.models.turn import Turn
+from app.models.cost import Cost
 from app.models.user_variable_history import UserVariableHistory
 from app.services.gemini_service import GeminiService
 from app.services.prompt_engineering_service import PromptEngineeringService
@@ -49,7 +51,7 @@ class EvaluationState:
         self.function_window_size = function_window_size
         self.function_prompt_template_data = function_prompt_template_data  # Cache the function template data dict
         self.function_call_history: List[Dict[str, Any]] = []  # ALL function calls made
-        self.mirrored_customer = None  # Current customer state
+        self.mirrored_customer_id: Optional[UUID] = None  # Store ID instead of object to avoid session binding issues
         self.business_insights: Dict[str, Any] = {}  # Accumulated insights
         
         # Legacy support - keep sliding_window_size for backward compatibility
@@ -62,6 +64,13 @@ class EvaluationState:
             print(f"[EvaluationState] 🎯 Cached cleaner prompt template in memory")
         if function_prompt_template_data:
             print(f"[EvaluationState] 🎯 Cached function prompt template in memory")
+    
+    @property
+    def mirrored_customer(self):
+        """Backward compatibility property - returns None since we now store ID only"""
+        # This property exists for backward compatibility but returns None
+        # Code should use mirrored_customer_id instead
+        return None
     
     def get_cleaned_sliding_window(self) -> List[Dict[str, Any]]:
         """Get the cleaned conversation history for context (from THIS evaluation)"""
@@ -348,7 +357,7 @@ class EvaluationManager:
             if mirrored_customer:
                 evaluation_state = self.active_evaluations.get(evaluation_id)
                 if evaluation_state:
-                    evaluation_state.mirrored_customer = mirrored_customer
+                    evaluation_state.mirrored_customer_id = mirrored_customer.id
                     print(f"[EvaluationManager] 👤 Loaded mirrored customer: {mirrored_customer.company_name}")
             else:
                 print(f"[EvaluationManager] 👤 No mirrored customer found for evaluation {evaluation_id}")
@@ -468,11 +477,11 @@ class EvaluationManager:
             }
         
         # Ensure mirrored customer exists - create if needed
-        if not evaluation_state.mirrored_customer:
+        if not evaluation_state.mirrored_customer_id:
             print(f"[EvaluationManager] 👤 No mirrored customer found, creating from default customer")
             mirrored_customer = self._create_mirrored_customer_from_default(evaluation_state.evaluation_id, db)
             if mirrored_customer:
-                evaluation_state.mirrored_customer = mirrored_customer
+                evaluation_state.mirrored_customer_id = mirrored_customer.id
                 print(f"[EvaluationManager] ✅ Created mirrored customer: {mirrored_customer.company_name}")
             else:
                 print(f"[EvaluationManager] ❌ Failed to create mirrored customer, skipping function calls")
@@ -485,7 +494,7 @@ class EvaluationManager:
         function_timing['function_context_start'] = time.time()
         
         # Build function calling context
-        context = self._build_function_context(evaluation_state, cleaned_result)
+        context = self._build_function_context(evaluation_state, cleaned_result, db)
         
         function_timing['function_context_end'] = time.time()
         function_timing['function_gemini_start'] = time.time()
@@ -520,7 +529,7 @@ class EvaluationManager:
         print(f"[EvaluationManager] 🎯 Using user's function model params: {function_model_params}")
         
         # Build native function calling request
-        native_request = self._build_native_function_call_request(evaluation_state, cleaned_result, settings)
+        native_request = self._build_native_function_call_request(evaluation_state, cleaned_result, db, settings)
         
         # Call Gemini using native function calling API
         function_response = await self.gemini_service.call_with_native_tools(
@@ -686,6 +695,14 @@ class EvaluationManager:
                 })
             decision_error = f"{len(failed_functions)} function(s) failed: {', '.join([f['function_name'] + ': ' + f['error'] for f in failed_details])}"
         
+        # Extract function calling cost data from Gemini response
+        function_cost_data = {
+            'cost_usd': function_response.get('cost_usd', 0.0),
+            'token_usage': function_response.get('token_usage', {}),
+        }
+        
+        print(f"💰 DEBUG: Function calling cost data extracted: ${function_cost_data['cost_usd']}, tokens: {function_cost_data['token_usage']}")
+        
         # Return both functions and decision metadata for immediate UI use
         result = {
             'functions': executed_functions,
@@ -697,7 +714,9 @@ class EvaluationManager:
                 'functions_failed': len(failed_functions),
                 'error': decision_error
             },
-            'function_decision_gemini_call': function_decision_captured_call  # Include the captured Gemini call data
+            'function_decision_gemini_call': function_decision_captured_call,  # Include the captured Gemini call data
+            # Add function calling cost data
+            'function_cost_data': function_cost_data
         }
         
         print(f"[DEBUG] ======== FUNCTION PROCESSING RETURN DEBUG ========")
@@ -710,7 +729,7 @@ class EvaluationManager:
         
         return result
     
-    def _build_function_context(self, evaluation_state: EvaluationState, cleaned_result: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_function_context(self, evaluation_state: EvaluationState, cleaned_result: Dict[str, Any], db: Session) -> Dict[str, Any]:
         """Build context for function calling prompt"""
         
         # Get cleaned conversation with function-specific window size
@@ -732,18 +751,20 @@ class EvaluationManager:
             previous_calls_str = "[]"
         
         # Get current customer state (call_context)
-        if evaluation_state.mirrored_customer:
-            call_context = {
-                'company_size': evaluation_state.mirrored_customer.company_size,
-                'job_title': evaluation_state.mirrored_customer.job_title,
-                'company_sector': evaluation_state.mirrored_customer.company_sector,
-                'company_name': evaluation_state.mirrored_customer.company_name,
-                'company_description': evaluation_state.mirrored_customer.company_description,
-                'user_name': evaluation_state.mirrored_customer.user_name,
-                'business_insights': evaluation_state.mirrored_customer.business_insights or {}
-            }
-        else:
-            call_context = {}
+        call_context = {}
+        if evaluation_state.mirrored_customer_id:
+            from app.models.mock_customer import MirroredMockCustomer
+            mirrored_customer = db.get(MirroredMockCustomer, evaluation_state.mirrored_customer_id)
+            if mirrored_customer:
+                call_context = {
+                    'company_size': mirrored_customer.company_size,
+                    'job_title': mirrored_customer.job_title,
+                    'company_sector': mirrored_customer.company_sector,
+                    'company_name': mirrored_customer.company_name,
+                    'company_description': mirrored_customer.company_description,
+                    'user_name': mirrored_customer.user_name,
+                    'business_insights': mirrored_customer.business_insights or {}
+                }
         
         # Get custom function descriptions - REQUIRED for evaluation platform
         if not evaluation_state.function_prompt_template_data or 'custom_function_descriptions' not in evaluation_state.function_prompt_template_data:
@@ -760,11 +781,11 @@ class EvaluationManager:
             'previous_function_calls': previous_calls_str
         }
     
-    def _build_native_function_call_request(self, evaluation_state: EvaluationState, cleaned_result: Dict[str, Any], settings: Dict[str, Any] = None) -> Dict[str, Any]:
+    def _build_native_function_call_request(self, evaluation_state: EvaluationState, cleaned_result: Dict[str, Any], db: Session, settings: Dict[str, Any] = None) -> Dict[str, Any]:
         """Build the complete request for Google's native function calling API"""
         
         # Get context data 
-        context = self._build_function_context(evaluation_state, cleaned_result)
+        context = self._build_function_context(evaluation_state, cleaned_result, db)
         
         # Add additional_context if provided in settings
         if settings and 'user_variables' in settings:
@@ -871,10 +892,16 @@ class EvaluationManager:
         
         try:
             # Execute function using function executor
+            # Get mirrored_customer fresh from current session using stored ID
+            mirrored_customer = None
+            if evaluation_state.mirrored_customer_id:
+                from app.models.mock_customer import MirroredMockCustomer
+                mirrored_customer = db.get(MirroredMockCustomer, evaluation_state.mirrored_customer_id)
+            
             execution_result = await self.function_executor.execute_function(
                 function_name=function_name,
                 parameters=parameters,
-                mirrored_customer=evaluation_state.mirrored_customer,
+                mirrored_customer=mirrored_customer,
                 db=db
             )
             
@@ -1190,11 +1217,15 @@ class EvaluationManager:
             result['function_calls'] = function_call_data.get('functions', [])
             result['function_decision'] = function_call_data.get('decision')
             result['function_decision_gemini_call'] = function_call_data.get('function_decision_gemini_call')
+            # Add function cost data for cost tracking
+            result['function_cost_data'] = function_call_data.get('function_cost_data', {})
         else:
             print(f"🔧 FUNCTION CALLING: Skipped for {raw_turn.speaker} turn")
             result['function_calls'] = []
             result['function_decision'] = None
             result['function_decision_gemini_call'] = None
+            # No function cost data when skipped
+            result['function_cost_data'] = {}
         
         timing['function_calling_end'] = time.time()
         
@@ -1286,7 +1317,137 @@ class EvaluationManager:
         print(f"[EvaluationManager] Performance: Total processed: {self.performance_metrics['total_turns_processed']}")
         print(f"[EvaluationManager] Performance: Context size: {context_size} turns")
         
+        # SINGLE TRANSACTION COMMIT: Save all data in one atomic operation
+        await self._save_turn_data_with_costs(evaluation_id, turn_id, result, db)
+        
         return result
+    
+    async def _save_turn_data_with_costs(self, evaluation_id: UUID, turn_id: UUID, result: Dict[str, Any], db: Session):
+        """
+        Save all turn data in a single transaction with cost tracking
+        
+        This method implements the single-commit pattern by saving:
+        1. CleanedTurn object
+        2. CalledFunction objects (if any)  
+        3. Cost record (if costs accumulated)
+        4. All in one atomic transaction
+        """
+        try:
+            print(f"💾 SINGLE TRANSACTION: Starting atomic save for turn {turn_id}")
+            
+            # 1. Save the CleanedTurn object
+            cleaned_turn = result.get('cleaned_turn_object')
+            if cleaned_turn:
+                db.add(cleaned_turn)
+                print(f"💾 Added CleanedTurn to transaction")
+            
+            # 2. Save any CalledFunction objects (from function calling)
+            function_calls = result.get('function_calls', [])
+            for func_call in function_calls:
+                if hasattr(func_call, 'id'):  # It's a CalledFunction object
+                    db.add(func_call)
+                    print(f"💾 Added CalledFunction {func_call.function_name} to transaction")
+            
+            # 3. Accumulate and save costs
+            cost_record = self._create_cost_record(evaluation_id, turn_id, result)
+            if cost_record:
+                db.add(cost_record)
+                print(f"💰 Added Cost record to transaction: ${cost_record.total_cost_usd:.6f}")
+            
+            # 4. Commit everything in one atomic operation
+            db.commit()
+            
+            # 5. Refresh objects to get auto-generated fields
+            if cleaned_turn:
+                db.refresh(cleaned_turn)
+            for func_call in function_calls:
+                if hasattr(func_call, 'id'):
+                    db.refresh(func_call)
+            if cost_record:
+                db.refresh(cost_record)
+                # Add detailed cost breakdown to result for API response
+                result['cost_breakdown'] = {
+                    'cleaning_cost_usd': float(cost_record.cleaning_cost_usd),
+                    'function_cost_usd': float(cost_record.function_cost_usd),
+                    'total_cost_usd': float(cost_record.total_cost_usd),
+                    'cleaning_tokens': {
+                        'input_tokens': cost_record.cleaning_input_tokens,
+                        'output_tokens': cost_record.cleaning_output_tokens,
+                        'total_tokens': cost_record.cleaning_input_tokens + cost_record.cleaning_output_tokens
+                    },
+                    'function_tokens': {
+                        'input_tokens': cost_record.function_input_tokens,
+                        'output_tokens': cost_record.function_output_tokens,
+                        'total_tokens': cost_record.function_input_tokens + cost_record.function_output_tokens
+                    },
+                    'total_tokens': cost_record.total_tokens,
+                    'model_used': cost_record.model_used
+                }
+                print(f"💰 Added cost breakdown to result: ${cost_record.total_cost_usd:.6f}")
+            
+            print(f"✅ SINGLE TRANSACTION: Successfully committed all data for turn {turn_id}")
+            
+        except Exception as e:
+            print(f"❌ SINGLE TRANSACTION FAILED: Rolling back - {e}")
+            db.rollback()
+            raise
+    
+    def _create_cost_record(self, evaluation_id: UUID, turn_id: UUID, result: Dict[str, Any]) -> Optional[Cost]:
+        """
+        Create a Cost record from accumulated costs in result data
+        
+        Extracts costs from:
+        - Cleaning API call (always present for processed turns)
+        - Function decision API call (present for user turns only)
+        """
+        print(f"💰 DEBUG: Creating cost record - result keys: {list(result.keys())}")
+        
+        # Extract cleaning costs
+        cleaning_tokens = result.get('token_usage', {})
+        cleaning_cost = result.get('cost_usd', 0.0)
+        print(f"💰 DEBUG: Direct cleaning cost: ${cleaning_cost}, tokens: {cleaning_tokens}")
+        
+        # Check if cost data might be in debug_captured_call
+        debug_captured = result.get('debug_captured_call', {})
+        print(f"💰 DEBUG: debug_captured_call keys: {list(debug_captured.keys()) if debug_captured else 'None'}")
+        if debug_captured and 'cost_usd' in debug_captured:
+            cleaning_cost = debug_captured.get('cost_usd', 0.0)
+            cleaning_tokens = debug_captured.get('token_usage', {})
+            print(f"💰 DEBUG: Found cost in debug_captured_call: ${cleaning_cost}")
+        
+        # Extract function decision costs from function_cost_data
+        function_tokens = {}
+        function_cost = 0.0
+        function_cost_data = result.get('function_cost_data', {})
+        print(f"💰 DEBUG: function_cost_data: {function_cost_data}")
+        if function_cost_data:
+            function_tokens = function_cost_data.get('token_usage', {})
+            function_cost = function_cost_data.get('cost_usd', 0.0)
+            print(f"💰 DEBUG: Found function cost in function_cost_data: ${function_cost}, tokens: {function_tokens}")
+        
+        print(f"💰 DEBUG: Function cost: ${function_cost}, tokens: {function_tokens}")
+        print(f"💰 DEBUG: Total costs - cleaning: ${cleaning_cost}, function: ${function_cost}")
+        
+        # Only create cost record if we have some costs
+        if cleaning_cost > 0 or function_cost > 0:
+            print(f"💰 DEBUG: Creating cost record with total: ${cleaning_cost + function_cost}")
+            cost_record = Cost(
+                evaluation_id=evaluation_id,
+                turn_id=turn_id,
+                cleaning_input_tokens=cleaning_tokens.get('input_tokens', 0),
+                cleaning_output_tokens=cleaning_tokens.get('output_tokens', 0),
+                cleaning_cost_usd=cleaning_cost,
+                function_input_tokens=function_tokens.get('input_tokens', 0),
+                function_output_tokens=function_tokens.get('output_tokens', 0),
+                function_cost_usd=function_cost,
+                model_used=result.get('metadata', {}).get('ai_model_used', 'gemini-2.5-flash-lite-preview-06-17')
+            )
+            cost_record.calculate_totals()
+            return cost_record
+        else:
+            print(f"💰 DEBUG: No costs found, not creating cost record")
+        
+        return None
     
     def _is_lumen_turn(self, speaker: str) -> bool:
         """Detect if this is a Lumen/AI turn that should be bypassed"""
@@ -1373,14 +1534,11 @@ class EvaluationManager:
             ai_model_used="bypass",
             timing_breakdown={},  # Will update with actual timing
             gemini_prompt=None,
-            gemini_response=None
+            gemini_response=None,
+            created_at=datetime.utcnow()  # Set timestamp for return data
         )
         
-        # Save to database
-        db.add(cleaned_turn)
-        db.commit()
-        db.refresh(cleaned_turn)
-        
+        # DB operations moved to single transaction in process_turn()
         error_timing['database_save_end'] = time.time()
         
         # Track context update timing
@@ -1463,7 +1621,11 @@ class EvaluationManager:
             'created_at': cleaned_turn.created_at.isoformat(),
             'gemini_prompt': cleaned_turn.gemini_prompt,
             'gemini_response': cleaned_turn.gemini_response,
-            'timing_breakdown': error_timing_breakdown
+            'timing_breakdown': error_timing_breakdown,
+            'cleaned_turn_object': cleaned_turn,  # Add the cleaned_turn for single transaction commit
+            # Cost tracking fields (transcription error turns have no API costs)
+            'token_usage': {},
+            'cost_usd': 0.0
         }
     
     async def _process_lumen_turn(self, evaluation: Evaluation, raw_turn: Turn, 
@@ -1494,13 +1656,11 @@ class EvaluationManager:
             ai_model_used="bypass",
             timing_breakdown={},  # Will update with actual timing
             gemini_prompt=None,
-            gemini_response=None
+            gemini_response=None,
+            created_at=datetime.utcnow()  # Set timestamp for return data
         )
         
-        db.add(cleaned_turn)
-        db.commit()
-        db.refresh(cleaned_turn)
-        
+        # DB operations moved to single transaction in process_turn()
         lumen_timing['database_save_end'] = time.time()
         
         # Track context update timing
@@ -1523,9 +1683,9 @@ class EvaluationManager:
         
         evaluation_state.add_to_history(turn_data)
         
-        # Update evaluation turns count
+        # Update evaluation turns count  
         evaluation.turns_processed += 1
-        db.commit()
+        # db.commit() moved to single transaction in process_turn()
         
         lumen_timing['context_update_end'] = time.time()
         
@@ -1557,7 +1717,7 @@ class EvaluationManager:
         # Update the cleaned turn with actual timing
         cleaned_turn.processing_time_ms = actual_processing_time
         cleaned_turn.timing_breakdown = lumen_timing_breakdown
-        db.commit()
+        # db.commit() moved to single transaction in process_turn()
         
         self.performance_metrics['lumen_processing_times'].append(actual_processing_time)
         self.performance_metrics['total_lumen_turns'] += 1
@@ -1586,7 +1746,11 @@ class EvaluationManager:
             'created_at': cleaned_turn.created_at.isoformat(),
             'gemini_prompt': cleaned_turn.gemini_prompt,
             'gemini_response': cleaned_turn.gemini_response,
-            'timing_breakdown': lumen_timing_breakdown
+            'timing_breakdown': lumen_timing_breakdown,
+            'cleaned_turn_object': cleaned_turn,  # Add the cleaned_turn for single transaction commit
+            # Cost tracking fields (Lumen turns have no API costs)
+            'token_usage': {},
+            'cost_usd': 0.0
         }
     
     def _safe_timing_diff(self, end_key: str, start_key: str, timing_dict: Dict[str, float], fallback_start: float = 0) -> float:
@@ -1775,13 +1939,11 @@ class EvaluationManager:
             gemini_response=cleaned_result.get('raw_response'),
             gemini_http_request=captured_call,
             gemini_http_response=captured_call,
-            template_variables=template_variables  # Store the variables used for rendering
+            template_variables=template_variables,  # Store the variables used for rendering
+            created_at=datetime.utcnow()  # Set timestamp for return data
         )
         
-        db.add(cleaned_turn)
-        db.commit()
-        db.refresh(cleaned_turn)
-        
+        # DB operations moved to single transaction in process_turn()
         user_timing['database_save_end'] = time.time()
         
         # Step: Context update timing
@@ -1838,7 +2000,7 @@ class EvaluationManager:
         
         # Update evaluation turns count
         evaluation.turns_processed += 1
-        db.commit()
+        # db.commit() moved to single transaction in process_turn()
         
         self.performance_metrics['user_processing_times'].append(final_processing_time_ms)
         self.performance_metrics['total_user_turns'] += 1
@@ -1875,7 +2037,11 @@ class EvaluationManager:
             'debug_captured_call': captured_call,  # DEBUG: Show what was captured
             'gemini_raw_response': cleaned_turn.gemini_http_response,  # Contains the raw response
             'timing_breakdown': user_timing_breakdown,
-            'template_variables': template_variables  # Include the variables used for rendering
+            'template_variables': template_variables,  # Include the variables used for rendering
+            'cleaned_turn_object': cleaned_turn,  # Add the cleaned_turn for single transaction commit
+            # Cost tracking fields from gemini service
+            'token_usage': cleaned_result.get('token_usage', {}),
+            'cost_usd': cleaned_result.get('cost_usd', 0.0)
         }
     
     def is_evaluation_stopped(self, evaluation_id: UUID) -> bool:

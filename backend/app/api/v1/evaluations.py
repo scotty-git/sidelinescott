@@ -20,6 +20,7 @@ from app.models.cleaned_turn import CleanedTurn
 from app.models.conversation import Conversation
 from app.models.turn import Turn
 from app.models.called_function import CalledFunction
+from app.models.cost import Cost
 from app.schemas.evaluations import (
     CreateEvaluationRequest,
     EvaluationResponse,
@@ -245,6 +246,35 @@ async def get_evaluation_details(
     ).order_by(CalledFunction.created_at.asc()).all()
     print(f"[DEBUG] Found {len(function_calls)} function calls for evaluation")
     
+    # Get cost data for this evaluation grouped by turn_id
+    print(f"[DEBUG] Querying cost data for evaluation_uuid: {evaluation_uuid}")
+    costs = db.query(Cost).filter(
+        Cost.evaluation_id == evaluation_uuid
+    ).all()
+    print(f"[DEBUG] Found {len(costs)} cost records for evaluation")
+    
+    # Group costs by turn_id for easy lookup
+    costs_by_turn = {}
+    for cost in costs:
+        turn_id = str(cost.turn_id)
+        costs_by_turn[turn_id] = {
+            'cleaning_cost_usd': float(cost.cleaning_cost_usd),
+            'function_cost_usd': float(cost.function_cost_usd),
+            'total_cost_usd': float(cost.total_cost_usd),
+            'cleaning_tokens': {
+                'input_tokens': cost.cleaning_input_tokens,
+                'output_tokens': cost.cleaning_output_tokens,
+                'total_tokens': cost.cleaning_input_tokens + cost.cleaning_output_tokens
+            },
+            'function_tokens': {
+                'input_tokens': cost.function_input_tokens,
+                'output_tokens': cost.function_output_tokens,
+                'total_tokens': cost.function_input_tokens + cost.function_output_tokens
+            },
+            'total_tokens': cost.total_tokens,
+            'model_used': cost.model_used
+        }
+    
     # Group function calls by turn_id for easy lookup
     function_calls_by_turn = {}
     for fc in function_calls:
@@ -370,7 +400,12 @@ async def get_evaluation_details(
             timing_breakdown=ct.timing_breakdown,
             function_calls=turn_function_calls,
             function_decision=function_decision,
-            function_decision_gemini_call=function_decision_gemini_call
+            function_decision_gemini_call=function_decision_gemini_call,
+            # Add cost data if available
+            cost_usd=costs_by_turn.get(turn_id, {}).get('total_cost_usd'),
+            token_usage=costs_by_turn.get(turn_id, {}).get('total_tokens'),
+            # Add detailed cost breakdown
+            cost_breakdown=costs_by_turn.get(turn_id)
         ))
     
     # Include prompt template name if available
@@ -509,7 +544,12 @@ async def process_turn(
             timing_breakdown=result.get('timing_breakdown'),
             function_calls=formatted_function_calls,
             function_decision=function_decision,
-            function_decision_gemini_call=result.get('function_decision_gemini_call')
+            function_decision_gemini_call=result.get('function_decision_gemini_call'),
+            # Cost tracking fields
+            cost_usd=result.get('cost_usd'),
+            token_usage=result.get('token_usage', {}).get('total_tokens') if isinstance(result.get('token_usage'), dict) else result.get('token_usage'),
+            # Add detailed cost breakdown
+            cost_breakdown=result.get('cost_breakdown')
         )
         
     except FunctionCallingCriticalError as critical_error:

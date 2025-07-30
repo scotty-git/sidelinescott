@@ -71,6 +71,13 @@ class CleanedTurnResponse(BaseModel):
     function_calls: Optional[List[Dict[str, Any]]] = Field(None, description="Function calls executed for this turn")
     function_decision: Optional[Dict[str, Any]] = Field(None, description="Function calling decision and metadata")
     function_decision_gemini_call: Optional[Dict[str, Any]] = Field(None, description="Captured Gemini call for function decision")
+    
+    # Cost tracking data
+    cost_usd: Optional[float] = Field(None, description="Total API cost in USD for this turn")
+    token_usage: Optional[int] = Field(None, description="Total tokens used for this turn")
+    
+    # Detailed cost breakdown
+    cost_breakdown: Optional[Dict[str, Any]] = Field(None, description="Detailed cost breakdown with cleaning vs function calling costs")
 
 class EvaluationDetailsResponse(BaseModel):
     """Detailed evaluation response with cleaned turns"""

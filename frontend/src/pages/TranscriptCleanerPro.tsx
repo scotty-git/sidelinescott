@@ -46,7 +46,6 @@ interface CleanedTurn {
   }>
   function_decision?: {
     thought_process?: string
-    confidence_score?: string
     total_execution_time_ms?: number
     error?: string
     raw_response?: string
@@ -60,8 +59,26 @@ interface CleanedTurn {
     timestamp?: number
     success?: boolean
   }
+  cost_usd?: number  // Total API cost in USD for this turn
+  token_usage?: number  // Total tokens used for this turn
+  cost_breakdown?: {    // Detailed cost breakdown
+    cleaning_cost_usd: number
+    function_cost_usd: number
+    total_cost_usd: number
+    cleaning_tokens: {
+      input_tokens: number
+      output_tokens: number
+      total_tokens: number
+    }
+    function_tokens: {
+      input_tokens: number
+      output_tokens: number
+      total_tokens: number
+    }
+    total_tokens: number
+    model_used: string
+  }
   metadata: {
-    confidence_score: string
     cleaning_applied: boolean
     cleaning_level: string
     timing_breakdown?: {
@@ -438,6 +455,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         latency_ms: latency
       })
       
+      
       return response
     } catch (error: any) {
       const latency = Date.now() - startTime
@@ -694,7 +712,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           raw_text: string; 
           cleaned_text: string; 
           turn_sequence: number; 
-          confidence_score: string; 
+ 
           cleaning_applied: boolean; 
           cleaning_level: string; 
           timing_breakdown: unknown; 
@@ -723,7 +741,6 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           }>;
           function_decision?: {
             thought_process?: string;
-            confidence_score?: string;
             total_execution_time_ms?: number;
           };
           function_decision_gemini_call?: {
@@ -750,8 +767,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
           function_calls: turnResult.function_calls || [],
           function_decision: turnResult.function_decision,
           function_decision_gemini_call: turnResult.function_decision_gemini_call,
+          cost_usd: (turnResult as any).cost_usd, // Add cost tracking data
+          token_usage: (turnResult as any).token_usage, // Add token usage data
+          cost_breakdown: (turnResult as any).cost_breakdown, // Add detailed cost breakdown
           metadata: {
-            confidence_score: turnResult.confidence_score,
             cleaning_applied: turnResult.cleaning_applied,
             cleaning_level: turnResult.cleaning_level,
             timing_breakdown: turnResult.timing_breakdown as CleanedTurn['metadata']['timing_breakdown'],
@@ -1158,7 +1177,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       // Load evaluation details including cleaned turns
       setLoadingProgress('Fetching evaluation metadata...')
       addDetailedLog(`📡 Requesting evaluation details for ID: ${latestEvaluation.id}`)
-      const evaluationDetails = await apiClient.getEvaluationDetails(latestEvaluation.id, controller.signal) as { evaluation: Record<string, unknown>; cleaned_turns: { turn_id: string; raw_speaker: string; raw_text: string; cleaned_text: string; turn_sequence: number; confidence_score: string; cleaning_applied: boolean; cleaning_level: string; timing_breakdown: unknown; corrections: unknown[]; context_detected: string; processing_time_ms: number; ai_model_used: string; gemini_prompt: string; gemini_response: string; created_at: string }[] }
+      const evaluationDetails = await apiClient.getEvaluationDetails(latestEvaluation.id, controller.signal) as { evaluation: Record<string, unknown>; cleaned_turns: { turn_id: string; raw_speaker: string; raw_text: string; cleaned_text: string; turn_sequence: number; cleaning_applied: boolean; cleaning_level: string; timing_breakdown: unknown; corrections: unknown[]; context_detected: string; processing_time_ms: number; ai_model_used: string; gemini_prompt: string; gemini_response: string; created_at: string }[] }
       
       const turnCount = evaluationDetails.cleaned_turns?.length || 0
       setLoadingProgress(`Processing ${turnCount} cleaned turns...`)
@@ -1206,7 +1225,6 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         processing_state: 'completed',
         evaluation_id: latestEvaluation.id,  // Add evaluation ID for export
         metadata: {
-          confidence_score: cleanedTurn.confidence_score,
           cleaning_applied: cleanedTurn.cleaning_applied,
           cleaning_level: cleanedTurn.cleaning_level,
           timing_breakdown: cleanedTurn.timing_breakdown as CleanedTurn['metadata']['timing_breakdown'],
@@ -1221,6 +1239,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         function_calls: (cleanedTurn as any).function_calls || [],
         function_decision: (cleanedTurn as any).function_decision || null,
         function_decision_gemini_call: (cleanedTurn as any).function_decision_gemini_call || null,
+        // Add cost tracking data from evaluation loading
+        cost_usd: (cleanedTurn as any).cost_usd,
+        token_usage: (cleanedTurn as any).token_usage,
+        cost_breakdown: (cleanedTurn as any).cost_breakdown,
         created_at: cleanedTurn.created_at
       }))
       
@@ -1320,7 +1342,7 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
       addDetailedLog(`📊 Loading specific evaluation: ${evaluation.name}`);
       
       // Load evaluation details including cleaned turns
-      const evaluationDetails = await apiClient.getEvaluationDetails(evaluation.id) as { evaluation: Record<string, unknown>; cleaned_turns: { turn_id: string; raw_speaker: string; raw_text: string; cleaned_text: string; turn_sequence: number; confidence_score: string; cleaning_applied: boolean; cleaning_level: string; timing_breakdown: unknown; corrections: unknown[]; context_detected: string; processing_time_ms: number; ai_model_used: string; gemini_prompt: string; gemini_response: string; created_at: string }[] }
+      const evaluationDetails = await apiClient.getEvaluationDetails(evaluation.id) as { evaluation: Record<string, unknown>; cleaned_turns: { turn_id: string; raw_speaker: string; raw_text: string; cleaned_text: string; turn_sequence: number; cleaning_applied: boolean; cleaning_level: string; timing_breakdown: unknown; corrections: unknown[]; context_detected: string; processing_time_ms: number; ai_model_used: string; gemini_prompt: string; gemini_response: string; created_at: string }[] }
       
       // Set conversation context
       setConversationId(conversation.id)
@@ -1399,7 +1421,6 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         processing_state: 'completed',
         evaluation_id: evaluation.id,  // Add evaluation ID for export
         metadata: {
-          confidence_score: cleanedTurn.confidence_score,
           cleaning_applied: cleanedTurn.cleaning_applied,
           cleaning_level: cleanedTurn.cleaning_level,
           corrections: (cleanedTurn.corrections || []) as CleanedTurn['metadata']['corrections'],
@@ -1414,6 +1435,10 @@ export function TranscriptCleanerPro({ user, logout }: TranscriptCleanerProProps
         function_calls: (cleanedTurn as any).function_calls || [],
         function_decision: (cleanedTurn as any).function_decision || null,
         function_decision_gemini_call: (cleanedTurn as any).function_decision_gemini_call || null,
+        // Add cost tracking data from evaluation loading
+        cost_usd: (cleanedTurn as any).cost_usd,
+        token_usage: (cleanedTurn as any).token_usage,
+        cost_breakdown: (cleanedTurn as any).cost_breakdown,
         created_at: cleanedTurn.created_at
       }))
       
@@ -3235,40 +3260,6 @@ ${compactTurnsFallback.join('\n')}
                               }}>
                                 {turn.speaker}
                               </span>
-                              <span 
-                                title={
-                                  turn.metadata.confidence_score === 'PENDING' ? 'Processing...' :
-                                  turn.metadata.confidence_score === 'BYPASS' ? 'Lumen response - no processing needed' :
-                                  turn.metadata.confidence_score === 'ERROR' ? 'Processing failed' :
-                                  turn.metadata.confidence_score === 'HIGH' ? 'Very confident in cleaning quality' : 
-                                  turn.metadata.confidence_score === 'MEDIUM' ? 'Moderately confident' : 'Low confidence - review recommended'
-                                }
-                                style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                padding: '2px 10px',
-                                borderRadius: '9999px',
-                                fontSize: '12px',
-                                fontWeight: '500',
-                                backgroundColor: 
-                                  turn.metadata.confidence_score === 'PENDING' ? '#f3f4f6' :
-                                  turn.metadata.confidence_score === 'BYPASS' ? '#e0e7ff' :
-                                  turn.metadata.confidence_score === 'ERROR' ? '#fee2e2' :
-                                  turn.metadata.confidence_score === 'HIGH' ? '#dcfce7' : 
-                                  turn.metadata.confidence_score === 'MEDIUM' ? '#fef3c7' : '#fee2e2',
-                                color: 
-                                  turn.metadata.confidence_score === 'PENDING' ? '#6b7280' :
-                                  turn.metadata.confidence_score === 'BYPASS' ? '#3730a3' :
-                                  turn.metadata.confidence_score === 'ERROR' ? '#dc2626' :
-                                  turn.metadata.confidence_score === 'HIGH' ? '#166534' : 
-                                  turn.metadata.confidence_score === 'MEDIUM' ? '#92400e' : '#991b1b',
-                                cursor: 'help'
-                              }}>
-                                {turn.processing_state === 'processing' && (
-                                  <span style={{ marginRight: '4px' }}>⏳</span>
-                                )}
-                                {turn.metadata.confidence_score}
-                              </span>
                               {turn.metadata.cleaning_applied && (
                                 <span style={{
                                   display: 'inline-flex',
@@ -3818,12 +3809,96 @@ ${compactTurnsFallback.join('\n')}
                                     <div style={{ color: theme.textMuted, fontFamily: 'monospace', fontSize: '12px' }}>{turn.metadata.ai_model_used || 'bypass'}</div>
                                   </div>
                                   <div>
-                                    <div style={{ fontWeight: '500', color: theme.text }}>Context:</div>
-                                    <div style={{ color: theme.textMuted }}>{turn.metadata.context_detected}</div>
+                                    <div style={{ fontWeight: '500', color: theme.text }}>Cost:</div>
+                                    <div style={{ color: theme.textMuted, fontFamily: 'monospace', position: 'relative' }}>
+                                      {turn.cost_breakdown ? (
+                                        <>
+                                          <span 
+                                            style={{ 
+                                              cursor: 'pointer',
+                                              borderBottom: '2px dotted rgba(150, 150, 150, 0.5)',
+                                              position: 'relative'
+                                            }}
+                                            onMouseEnter={(e) => {
+                                              const tooltip = document.createElement('div');
+                                              tooltip.style.cssText = `
+                                                position: absolute;
+                                                bottom: 100%;
+                                                left: 50%;
+                                                transform: translateX(-50%);
+                                                background: rgba(0, 0, 0, 0.9);
+                                                color: white;
+                                                padding: 8px 12px;
+                                                border-radius: 4px;
+                                                font-size: 12px;
+                                                white-space: pre-line;
+                                                z-index: 1000;
+                                                margin-bottom: 5px;
+                                                font-family: monospace;
+                                              `;
+                                              tooltip.textContent = `Cleaning: $${turn.cost_breakdown?.cleaning_cost_usd.toFixed(6)}\nFunction: $${turn.cost_breakdown?.function_cost_usd.toFixed(6)}\nTotal: $${turn.cost_breakdown?.total_cost_usd.toFixed(6)}`;
+                                              e.currentTarget.appendChild(tooltip);
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              const tooltip = e.currentTarget.querySelector('div');
+                                              if (tooltip) tooltip.remove();
+                                            }}
+                                          >
+                                            ${turn.cost_breakdown.total_cost_usd.toFixed(6)}
+                                          </span>
+                                        </>
+                                      ) : turn.cost_usd ? (
+                                        `$${turn.cost_usd.toFixed(6)}`
+                                      ) : (
+                                        'not available'
+                                      )}
+                                    </div>
                                   </div>
                                   <div>
-                                    <div style={{ fontWeight: '500', color: theme.text }}>Level:</div>
-                                    <div style={{ color: theme.textMuted }}>{turn.metadata.cleaning_level}</div>
+                                    <div style={{ fontWeight: '500', color: theme.text }}>Tokens:</div>
+                                    <div style={{ color: theme.textMuted, fontFamily: 'monospace', position: 'relative' }}>
+                                      {turn.cost_breakdown ? (
+                                        <>
+                                          <span 
+                                            style={{ 
+                                              cursor: 'pointer',
+                                              borderBottom: '2px dotted rgba(150, 150, 150, 0.5)',
+                                              position: 'relative'
+                                            }}
+                                            onMouseEnter={(e) => {
+                                              const tooltip = document.createElement('div');
+                                              tooltip.style.cssText = `
+                                                position: absolute;
+                                                bottom: 100%;
+                                                left: 50%;
+                                                transform: translateX(-50%);
+                                                background: rgba(0, 0, 0, 0.9);
+                                                color: white;
+                                                padding: 8px 12px;
+                                                border-radius: 4px;
+                                                font-size: 12px;
+                                                white-space: pre-line;
+                                                z-index: 1000;
+                                                margin-bottom: 5px;
+                                                font-family: monospace;
+                                              `;
+                                              tooltip.textContent = `Cleaning: ${turn.cost_breakdown?.cleaning_tokens.total_tokens}\nFunction: ${turn.cost_breakdown?.function_tokens.total_tokens}\nTotal: ${turn.cost_breakdown?.total_tokens}`;
+                                              e.currentTarget.appendChild(tooltip);
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              const tooltip = e.currentTarget.querySelector('div');
+                                              if (tooltip) tooltip.remove();
+                                            }}
+                                          >
+                                            {turn.cost_breakdown.total_tokens.toString()}
+                                          </span>
+                                        </>
+                                      ) : turn.token_usage ? (
+                                        `${turn.token_usage}`
+                                      ) : (
+                                        'not available'
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               ) : (
@@ -3967,7 +4042,6 @@ ${compactTurnsFallback.join('\n')}
                                     timing_breakdown: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'timing_breakdown' in turnGroup.backendResponse.response_data) ? (turnGroup.backendResponse.response_data as any).timing_breakdown : 'No timing data',
                                     ai_model_used: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'metadata' in turnGroup.backendResponse.response_data && turnGroup.backendResponse.response_data.metadata && typeof turnGroup.backendResponse.response_data.metadata === 'object' && 'ai_model_used' in turnGroup.backendResponse.response_data.metadata) ? (turnGroup.backendResponse.response_data.metadata as any).ai_model_used : 'N/A',
                                     cleaning_level: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'metadata' in turnGroup.backendResponse.response_data && turnGroup.backendResponse.response_data.metadata && typeof turnGroup.backendResponse.response_data.metadata === 'object' && 'cleaning_level' in turnGroup.backendResponse.response_data.metadata) ? (turnGroup.backendResponse.response_data.metadata as any).cleaning_level : 'N/A',
-                                    confidence_score: (turnGroup.backendResponse.response_data && typeof turnGroup.backendResponse.response_data === 'object' && 'metadata' in turnGroup.backendResponse.response_data && turnGroup.backendResponse.response_data.metadata && typeof turnGroup.backendResponse.response_data.metadata === 'object' && 'confidence_score' in turnGroup.backendResponse.response_data.metadata) ? (turnGroup.backendResponse.response_data.metadata as any).confidence_score : 'N/A'
                                   }, null, 2)}
                                 </pre>
                               </div>
@@ -4779,12 +4853,16 @@ ${compactTurnsFallback.join('\n')}
           turnId={inspectedTurn.turn_id}
           turnData={{
             ...inspectedTurn,
+            metadata: {
+              ...inspectedTurn.metadata,
+              confidence_score: 'UNKNOWN' // Legacy field for backwards compatibility with inspector
+            },
             function_calls: inspectedTurn.function_calls?.map(call => ({
               function_name: call.function_name,
               parameters: call.parameters,
               result: call.result ?? {},
               success: call.success,
-              confidence_score: 'UNKNOWN'
+              confidence_score: 'UNKNOWN', // Legacy field for backwards compatibility
             })),
             function_decision: inspectedTurn.function_decision ? {
               reasoning: inspectedTurn.function_decision.thought_process || 'No reasoning provided',
@@ -5547,9 +5625,65 @@ ${compactTurnsFallback.join('\n')}
                     <span style={{ color: theme.textSecondary, fontWeight: '500' }}>Cleaned Turns:</span>{' '}
                     <span style={{ color: theme.text }}>{cleanedTurns.filter(t => t.metadata.cleaning_applied).length}</span>
                   </div>
-                  <div>
+                  <div style={{ marginBottom: '6px' }}>
                     <span style={{ color: theme.textSecondary, fontWeight: '500' }}>Function Calls:</span>{' '}
                     <span style={{ color: theme.text }}>{cleanedTurns.reduce((acc, t) => acc + (t.function_calls?.length || 0), 0)}</span>
+                  </div>
+                  <div>
+                    <span style={{ color: theme.textSecondary, fontWeight: '500' }}>Total Cost:</span>{' '}
+                    <span 
+                      style={{ 
+                        color: theme.text, 
+                        fontFamily: 'monospace',
+                        cursor: 'pointer',
+                        borderBottom: '1px dotted rgba(150, 150, 150, 0.5)',
+                        position: 'relative'
+                      }}
+                      onMouseEnter={(e) => {
+                        const totalCostBreakdown = cleanedTurns.reduce((acc, turn) => {
+                          if (turn.cost_breakdown) {
+                            acc.cleaning += turn.cost_breakdown.cleaning_cost_usd;
+                            acc.function += turn.cost_breakdown.function_cost_usd;
+                            acc.total += turn.cost_breakdown.total_cost_usd;
+                          } else if (turn.cost_usd) {
+                            acc.total += turn.cost_usd;
+                          }
+                          return acc;
+                        }, { cleaning: 0, function: 0, total: 0 });
+                        
+                        const tooltip = document.createElement('div');
+                        tooltip.style.cssText = `
+                          position: absolute;
+                          bottom: 100%;
+                          left: 50%;
+                          transform: translateX(-50%);
+                          background: rgba(0, 0, 0, 0.9);
+                          color: white;
+                          padding: 8px 12px;
+                          border-radius: 4px;
+                          font-size: 12px;
+                          white-space: pre-line;
+                          z-index: 1000;
+                          margin-bottom: 5px;
+                          font-family: monospace;
+                        `;
+                        tooltip.textContent = `Cleaning: $${totalCostBreakdown.cleaning.toFixed(6)}\nFunction: $${totalCostBreakdown.function.toFixed(6)}\nTotal: $${totalCostBreakdown.total.toFixed(6)}`;
+                        e.currentTarget.appendChild(tooltip);
+                      }}
+                      onMouseLeave={(e) => {
+                        const tooltip = e.currentTarget.querySelector('div');
+                        if (tooltip) tooltip.remove();
+                      }}
+                    >
+                      ${cleanedTurns.reduce((acc, turn) => {
+                        if (turn.cost_breakdown) {
+                          return acc + turn.cost_breakdown.total_cost_usd;
+                        } else if (turn.cost_usd) {
+                          return acc + turn.cost_usd;
+                        }
+                        return acc;
+                      }, 0).toFixed(6)}
+                    </span>
                   </div>
                 </div>
               </div>

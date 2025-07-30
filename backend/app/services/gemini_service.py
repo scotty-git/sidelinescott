@@ -37,6 +37,37 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Gemini 2.5 Flash-Lite pricing (per 1M tokens) - Official Google AI Studio rates
+GEMINI_FLASH_LITE_INPUT_COST = 0.10   # $0.10 per 1M input tokens (text/image/video)
+GEMINI_FLASH_LITE_OUTPUT_COST = 0.40  # $0.40 per 1M output tokens
+
+def extract_token_usage(response) -> tuple[int, int]:
+    """Extract token usage from Gemini response"""
+    try:
+        if hasattr(response, 'usage_metadata'):
+            usage = response.usage_metadata
+            prompt_tokens = getattr(usage, 'prompt_token_count', 0)
+            completion_tokens = getattr(usage, 'candidates_token_count', 0)
+            
+            # Debug logging to verify token extraction
+            print(f"🔍 TOKEN DEBUG: usage_metadata fields: {[attr for attr in dir(usage) if not attr.startswith('_')]}")
+            print(f"🔍 TOKEN DEBUG: prompt_token_count = {prompt_tokens}")
+            print(f"🔍 TOKEN DEBUG: candidates_token_count = {completion_tokens}")
+            if hasattr(usage, 'total_token_count'):
+                print(f"🔍 TOKEN DEBUG: total_token_count = {getattr(usage, 'total_token_count', 0)}")
+            
+            return prompt_tokens, completion_tokens
+        return 0, 0
+    except Exception as e:
+        print(f"🔍 TOKEN DEBUG ERROR: {e}")
+        return 0, 0
+
+def calculate_cost(input_tokens: int, output_tokens: int) -> float:
+    """Calculate cost based on token usage"""
+    input_cost = (input_tokens / 1_000_000) * GEMINI_FLASH_LITE_INPUT_COST
+    output_cost = (output_tokens / 1_000_000) * GEMINI_FLASH_LITE_OUTPUT_COST
+    return input_cost + output_cost
+
 class GeminiService:
     """Service for Gemini 2.5 Flash-Lite conversation cleaning
     
@@ -202,6 +233,10 @@ class GeminiService:
             
             processing_time = round((time.time() - start_time) * 1000, 2)
             
+            # Extract token usage and calculate cost
+            input_tokens, output_tokens = extract_token_usage(response)
+            cost_usd = calculate_cost(input_tokens, output_tokens)
+            
             # Simple metadata for MVP - no complex logic needed
             cleaned_response = {
                 "cleaned_text": cleaned_text,
@@ -215,7 +250,14 @@ class GeminiService:
                     "ai_model_used": model_params.get("model_name", self.model_name) if model_params else self.model_name
                 },
                 "raw_response": response.text,  # Store the raw Gemini response
-                "prompt_used": prompt  # Store the actual prompt that was sent to Gemini
+                "prompt_used": prompt,  # Store the actual prompt that was sent to Gemini
+                # New cost tracking fields
+                "token_usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens
+                },
+                "cost_usd": cost_usd
             }
             
             logger.info(f"Cleaned in {processing_time}ms, confidence: {cleaned_response['metadata']['confidence_score']}")
@@ -490,6 +532,9 @@ IMPORTANT:
     def _parse_native_function_response(self, response, processing_time: float, model_params: Dict[str, Any]) -> Dict[str, Any]:
         """Parse native function calling response from Gemini - supports parallel function calls"""
         try:
+            # Extract token usage and calculate cost at the beginning
+            input_tokens, output_tokens = extract_token_usage(response)
+            cost_usd = calculate_cost(input_tokens, output_tokens)
             # 🚨 DEBUG: Show complete raw response structure
             print(f"[GeminiService] 🔍 RAW RESPONSE DEBUG:")
             print(f"[GeminiService] 🔍 Response type: {type(response)}")
@@ -591,7 +636,14 @@ IMPORTANT:
                             "response_type": "function_call",
                             "parallel_calls_count": 1
                         },
-                        "raw_response": str(response)
+                        "raw_response": str(response),
+                        # New cost tracking fields
+                        "token_usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens
+                        },
+                        "cost_usd": cost_usd
                     }
                 else:
                     # Multiple parallel function calls
@@ -603,7 +655,14 @@ IMPORTANT:
                             "response_type": "parallel_function_calls",
                             "parallel_calls_count": len(function_calls)
                         },
-                        "raw_response": str(response)
+                        "raw_response": str(response),
+                        # New cost tracking fields
+                        "token_usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens
+                        },
+                        "cost_usd": cost_usd
                     }
             elif text_responses:
                 # Text response(s) only
@@ -615,7 +674,14 @@ IMPORTANT:
                         "ai_model_used": model_params.get('model_name', 'unknown'),
                         "response_type": "text"
                     },
-                    "raw_response": response
+                    "raw_response": response,
+                    # New cost tracking fields
+                    "token_usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": input_tokens + output_tokens
+                    },
+                    "cost_usd": cost_usd
                 }
             else:
                 raise Exception("No function calls or text found in any parts")
